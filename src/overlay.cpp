@@ -24,6 +24,14 @@ constexpr DWORD kAllColorChannels =
 constexpr float kPanelFontPixels = 16.0f;
 constexpr float kReferenceBackBufferHeight = 1080.0f;
 constexpr float kMinFrameSeconds = 1.0f / 1000.0f;
+constexpr int kMaxLoggedShortcutKeys = 12;
+
+enum DrawSkip : unsigned
+{
+    kDeviceNotReady = 1u << 0,
+    kNoBackBuffer = 1u << 1,
+    kNoStateCapture = 1u << 2,
+};
 
 struct OverlayState
 {
@@ -35,6 +43,10 @@ struct OverlayState
     UINT backBufferHeight = 0;
     float scale = 0.0f;
     SettingsPanel panel;
+    bool keyInputLogged = false;
+    bool drawLogged = false;
+    int loggedShortcutKeys = 0;
+    unsigned loggedDrawSkips = 0;
 };
 
 struct SubclassedWindow
@@ -117,6 +129,7 @@ void SetVisible(bool visible)
     if (visible == g_overlay.visible || !ImGui::GetCurrentContext())
         return;
     g_overlay.visible = visible;
+    VF_LOG_INFO("overlay %s", visible ? "shown" : "hidden");
     ImGuiIO& io = ImGui::GetIO();
     io.ClearInputKeys();
     io.ClearInputMouse();
@@ -153,6 +166,46 @@ bool HotkeyPressed(const Hotkey& key, UINT msg, WPARAM wParam)
 {
     return IsKeyDownMessage(msg) && wParam == key.virtualKey && ModifierDown(VK_CONTROL) == key.ctrl &&
            ModifierDown(VK_SHIFT) == key.shift && ModifierDown(VK_MENU) == key.alt;
+}
+
+bool IsTypedKey(unsigned virtualKey)
+{
+    return (virtualKey >= '0' && virtualKey <= '9') || (virtualKey >= 'A' && virtualKey <= 'Z') ||
+           (virtualKey >= VK_NUMPAD0 && virtualKey <= VK_DIVIDE) ||
+           (virtualKey >= VK_OEM_1 && virtualKey <= VK_OEM_102) || virtualKey == VK_SPACE;
+}
+
+bool IsModifierKey(unsigned virtualKey)
+{
+    return virtualKey == VK_CONTROL || virtualKey == VK_SHIFT || virtualKey == VK_MENU ||
+           (virtualKey >= VK_LSHIFT && virtualKey <= VK_RMENU) || virtualKey == VK_LWIN || virtualKey == VK_RWIN;
+}
+
+void LogShortcutKeyArrival(const Hotkey& hotkey, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (!IsKeyDownMessage(msg) || (lParam & kKeyWasDownBit))
+        return;
+    if (!g_overlay.keyInputLogged)
+    {
+        g_overlay.keyInputLogged = true;
+        VF_LOG_INFO("overlay: key presses reach the game window");
+    }
+    const unsigned virtualKey = static_cast<unsigned>(wParam);
+    const Hotkey pressed = {virtualKey, ModifierDown(VK_CONTROL), ModifierDown(VK_SHIFT), ModifierDown(VK_MENU)};
+    const bool shortcut = (pressed.ctrl || pressed.alt || pressed.shift) && !IsTypedKey(virtualKey);
+    if ((virtualKey != hotkey.virtualKey && !shortcut) || IsModifierKey(virtualKey) ||
+        g_overlay.loggedShortcutKeys >= kMaxLoggedShortcutKeys)
+        return;
+    ++g_overlay.loggedShortcutKeys;
+    VF_LOG_INFO("overlay: %s pressed (OverlayKey is %s)", HotkeyName(pressed).c_str(), HotkeyName(hotkey).c_str());
+}
+
+void LogDrawSkip(DrawSkip reason, const char* what, HRESULT hr)
+{
+    if (g_overlay.loggedDrawSkips & reason)
+        return;
+    g_overlay.loggedDrawSkips |= reason;
+    VF_LOG_INFO("overlay not drawn: %s (0x%08X)", what, static_cast<unsigned>(hr));
 }
 
 bool TakesHotkey(const Hotkey& key, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -194,6 +247,7 @@ bool OverlayTakesMessage(HWND window, UINT msg, WPARAM wParam, LPARAM lParam)
         SetVisible(false);
         return false;
     }
+    LogShortcutKeyArrival(cfg.overlayKey, msg, wParam, lParam);
     if (TakesHotkey(cfg.overlayKey, msg, wParam, lParam))
         return true;
     if (!g_overlay.visible)
@@ -354,7 +408,10 @@ void RenderPanel(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer)
 {
     SavedDeviceState saved;
     if (!saved.Capture(device))
+    {
+        LogDrawSkip(kNoStateCapture, "the device state could not be captured", E_FAIL);
         return;
+    }
     const bool ownScene = SUCCEEDED(device->BeginScene());
     device->SetRenderTarget(0, backBuffer);
     for (DWORD i = 1; i < kMaxRenderTargets; ++i)
@@ -375,11 +432,19 @@ void DrawOverlayFrame(IDirect3DDevice9* device)
         SetVisible(false);
         return;
     }
-    if (device->TestCooperativeLevel() != D3D_OK)
+    const HRESULT cooperativeLevel = device->TestCooperativeLevel();
+    if (cooperativeLevel != D3D_OK)
+    {
+        LogDrawSkip(kDeviceNotReady, "the device is not ready", cooperativeLevel);
         return;
+    }
     IDirect3DSurface9* backBuffer = nullptr;
-    if (FAILED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)))
+    const HRESULT backBufferResult = device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
+    if (FAILED(backBufferResult))
+    {
+        LogDrawSkip(kNoBackBuffer, "no back buffer", backBufferResult);
         return;
+    }
     D3DSURFACE_DESC desc = {};
     backBuffer->GetDesc(&desc);
     g_overlay.backBufferWidth = desc.Width;
@@ -387,6 +452,11 @@ void DrawOverlayFrame(IDirect3DDevice9* device)
     BuildPanelFrame(desc);
     RenderPanel(device, backBuffer);
     backBuffer->Release();
+    if (!g_overlay.drawLogged)
+    {
+        g_overlay.drawLogged = true;
+        VF_LOG_INFO("overlay drawn over the %ux%u back buffer", desc.Width, desc.Height);
+    }
 }
 
 void DrawOverlayGuarded(IDirect3DDevice9* device)
