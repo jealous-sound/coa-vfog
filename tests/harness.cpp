@@ -21,6 +21,7 @@ extern "C" __declspec(dllimport) void __cdecl vf_test_get_config(Config*);
 extern "C" __declspec(dllimport) int __cdecl vf_test_render(const FrameInputs*, const char**);
 extern "C" __declspec(dllimport) int __cdecl vf_test_adaptive_lighting_history();
 extern "C" __declspec(dllimport) void __cdecl vf_test_force_depth_write(int);
+extern "C" __declspec(dllimport) void __cdecl vf_test_suppress_depth_write(int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_overlay_visible();
 extern "C" __declspec(dllimport) void __cdecl vf_test_draw_overlay();
 
@@ -415,7 +416,8 @@ struct Harness
                              sizeof(SceneVertex));
     }
 
-    void DrawPretransformedQuadAtRawDepth(float x0, float y0, float x1, float y1, float rawDepth)
+    void DrawPretransformedQuadAtRawDepth(float x0, float y0, float x1, float y1, float rawDepth,
+                                         DWORD color = 0xFF808890)
     {
         struct ScreenVertex
         {
@@ -423,8 +425,8 @@ struct Harness
             DWORD color;
         };
         const ScreenVertex quad[6] = {
-            {x0, y0, rawDepth, 1, 0xFF808890}, {x1, y0, rawDepth, 1, 0xFF808890}, {x0, y1, rawDepth, 1, 0xFF808890},
-            {x1, y0, rawDepth, 1, 0xFF808890}, {x1, y1, rawDepth, 1, 0xFF808890}, {x0, y1, rawDepth, 1, 0xFF808890},
+            {x0, y0, rawDepth, 1, color}, {x1, y0, rawDepth, 1, color}, {x0, y1, rawDepth, 1, color},
+            {x1, y0, rawDepth, 1, color}, {x1, y1, rawDepth, 1, color}, {x0, y1, rawDepth, 1, color},
         };
         D3DVIEWPORT9 vp = {};
         dev->GetViewport(&vp);
@@ -1928,6 +1930,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     }
 
     CheckDepthWriteStateBlockRestore(h.dev);
+    CheckWorldTextDepthIsolation(h);
     Config restored = cfg;
     vf_test_set_config(&restored);
 

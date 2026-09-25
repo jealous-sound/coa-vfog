@@ -7,5 +7,6 @@ EXPORTS
     vf_test_render
     vf_test_adaptive_lighting_history
     vf_test_force_depth_write
+    vf_test_suppress_depth_write
     vf_test_overlay_visible
     vf_test_draw_overlay

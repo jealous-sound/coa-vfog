@@ -297,6 +297,7 @@ void CheckFogIntegration(IDirect3DDevice9* device)
         }
         CheckWorldShadowIntegration(device, resources, quality + 1);
         CheckBlockedSunIntegration(device, resources, quality + 1);
+        CheckBlockedSunIntegration(device, resources, quality + 1, true);
         shader->Release();
     }
     device->SetRenderTarget(0, resources.previousTarget);

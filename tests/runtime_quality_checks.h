@@ -20,13 +20,90 @@ void CheckDepthWriteStateBlockRestore(IDirect3DDevice9* device)
             vf_test_force_depth_write(0);
             device->GetRenderState(D3DRS_ZWRITEENABLE, &restored);
             ok = ok && forced == TRUE && restored == desired;
+            vf_test_suppress_depth_write(1);
+            device->GetRenderState(D3DRS_ZWRITEENABLE, &forced);
+            vf_test_suppress_depth_write(0);
+            device->GetRenderState(D3DRS_ZWRITEENABLE, &restored);
+            ok = ok && forced == FALSE && restored == desired;
         }
         if (state)
             state->Release();
-        Check(ok, desired ? "liquid depth override restores enabled writes applied by a state block" :
-                            "liquid depth override restores disabled writes applied by a state block");
+        Check(ok, desired ? "depth overrides restore enabled writes applied by a state block" :
+                            "depth overrides restore disabled writes applied by a state block");
     }
     device->SetRenderState(D3DRS_ZWRITEENABLE, initial);
+}
+
+void CheckWorldTextDepthIsolation(Harness& h)
+{
+    IDirect3DDevice9* device = h.dev;
+    IDirect3DStateBlock9* state = nullptr;
+    const bool ready = SUCCEEDED(device->CreateStateBlock(D3DSBT_ALL, &state));
+    Check(ready, "world text depth regression captures device state");
+    if (!ready)
+        return;
+    const D3DVIEWPORT9 viewport = {0, 0, h.pp.BackBufferWidth, h.pp.BackBufferHeight, 0, 1};
+    device->SetViewport(&viewport);
+    device->SetVertexShader(nullptr);
+    device->SetPixelShader(nullptr);
+    device->SetTexture(0, nullptr);
+    device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+    device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+    device->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    device->SetRenderState(D3DRS_LIGHTING, FALSE);
+    device->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+    device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+    device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+    device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+    device->SetRenderState(D3DRS_CLIPPLANEENABLE, 0);
+    device->SetRenderState(D3DRS_FOGENABLE, FALSE);
+    device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    device->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
+    device->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
+    for (int suppress = 0; suppress < 2; ++suppress)
+    {
+        device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+        device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, 0xFF000000, 0.8f, 0);
+        device->BeginScene();
+        h.DrawPretransformedQuadAtRawDepth(0, 0, 16, 32, 0.1f, 0xFFFFFFFF);
+        vf_test_suppress_depth_write(suppress);
+        device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+        h.DrawPretransformedQuadAtRawDepth(8, 8, 32, 24, 0.2f, 0xFF0000FF);
+        vf_test_suppress_depth_write(0);
+        device->EndScene();
+        const Image text = Capture(device);
+        if (suppress)
+        {
+            Check(text.At(24, 16)[0] == 255 && text.At(24, 16)[1] == 0,
+                  "world text still draws its visible colour with depth writes suppressed");
+            Check(text.At(12, 16)[1] == 255, "world text still tests against foreground geometry");
+        }
+        device->BeginScene();
+        h.DrawPretransformedQuadAtRawDepth(16, 8, 32, 24, 0.5f, 0xFF00FF00);
+        device->EndScene();
+        const Image probe = Capture(device);
+        Check(probe.At(24, 16)[1] == (suppress ? 255 : 0),
+              suppress ? "world text leaves the world depth behind its glyphs intact" :
+                         "unprotected world text reproduces glyph contamination of world depth");
+    }
+    device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+    vf_test_force_depth_write(1);
+    vf_test_suppress_depth_write(1);
+    device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+    DWORD suppressed = TRUE;
+    DWORD forced = FALSE;
+    DWORD restored = TRUE;
+    device->GetRenderState(D3DRS_ZWRITEENABLE, &suppressed);
+    vf_test_suppress_depth_write(0);
+    device->GetRenderState(D3DRS_ZWRITEENABLE, &forced);
+    vf_test_force_depth_write(0);
+    device->GetRenderState(D3DRS_ZWRITEENABLE, &restored);
+    Check(suppressed == FALSE && forced == TRUE && restored == FALSE,
+          "text suppression nests with liquid depth writes and restores the client's last request");
+    state->Apply();
+    state->Release();
 }
 
 struct FogFixtureHeader

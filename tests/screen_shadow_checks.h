@@ -2,15 +2,21 @@
 
 #include "ps_shadow_probe.h"
 
-void CheckBlockedSunIntegration(IDirect3DDevice9* device, const FogIntegrationResources& resources, int quality)
+void CheckBlockedSunIntegration(IDirect3DDevice9* device, const FogIntegrationResources& resources, int quality,
+                                bool foreground = false)
 {
     IDirect3DTexture9* depth = nullptr;
-    bool ready = SUCCEEDED(device->CreateTexture(1, 1, 1, 0, D3DFMT_R32F, D3DPOOL_MANAGED, &depth, nullptr));
+    bool ready = SUCCEEDED(device->CreateTexture(64, 64, 1, 0, D3DFMT_R32F, D3DPOOL_MANAGED, &depth, nullptr));
     D3DLOCKED_RECT locked = {};
     ready = ready && SUCCEEDED(depth->LockRect(0, &locked, nullptr, 0));
     if (ready)
     {
-        *static_cast<float*>(locked.pBits) = 0.940376f - 0.3761504f / 120;
+        for (int y = 0; y < 64; ++y)
+        {
+            float* row = reinterpret_cast<float*>(static_cast<unsigned char*>(locked.pBits) + y * locked.Pitch);
+            for (int x = 0; x < 64; ++x)
+                row[x] = 0.940376f - 0.3761504f / (foreground && x < 35 ? 2 : 120);
+        }
         depth->UnlockRect(0);
     }
     Check(ready, "blocked sunlight integration depth fixture created");
@@ -28,8 +34,9 @@ void CheckBlockedSunIntegration(IDirect3DDevice9* device, const FogIntegrationRe
         for (int shadowed = 0; shadowed < 2; ++shadowed)
         {
             float constants[99][4] = {};
-            constants[0][2] = constants[0][3] = 8;
-            constants[1][0] = constants[1][2] = constants[1][3] = 1;
+            constants[0][2] = constants[0][3] = 64;
+            constants[1][0] = 8;
+            constants[1][2] = constants[1][3] = 1.0f / 64;
             constants[2][0] = constants[2][1] = 1;
             constants[3][0] = 0.940376f;
             constants[3][1] = -0.3761504f;
@@ -63,8 +70,9 @@ void CheckBlockedSunIntegration(IDirect3DDevice9* device, const FogIntegrationRe
             const float source = enabled && shadowed ? 0.1f : 0.85f;
             const float expected = source * (1 - std::exp(-0.003f * 120 * std::sqrt(1 + 2 * 0.125f * 0.125f)));
             char label[160];
-            std::snprintf(label, sizeof(label), "blocked sun quality %d: shafts %d shadowed layer %d (error %.3f)",
-                          quality, enabled, shadowed, std::fabs(actual - expected));
+            std::snprintf(label, sizeof(label),
+                          "blocked sun quality %d: foreground %d shafts %d shadowed layer %d (error %.3f)",
+                          quality, foreground, enabled, shadowed, std::fabs(actual - expected));
             Check(SUCCEEDED(draw) && std::fabs(actual - expected) <= 2.0f / 255, label);
         }
     }
@@ -102,6 +110,8 @@ void CheckScreenSpaceShadows(IDirect3DDevice9* device, const FogIntegrationResou
         int firstColumn;
         int endColumn;
         float expected;
+        float backgroundZ = 0;
+        int backgroundEndColumn = 64;
     };
     const ShadowCase cases[] = {
         {"clear sky remains lit", 4, 0, 1, 0, 0, 64, 1},
@@ -115,6 +125,9 @@ void CheckScreenSpaceShadows(IDirect3DDevice9* device, const FogIntegrationResou
         {"ray parallel to the image finds side geometry", 80, 1, 0, 70, 46, 58, 0},
         {"parallel ray through clear sky stays lit", 80, 1, 0, 0, 0, 64, 1},
         {"foreground silhouette does not shadow distant fog", 800, 0.6f, 0.8f, 40, 0, 64, 1},
+        {"foreground silhouette cannot uncover a hidden hillside", 20, 0.6f, 0.8f, 2, 42, 64, 0, 120},
+        {"foreground silhouette against open sky stays finite", 20, 0.6f, 0.8f, 2, 42, 64, 1},
+        {"occlusion behind a silhouette covers the entire light ray", 800, 0.6f, 0.8f, 2, 42, 64, 0, 900, 34},
     };
     const float quad[4][4] = {{-0.5f, -0.5f, 0, 1}, {7.5f, -0.5f, 0, 1},
                              {-0.5f, 7.5f, 0, 1}, {7.5f, 7.5f, 0, 1}};
@@ -128,8 +141,11 @@ void CheckScreenSpaceShadows(IDirect3DDevice9* device, const FogIntegrationResou
             {
                 float* row = reinterpret_cast<float*>(static_cast<unsigned char*>(locked.pBits) + y * locked.Pitch);
                 for (int x = 0; x < 64; ++x)
-                    row[x] = sample.wallZ > 0 && x >= sample.firstColumn && x < sample.endColumn
-                                 ? 1.0004f - 0.40016f / sample.wallZ : 1.0f;
+                {
+                    const float z = x >= sample.firstColumn && x < sample.endColumn
+                                        ? sample.wallZ : (x < sample.backgroundEndColumn ? sample.backgroundZ : 0);
+                    row[x] = z > 0 ? 1.0004f - 0.40016f / z : 1.0f;
+                }
             }
             depth->UnlockRect(0);
         }

@@ -59,9 +59,21 @@ public:
     {
         if (force == m_forceDepthWrite)
             return;
-        if (force && FAILED(m_real->GetRenderState(D3DRS_ZWRITEENABLE, &m_clientRequestedDepthWrite)))
+        if (force && !m_suppressDepthWrite &&
+            FAILED(m_real->GetRenderState(D3DRS_ZWRITEENABLE, &m_clientRequestedDepthWrite)))
             return;
         m_forceDepthWrite = force;
+        m_real->SetRenderState(D3DRS_ZWRITEENABLE, DepthWriteToApply());
+    }
+
+    void SuppressDepthWrite(bool suppress)
+    {
+        if (suppress == m_suppressDepthWrite)
+            return;
+        if (suppress && !m_forceDepthWrite &&
+            FAILED(m_real->GetRenderState(D3DRS_ZWRITEENABLE, &m_clientRequestedDepthWrite)))
+            return;
+        m_suppressDepthWrite = suppress;
         m_real->SetRenderState(D3DRS_ZWRITEENABLE, DepthWriteToApply());
     }
 
@@ -448,11 +460,15 @@ private:
     ~FogDevice();
     void ReleaseDepth();
     bool BindFallbackDepth();
-    DWORD DepthWriteToApply() const { return m_forceDepthWrite ? TRUE : m_clientRequestedDepthWrite; }
+    DWORD DepthWriteToApply() const
+    {
+        return m_suppressDepthWrite ? FALSE : (m_forceDepthWrite ? TRUE : m_clientRequestedDepthWrite);
+    }
 
     LONG m_ref = 1;
     DWORD m_clientRequestedDepthWrite = TRUE;
     bool m_forceDepthWrite = false;
+    bool m_suppressDepthWrite = false;
     WrappedD3D9* m_parent;
     IDirect3DDevice9* m_real;
     bool m_fog;
@@ -821,6 +837,12 @@ void ForceDepthWrite(FogDevice* device, bool force)
 {
     if (device)
         device->ForceDepthWrite(force);
+}
+
+void SuppressDepthWrite(FogDevice* device, bool suppress)
+{
+    if (device)
+        device->SuppressDepthWrite(suppress);
 }
 
 bool RenderFog(FogDevice* device, const FrameInputs& in, const Config& cfg, const char** skipReason)

@@ -142,7 +142,7 @@ bool SceneOccludes(float sceneDepth, float2 segmentViewZ, float occluderThicknes
            sceneViewZ > min(segmentViewZ.x, segmentViewZ.y) - occluderThickness;
 }
 
-float ScreenSpaceSunVisibility(float3 viewPosition, float sampleDistance, float jitter)
+float ScreenSpaceSunVisibility(float3 viewPosition, float sampleDistance, float jitter, float surfaceMask)
 {
     [branch] if (viewPosition.z < kShadowMinViewZ)
         return 1;
@@ -156,17 +156,19 @@ float ScreenSpaceSunVisibility(float3 viewPosition, float sampleDistance, float 
     float endFraction = saturate(min(toEdge.x, toEdge.y));
     float2 inverseZ = float2(1 / viewPosition.z, 1 / endPosition.z);
     inverseZ.y = lerp(inverseZ.x, inverseZ.y, endFraction);
-    float3 step = float3(pixelDelta * endFraction, inverseZ.y - inverseZ.x) / kShadowSteps;
+    float3 segmentStep = float3(pixelDelta * endFraction, inverseZ.y - inverseZ.x) / kShadowSteps;
     float3 sample = float3(startPixel, inverseZ.x);
     float occluderThickness = max(ShadowMinStep(), sampleDistance * ShadowStepPerYard()) * ShadowThicknessInSteps();
+    occluderThickness = max(occluderThickness,
+                            surfaceMask * step(1e-6, DirectionToLightView().z) * (MaxFogDistance() + FarClip()));
     float visibility = 1;
     [loop] for (int k = 0; k < kShadowSteps; k++)
     {
-        float2 segmentViewZ = 1 / float2(sample.z, sample.z + step.z);
-        float2 pixel = sample.xy + step.xy * jitter;
+        float2 segmentViewZ = 1 / float2(sample.z, sample.z + segmentStep.z);
+        float2 pixel = sample.xy + segmentStep.xy * jitter;
         visibility = min(visibility,
                          SceneOccludes(SampleDepth(sDepth, pixel), segmentViewZ, occluderThickness) ? 0 : 1);
-        sample += step;
+        sample += segmentStep;
     }
     return visibility;
 }
@@ -251,7 +253,7 @@ float4 IntegrateFogAtPixel(float2 pixel, float jitter)
         [branch] if (ShadowsEnabled())
         {
             float3 sampleViewPosition = viewDirection * sampleDistance;
-            float visibility = ScreenSpaceSunVisibility(sampleViewPosition, sampleDistance, jitter);
+            float visibility = ScreenSpaceSunVisibility(sampleViewPosition, sampleDistance, jitter, 1 - skyMask);
             [branch] if (cWorldShadowControl.x > 0)
                 visibility = WorldSunVisibility(sampleViewPosition, visibility);
             sunVisibility *= visibility;

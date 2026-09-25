@@ -52,7 +52,9 @@ data is Classic-derived; keep it in private repositories.
   environment regions are filtered and blended at their edges; a screen-space march covers unavailable regions.
   The fallback projects a ray up to the far-clip distance toward the light, clips it to the viewport and near
   plane, and checks 12 perspective-correct depth intervals. This finds distant blockers that a short contact
-  trace misses. Clear sky and geometry behind the ray do not occlude it.
+  trace misses. For forward rays through fog in front of opaque geometry, depth silhouettes conservatively
+  cover the hidden space behind them, so a nearer tree or character cannot reveal sunlight through a mountain.
+  Sky rays retain finite occluder thickness. World-name text tests against depth without writing into it.
 - **Local lights**: up to eight nearby native point lights scatter into the medium with the client's constant,
   linear and quadratic attenuation. Light/ray intersections preserve small light volumes between march samples.
 - **Interior transitions**: the camera's native WMO blend reduces outdoor layers and sunlight while preserving
@@ -105,7 +107,7 @@ size-class culling (`environmentDetail`), and creatures the server's visibility 
 | Loader | `version.dll` proxy (all 17 exports forward lazily to the system copy). Its static import loads `CoAVolFog.dll` before the client starts. |
 | D3D9 | The client resolves `Direct3DCreate9` through the delay-loaded `GetProcAddress` slot `[0xB2ED98]`. The DLL points that slot at a filter that returns a wrapped `IDirect3D9`. No d3d9 code is patched, so DXVK or other `d3d9.dll` builds keep working underneath. |
 | Depth | The wrapper creates the device without auto depth and binds an `INTZ` texture as the depth-stencil, which the client caches as its world depth. MSAA is reported unavailable and forced off; `D3DCREATE_PUREDEVICE` is removed. The client draws the world with viewport depth `[0, 0.94]` (`[0xADEEE4]`, set at `0x4F9019`), the distant WDL terrain into `[0.998, 0.999]` with its own projection, and leaves the sky at the clear depth 1; the shaders read depth through the captured world viewport's range and treat anything deeper as beyond the far clip. |
-| Hooks | Four 5-byte call displacements: the world render call (`0x4FB03D`, stock-fog override and restore), after the opaque M2 pass (`0x4F911D`, captures world inputs), the liquid surface pass (`0x4F9170`, forces depth writes), and before the frame effects (`0x4F9281`, draws fog over the completed world). The original bytes are checked first; on any mismatch nothing is patched. Two more retarget the far-clip clamp calls (`0x780810`, `0x781444`) when `FarClipMax` is set at start-up, independently of the fog hooks. |
+| Hooks | Five 5-byte call displacements: the world render call (`0x4FB03D`, stock-fog override and restore), after the opaque M2 pass (`0x4F911D`, captures world inputs), the liquid surface pass (`0x4F9170`, forces depth writes), world-name text (`0x7E5818`, suppresses depth writes), and before the frame effects (`0x4F9281`, draws fog over the completed world). The original bytes are checked first; on any mismatch nothing is patched. Two more retarget the far-clip clamp calls (`0x780810`, `0x781444`) when `FarClipMax` is set at start-up, independently of the fog hooks. |
 | State | Every state the passes touch is captured with a recorded state block and restored, plus render targets, depth and stream 0 (whose offset state blocks drop). The client's shader-constant cache stays valid. |
 | Overlay | When a fog device is created, the device window's procedure is chained so the settings window sees input first, and the wrapper's `Present` draws the window over the finished frame (see In-game settings). |
 
@@ -137,11 +139,19 @@ Engine notes behind the code:
   `D3DVIEWPORT9::MaxZ` by the D3D9 backend (`0x6A9ACC`). The Gx viewport (`[[0xC5DF88] + 0xF80]`, MinZ/MaxZ) is stored
   by `0x681890` and uploaded lazily on the next draw or clear (`0x6A99E0`), so after the opaque pass the device can
   still hold the sky's `[0.999, 1]`; the capture reads MinZ/MaxZ from the Gx viewport, which the sky and WDL passes
-  restore (`0x7F0CB3`, `0x796466`). The WDL uses its own projection (`0x7960EB`); the sky viewport is set at
+  restore (`0x7F0CB3`, `0x796466`). The WDL sets its own viewport (`0x7960EB`); the sky viewport is set at
   `0x7F0A79` and the sky writes no depth, so depth at or above max(deepest world depth, 0.99903) is sky. The engine
   builds its projection with `0x6BF370` (OpenGL depth range, w = view z).
 - Liquid depth. While writes are forced on, the wrapper records the client's own `D3DRS_ZWRITEENABLE` requests and
   re-applies the last one afterwards, so the client's render-state cache stays accurate.
+- World-name text. `0x7E5818` contains `E8 23 76 ED FF`, calling `0x6BCE40` with the font batch at `[0xD380A8]`.
+  This cdecl wrapper takes one pointer and tail-jumps to `0x6C53A0`. The batch is created by `0x6BF160(1, 1)` at
+  `0x7E6511`. Its bit 0 at `+8` selects world rendering (`0x6C5564`), which requests Gx state 13 = 1 for depth
+  testing (`0x6C5591`/`0x6C5596`) and state 15 = 1 for depth writes (`0x6C55BE`/`0x6C55C3`). The Gx state-15
+  dispatch at `0x6A8F99` calls D3D9 `SetRenderState` with state 14, `D3DRS_ZWRITEENABLE`, at `0x6A8FC7`.
+  Suppressing writes around this call keeps glyphs out of the depth sampled for fog shadows while preserving
+  the original draw and depth comparison. The wrapper restores the client's last requested write state even
+  when the draw changes it. The later name/icon path at `0x4FB042` is left in place.
 - Screen effects. FFX end runs the current effect `[0xD45780]` when the `ffx` CVar (`[0xD45774]`, int at `+0x30`) and
   the effect's own CVar (`+4`) are on. The glow effect `[0xB74364]` keeps `ffxGlow` there (`0x8BFEDB`); `0x4F8770`
   feeds it the DayNight glow (`0xD38C2C`) as the additive weight of `lerp(screen, blur, other) + g·blur²`, where
@@ -330,9 +340,12 @@ through the same entry the hook uses, and checks:
 - native hardware shadow comparison and float-depth maps, coverage transitions and off-screen blockers;
 - point-light attenuation and selection, narrow ray/light intersections, HDR bounds and interior transitions;
 - screen-space shadows for distant rocks, angled rays, nearer blockers, clear sky and foreground silhouettes;
-  full fog integration verifies blocked sunlight, retained ambient light and the Light shafts switch at every quality;
+  full fog integration verifies blocked sunlight behind nearer silhouettes, retained ambient light and the
+  Light shafts switch at every quality;
 - thin silhouettes and world-anchored density variation;
-- liquid depth-write restoration after native state blocks, and malformed fog-data counts and index ranges;
+- name text retaining its colour and depth test without changing world depth; text and liquid depth-write
+  overrides restoring the client's state, including native state blocks;
+- malformed fog-data counts and index ranges;
 - `OverlayKey` parsing, and saving from the settings window into a copy of the shipped INI (only changed lines
   rewritten, comments kept, restart-only keys untouched, values clamped like the INI, Revert);
 - the overlay hotkey through the chained window procedure, clicks and keys routed to the window or the client,
@@ -413,12 +426,13 @@ the native client's systems.
 - The current march and composite kernels require more than the 512 instruction slots guaranteed by
   [baseline pixel shader 3.0](
   https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/dx9-graphics-reference-asm-ps-3-0).
-  The largest current pass uses 1,013 slots, 32 temporary registers and four nested loops. Lower quality reduces
+  The largest current pass uses 1,016 slots, 31 temporary registers and four nested loops. Lower quality reduces
   integration work, not this static shader requirement. An unsupported required shader disables volumetric fog
   for that device and logs its name, HRESULT and available shader caps; native fog remains the fallback.
   Device-loss and memory-allocation failures are retried instead of being cached as unsupported.
 - World shadows follow the client's shadow-light direction and available map coverage. The visible celestial
-  sprite can use a different direction. Screen-space fallback cannot include unseen blockers.
+  sprite can use a different direction. Screen-space fallback cannot include unseen blockers; its conservative
+  treatment of depth silhouettes can darken fog where geometry hidden behind them would permit light.
 - Local lighting captures the current M2 scene's point-light table. It does not create spotlight cones, local
   shadow maps or guarantee coverage of every WMO-only light. Influence is capped at 200 yd, with a smooth outer
   fade and an attenuation denominator floor of 1 to bound the point emitter's near-field brightness.

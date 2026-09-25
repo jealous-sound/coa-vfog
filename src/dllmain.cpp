@@ -93,6 +93,11 @@ extern "C" int __cdecl vf_test_render(const FrameInputs* in, const char** skipRe
     return RenderFog(LatestFogDevice(), *in, GlobalConfig().Get(), skipReason) ? 1 : 0;
 }
 
+extern "C" void __cdecl vf_test_suppress_depth_write(int suppress)
+{
+    SuppressDepthWrite(LatestFogDevice(), suppress != 0);
+}
+
 extern "C" int __cdecl vf_test_adaptive_lighting_history()
 {
     return AdaptiveLightingHistory(LatestFogDevice()) ? 1 : 0;
