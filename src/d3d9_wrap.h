@@ -25,5 +25,7 @@ bool BeginRenderedMaterialFog(FogDevice* device);
 bool BeginNativeGlare(FogDevice* device);
 void EndNativeGlare(FogDevice* device);
 bool MaterialFogCompatible(FogDevice* device);
+void SetMaterialFogRequested(FogDevice* device, bool requested);
+const char* MaterialFogFailureReason(FogDevice* device);
 bool AdaptiveLightingHistory(FogDevice* device);
 void EndMaterialFog(FogDevice* device);

@@ -2,6 +2,7 @@
 #include "engine.h"
 #include "fog_data.h"
 #include "fog_model.h"
+#include "fixed_function_material.h"
 #include "fog_volume.h"
 #include "noise_volume.h"
 #include "shader_instrumentation.h"
@@ -766,7 +767,7 @@ FrameInputs ContinentFrame(int map, Vec3 eye, float dayFraction, Vec3 toLight, b
     return in;
 }
 
-void CheckStormFogFollowsClientDirectLight(const FogData& data)
+void CheckAuthoredFogFollowsClientDirectLight(const FogData& data)
 {
     const Config cfg = {};
     const Vec3 goldshire = {-9456.8f, 54.7f, 59.6f};
@@ -802,9 +803,85 @@ void CheckStormFogFollowsClientDirectLight(const FogData& data)
     bool duskwoodResolved =
         data.Resolve(kEasternKingdoms, clearDuskwood.camPos, sixPm, clearDuskwood.lightParams, duskwoodFog);
     FogParams duskwood = BuildFogParams(clearDuskwood, cfg, &duskwoodFog);
-    std::printf("     Darkshire clear 18:00: direct light match %.2f\n", duskwood.directLightMatch);
-    Check(duskwoodResolved && duskwood.directLightMatch == 1.0f,
-          "clear weather keeps Classic's authored sun scattering where the client's light is darker");
+    std::printf("     Darkshire clear 18:00: direct light match %.5f, Classic RGB %.4f %.4f %.4f\n",
+                duskwood.directLightMatch, duskwoodFog.classicDirectLight[0], duskwoodFog.classicDirectLight[1],
+                duskwoodFog.classicDirectLight[2]);
+    Check(duskwoodResolved && std::fabs(duskwood.directLightMatch - 0.342745f) < 0.00001f,
+          "clear Darkshire fog follows the client's dimmer direct light in linear colour space");
+
+    AuthoredFog missingDirectLight = duskwoodFog;
+    missingDirectLight.hasClassicDirectLight = false;
+    const FogParams uncalibrated = BuildFogParams(clearDuskwood, cfg, &missingDirectLight);
+    bool diffuseMatched = true;
+    bool mediumPreserved = true;
+    for (int i = 0; i < kSceneLayers; ++i)
+    {
+        const FogLayer& actual = duskwood.layers[i];
+        const FogLayer& original = uncalibrated.layers[i];
+        mediumPreserved &= actual.density == original.density && actual.g == original.g &&
+                           actual.start == original.start && actual.endDistance == original.endDistance &&
+                           actual.strength == original.strength && actual.exponent == original.exponent &&
+                           actual.upperHeight == original.upperHeight && actual.upperFalloff == original.upperFalloff &&
+                           actual.lowerHeight == original.lowerHeight && actual.lowerFalloff == original.lowerFalloff &&
+                           actual.shadowDensity == original.shadowDensity && actual.shadowed == original.shadowed;
+        for (int channel = 0; channel < 3; ++channel)
+        {
+            diffuseMatched &= Near(actual.diffuse[channel], original.diffuse[channel] * duskwood.directLightMatch);
+            mediumPreserved &= actual.emissive[channel] == original.emissive[channel] &&
+                               actual.shadowEmissive[channel] == original.shadowEmissive[channel];
+        }
+    }
+    Check(diffuseMatched, "direct-light calibration scales every authored diffuse channel without shifting its hue");
+    Check(mediumPreserved &&
+              Near(SunlitLevelRayOpacity(duskwood, clearDuskwood.camPos[2], 1000.0f),
+                   SunlitLevelRayOpacity(uncalibrated, clearDuskwood.camPos[2], 1000.0f)),
+          "clear-light calibration preserves fog density, height, phase, opacity and ambient emission");
+    Check(std::memcmp(duskwood.rayColor, uncalibrated.rayColor, sizeof(duskwood.rayColor)) == 0 &&
+              std::memcmp(&duskwood.layers[kDistanceFogLayer], &uncalibrated.layers[kDistanceFogLayer],
+                          sizeof(FogLayer)) == 0,
+          "authored direct-light calibration preserves the halo hue and already client-lit distance fog");
+    Check(uncalibrated.directLightMatch == 1.0f,
+          "missing Classic direct-light data preserves the authored diffuse contribution");
+
+    Config gamma = cfg;
+    gamma.colorSpace = 0;
+    const FogParams gammaDuskwood = BuildFogParams(clearDuskwood, gamma, &duskwoodFog);
+    Check(std::fabs(gammaDuskwood.directLightMatch - 0.647823f) < 0.00001f,
+          "clear direct-light matching uses the selected gamma colour space consistently");
+
+    FrameInputs clearWhite = clearDuskwood;
+    clearWhite.directColor = kWhiteDirectLight;
+    Check(BuildFogParams(clearWhite, cfg, &duskwoodFog).directLightMatch == 1.0f,
+          "clear client lighting brighter than Classic never boosts authored scattering");
+    FrameInputs dark = clearDuskwood;
+    dark.directColor = 0xFF000000;
+    const FogParams noDirectLight = BuildFogParams(dark, cfg, &duskwoodFog);
+    Check(noDirectLight.directLightMatch == 0.0f && noDirectLight.layers[0].diffuse[2] == 0.0f &&
+              noDirectLight.layers[0].emissive[2] == duskwood.layers[0].emissive[2] &&
+              noDirectLight.layers[0].density == duskwood.layers[0].density,
+          "black client direct light removes direct scattering while retaining the medium and its ambient light");
+
+    AuthoredFog nearBlackReference = duskwoodFog;
+    for (float& channel : nearBlackReference.classicDirectLight)
+        channel = 0.0001f;
+    Check(BuildFogParams(clearDuskwood, cfg, &nearBlackReference).directLightMatch == 1.0f,
+          "an unusably dark Classic reference keeps the existing authored-light fallback");
+
+    FrameInputs mixedWeather = clearDuskwood;
+    mixedWeather.lightParams = Storm(0.5f);
+    const FogParams mixed = BuildFogParams(mixedWeather, cfg, &duskwoodFog);
+    FrameInputs selectedEffect = clearDuskwood;
+    selectedEffect.lightParams = ScreenEffectSlot(FogData::kDeathSlot, 1.0f);
+    AuthoredFog selectedFog = {};
+    const bool selectedResolved = data.Resolve(kEasternKingdoms, selectedEffect.camPos, sixPm,
+                                              selectedEffect.lightParams, selectedFog);
+    const FogParams selected = BuildFogParams(selectedEffect, cfg, &selectedFog);
+    FrameInputs selectedStorm = selectedEffect;
+    selectedStorm.lightParams = Storm(1.0f);
+    const FogParams selectedReference = BuildFogParams(selectedStorm, cfg, &selectedFog);
+    Check(Near(mixed.directLightMatch, duskwood.directLightMatch) && selectedResolved &&
+              Near(selected.directLightMatch, selectedReference.directLightMatch),
+          "resolved weather and screen-effect lighting receive one consistent direct-light calibration");
 }
 
 void CheckDenseClassicFogAtHarbourSunset(const FogData& data)
@@ -1414,6 +1491,7 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "lighting_history_checks.h"
 #include "shader_instrumentation_checks.h"
 #include "material_fog_checks.h"
+#include "fixed_function_material_checks.h"
 
 void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3 at,
                                    const float* proj, const D3DVIEWPORT9& world)
@@ -1453,7 +1531,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckStormBlendsLayersByClassicIndex(classic);
     CheckScreenEffectLightSlot(classic);
     CheckZoneLights(classic);
-    CheckStormFogFollowsClientDirectLight(classic);
+    CheckAuthoredFogFollowsClientDirectLight(classic);
     CheckDenseClassicFogAtHarbourSunset(classic);
     CheckThinClassicFogAtHyjalMidnight(classic);
     CheckFogThinsIntoFoglessClassicLight(classic);
@@ -1530,6 +1608,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
 
     h.CreateEngineObjects();
     CheckShaderInstrumentation(h.dev);
+    CheckFixedFunctionMaterials(h.dev);
     CheckRuntimeMaterialFog(h.dev);
     CheckFogIntegration(h.dev);
     CheckLocalLightInputs();

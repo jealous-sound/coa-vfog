@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 namespace
@@ -185,6 +186,7 @@ void OnOpaqueDone()
     engine::CaptureOpaqueState(RealDevice(device));
     ReloadConfigAfterInterval();
     const Config& cfg = GlobalConfig().Get();
+    SetMaterialFogRequested(device, cfg.materialFog);
     if (cfg.materialFog && cfg.debugView == 0 && cfg.stockFog == 1 && MaterialFogCompatible(device))
     {
         g_opaqueFogRendered = RenderCurrentWorldFog(device, true);
@@ -522,7 +524,12 @@ FogFrameStatus LastFogFrameStatus()
     if (g_renderedLastFrame)
     {
         if (GlobalConfig().Get().materialFog && !MaterialFogCompatible(GameFogDevice()))
-            return {true, "Material fog compatibility fallback; see CoAVolFog.log"};
+        {
+            static char reason[512];
+            std::snprintf(reason, sizeof(reason), "Material fog unavailable: %s. Using final-pass fog. "
+                          "Turn Material fog off and on to retry.", MaterialFogFailureReason(GameFogDevice()));
+            return {true, reason};
+        }
         return {true, ""};
     }
     return {false, *g_lastSkip ? g_lastSkip : "waiting for the world to render"};

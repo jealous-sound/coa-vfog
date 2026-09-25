@@ -253,12 +253,6 @@ bool HaloHue(const AuthoredFog& fog, float* displayReferredRgb)
     return true;
 }
 
-float WeatherStormWeight(const LightParamsSelection& selection)
-{
-    return selection.screenEffectSlot == kNoScreenEffectLightSlot ? std::clamp(selection.stormBlend, 0.0f, 1.0f)
-                                                                   : 0.0f;
-}
-
 float InteriorWeight(const FrameInputs& in, const Config& cfg)
 {
     return cfg.interiorAware && in.localLights.cameraInterior && std::isfinite(in.localLights.interiorBlend)
@@ -329,8 +323,7 @@ FogParams BuildFogParams(const FrameInputs& in, const Config& cfg, const Authore
     p.directLightMatch = 1.0f;
     if (p.authored)
     {
-        const float stormLightMatch = ClientToClassicDirectLight(*authored, p.lightColor, p.linear);
-        p.directLightMatch = 1.0f + (stormLightMatch - 1.0f) * WeatherStormWeight(in.lightParams);
+        p.directLightMatch = ClientToClassicDirectLight(*authored, p.lightColor, p.linear);
         AuthoredLayers(*authored, cfg, p, cfg.sunScatter * p.directLightMatch, p.layers);
         HaloHue(*authored, p.rayColor);
         DistanceLayer(in, cfg, p, elevationFadedScatter, fogColor, distanceFog);

@@ -61,6 +61,8 @@ public:
     void EndGlare() { m_renderer.EndNativeGlare(m_real); }
     void EndMaterial() { m_materialFog.End(); }
     bool MaterialCompatible() const { return m_materialFog.Compatible(); }
+    void SetMaterialRequested(bool requested) { m_materialFog.SetRequested(requested); }
+    const char* MaterialFailureReason() const { return m_materialFog.FailureReason(); }
     bool AdaptiveLightingHistory() const { return m_renderer.AdaptiveLightingHistory(); }
     void ForceDepthWrite(bool force)
     {
@@ -876,6 +878,17 @@ void EndNativeGlare(FogDevice* device)
 bool MaterialFogCompatible(FogDevice* device)
 {
     return device && device->MaterialCompatible();
+}
+
+void SetMaterialFogRequested(FogDevice* device, bool requested)
+{
+    if (device)
+        device->SetMaterialRequested(requested);
+}
+
+const char* MaterialFogFailureReason(FogDevice* device)
+{
+    return device ? device->MaterialFailureReason() : "device unavailable";
 }
 
 bool AdaptiveLightingHistory(FogDevice* device)

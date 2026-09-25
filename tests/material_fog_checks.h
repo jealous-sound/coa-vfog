@@ -5,6 +5,8 @@
 extern "C" __declspec(dllimport) int __cdecl vf_test_begin_material_fog(const MaterialFogVolume*);
 extern "C" __declspec(dllimport) int __cdecl vf_test_begin_rendered_material_fog();
 extern "C" __declspec(dllimport) int __cdecl vf_test_material_fog_compatible();
+extern "C" __declspec(dllimport) void __cdecl vf_test_material_fog_requested(int);
+extern "C" __declspec(dllimport) const char* __cdecl vf_test_material_fog_failure();
 extern "C" __declspec(dllimport) void __cdecl vf_test_end_material_fog();
 extern "C" __declspec(dllimport) int __cdecl vf_test_begin_native_glare();
 extern "C" __declspec(dllimport) void __cdecl vf_test_end_native_glare();
@@ -208,6 +210,21 @@ void Run(IDirect3DDevice9* device)
     float unsupported[3] = {};
     Check(fixture.Draw(2, 4, 4, false, unsupported) && !vf_test_material_fog_compatible(),
           "unsupported world blending switches subsequent frames to post-world fog");
+    Check(std::strcmp(vf_test_material_fog_failure(), "unsupported colour blend equation") == 0,
+          "material fallback exposes the exact unsupported draw reason");
+    vf_test_material_fog_requested(1);
+    Check(!vf_test_material_fog_compatible(), "holding Material fog enabled does not retry every frame");
+    vf_test_material_fog_requested(0);
+    Check(!vf_test_material_fog_compatible(), "disabling Material fog retains the recorded failure");
+    vf_test_material_fog_requested(1);
+    Check(vf_test_material_fog_compatible() && !vf_test_material_fog_failure()[0],
+          "explicit off/on clears material fallback and its stale diagnostic");
+    float retried[3] = {};
+    Check(fixture.Draw(2, 0, 4, false, retried) && vf_test_material_fog_compatible() &&
+              std::fabs(retried[0] - (0.4f * (1 - 128.0f / 255.0f) + 64.0f / 255.0f)) < 3.0f / 255.0f,
+          "a material compatibility retry resumes own-depth fog without a device reset");
+    Check(fixture.Draw(2, 4, 4, false, unsupported) && !vf_test_material_fog_compatible(),
+          "unsupported blending is still rejected after an explicit retry");
 }
 }
 

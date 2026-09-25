@@ -1,5 +1,6 @@
 #include "material_fog.h"
 
+#include "fixed_function_material.h"
 #include "log.h"
 
 #include <algorithm>
@@ -37,6 +38,51 @@ template <class T> bool ReadShader(T* shader, std::vector<DWORD>& code)
     code.resize(bytes / sizeof(DWORD));
     return SUCCEEDED(shader->GetFunction(code.data(), &bytes));
 }
+
+void LogLegacyMaterialState(IDirect3DDevice9* device, bool vertex, bool pixel)
+{
+    DWORD fvf = 0;
+    DWORD lighting = 0;
+    DWORD blend = 0;
+    DWORD source = 0;
+    DWORD destination = 0;
+    device->GetFVF(&fvf);
+    device->GetRenderState(D3DRS_LIGHTING, &lighting);
+    device->GetRenderState(D3DRS_ALPHABLENDENABLE, &blend);
+    device->GetRenderState(D3DRS_SRCBLEND, &source);
+    device->GetRenderState(D3DRS_DESTBLEND, &destination);
+    VF_LOG_INFO("legacy material state: missing VS %u, PS %u; FVF %08lX, lighting %lu, blend %lu/%lu/%lu",
+                vertex ? 1u : 0u, pixel ? 1u : 0u, fvf, lighting, blend, source, destination);
+    IDirect3DVertexDeclaration9* declaration = nullptr;
+    if (SUCCEEDED(device->GetVertexDeclaration(&declaration)) && declaration)
+    {
+        D3DVERTEXELEMENT9 elements[MAXD3DDECLLENGTH + 1] = {};
+        UINT count = MAXD3DDECLLENGTH + 1;
+        if (SUCCEEDED(declaration->GetDeclaration(elements, &count)))
+            for (UINT index = 0; index < count && elements[index].Stream != 0xFF; ++index)
+            {
+                const auto& element = elements[index];
+                VF_LOG_INFO("legacy material input: stream %u offset %u type %u usage %u index %u",
+                            element.Stream, element.Offset, element.Type, element.Usage, element.UsageIndex);
+            }
+        declaration->Release();
+    }
+    for (DWORD stage = 0; stage < kFixedFunctionTextureStages; ++stage)
+    {
+        DWORD colour = D3DTOP_DISABLE;
+        DWORD alpha = D3DTOP_DISABLE;
+        DWORD coordinate = 0;
+        DWORD transform = 0;
+        device->GetTextureStageState(stage, D3DTSS_COLOROP, &colour);
+        device->GetTextureStageState(stage, D3DTSS_ALPHAOP, &alpha);
+        device->GetTextureStageState(stage, D3DTSS_TEXCOORDINDEX, &coordinate);
+        device->GetTextureStageState(stage, D3DTSS_TEXTURETRANSFORMFLAGS, &transform);
+        if (colour == D3DTOP_DISABLE)
+            break;
+        VF_LOG_INFO("legacy material stage %lu: colour %lu, alpha %lu, coordinates %08lX, transform %lu",
+                    stage, colour, alpha, coordinate, transform);
+    }
+}
 }
 
 struct MaterialFog::ShaderPair
@@ -46,6 +92,7 @@ struct MaterialFog::ShaderPair
     IDirect3DVertexShader9* fogVertex = nullptr;
     IDirect3DPixelShader9* fogPixel = nullptr;
     FogMaterialResources resources;
+    std::vector<DWORD> fixedKey;
     unsigned long long used = 0;
     bool ready = false;
 
@@ -68,6 +115,10 @@ struct MaterialFog::SavedDraw
     DWORD samplerStates[kAtlasSamplerStateCount] = {};
     DWORD fogEnabled = FALSE;
     float constants[kFogMaterialConstantCount][4] = {};
+    float vertexConstants[kFixedFunctionVertexConstantCount][4] = {};
+    float pixelConstants[kFixedFunctionPixelConstantCount][4] = {};
+    UINT vertexConstantCount = 0;
+    UINT pixelConstantCount = 0;
     bool changed = false;
 
     void Clear()
@@ -76,6 +127,8 @@ struct MaterialFog::SavedDraw
         ReleasePointer(pixel);
         ReleasePointer(texture);
         device = nullptr;
+        vertexConstantCount = 0;
+        pixelConstantCount = 0;
         changed = false;
     }
 
@@ -109,7 +162,7 @@ void MaterialFog::End()
     Restore();
     if (m_volume.atlas && m_unsupportedDraws)
         VF_LOG_INFO("material fog compatibility fallback: %u fogged draws, %u unsupported draws; "
-                    "using post-world fog from the next frame until the device resets",
+                    "using post-world fog until Material fog is toggled off/on or the device resets",
                     m_appliedDraws, m_unsupportedDraws);
     m_volume = {};
 }
@@ -120,11 +173,23 @@ void MaterialFog::Release()
     m_pairs.clear();
     m_compatible = true;
     m_fallbacksLogged = 0;
+    m_failure.clear();
+}
+
+void MaterialFog::SetRequested(bool requested)
+{
+    if (requested && !m_requested && !m_compatible)
+    {
+        Release();
+        VF_LOG_INFO("material fog compatibility retry requested");
+    }
+    m_requested = requested;
 }
 
 void MaterialFog::LogFallback(const char* reason)
 {
     m_compatible = false;
+    m_failure = reason;
     ++m_unsupportedDraws;
     if (m_fallbacksLogged++ < kMaterialFallbackLogLimit)
         VF_LOG_INFO("material fog left a draw unchanged: %s", reason);
@@ -188,11 +253,12 @@ bool MaterialFog::ReadBlendMode(IDirect3DDevice9* device, float& premultiplied, 
 }
 
 MaterialFog::ShaderPair* MaterialFog::FindOrCreatePair(IDirect3DDevice9* device, IDirect3DVertexShader9* vertex,
-                                                      IDirect3DPixelShader9* pixel)
+                                                      IDirect3DPixelShader9* pixel,
+                                                      const FixedFunctionMaterialState& fixed)
 {
     ++m_serial;
     for (const auto& pair : m_pairs)
-        if (pair->originalVertex == vertex && pair->originalPixel == pixel)
+        if (pair->originalVertex == vertex && pair->originalPixel == pixel && pair->fixedKey == fixed.key)
         {
             pair->used = m_serial;
             if (!pair->ready)
@@ -206,16 +272,22 @@ MaterialFog::ShaderPair* MaterialFog::FindOrCreatePair(IDirect3DDevice9* device,
     auto pair = std::make_unique<ShaderPair>();
     pair->originalVertex = vertex;
     pair->originalPixel = pixel;
-    vertex->AddRef();
-    pixel->AddRef();
+    if (vertex)
+        vertex->AddRef();
+    if (pixel)
+        pixel->AddRef();
+    pair->fixedKey = fixed.key;
     pair->used = m_serial;
     std::vector<DWORD> vertexCode;
     std::vector<DWORD> pixelCode;
     FogMaterialShaders shaders;
     std::string failure;
-    if (!ReadShader(vertex, vertexCode) || !ReadShader(pixel, pixelCode))
+    const bool generated = (!fixed.vertex && !fixed.pixel) ||
+                           BuildFixedFunctionMaterialShaders(fixed, vertexCode, pixelCode, failure);
+    if (generated && ((vertex && !ReadShader(vertex, vertexCode)) || (pixel && !ReadShader(pixel, pixelCode))))
         failure = "material bytecode could not be read";
-    else if (InstrumentFogMaterialShaders(vertexCode.data(), vertexCode.size(), pixelCode.data(), pixelCode.size(),
+    else if (generated && InstrumentFogMaterialShaders(vertexCode.data(), vertexCode.size(),
+                                          pixelCode.data(), pixelCode.size(),
                                           shaders, failure))
     {
         if (SUCCEEDED(device->CreateVertexShader(shaders.vertex.data(), &pair->fogVertex)) &&
@@ -228,7 +300,11 @@ MaterialFog::ShaderPair* MaterialFog::FindOrCreatePair(IDirect3DDevice9* device,
             failure = "the driver rejected the instrumented material shaders";
     }
     if (!pair->ready)
+    {
+        if ((fixed.vertex || fixed.pixel) && m_fallbacksLogged < kMaterialFallbackLogLimit)
+            LogLegacyMaterialState(device, fixed.vertex, fixed.pixel);
         LogFallback(failure.c_str());
+    }
     m_pairs.push_back(std::move(pair));
     return m_pairs.back().get();
 }
@@ -250,17 +326,27 @@ bool MaterialFog::Apply(IDirect3DDevice9* device)
         return false;
     Restore();
     SavedDraw& saved = *m_saved;
-    if (FAILED(device->GetVertexShader(&saved.vertex)) || FAILED(device->GetPixelShader(&saved.pixel)) ||
-        !saved.vertex || !saved.pixel)
+    if (FAILED(device->GetVertexShader(&saved.vertex)) || FAILED(device->GetPixelShader(&saved.pixel)))
     {
         saved.Clear();
-        LogFallback("fixed function materials have no programmable shader pair");
+        LogFallback("material shader bindings could not be read");
         return false;
     }
     ShaderPair* pair = nullptr;
+    FixedFunctionMaterialState fixed;
     try
     {
-        pair = FindOrCreatePair(device, saved.vertex, saved.pixel);
+        std::string failure;
+        if ((!saved.vertex || !saved.pixel) &&
+            !CaptureFixedFunctionMaterial(device, !saved.vertex, !saved.pixel, fixed, failure))
+        {
+            if (m_fallbacksLogged < kMaterialFallbackLogLimit)
+                LogLegacyMaterialState(device, !saved.vertex, !saved.pixel);
+            saved.Clear();
+            LogFallback(failure.c_str());
+            return false;
+        }
+        pair = FindOrCreatePair(device, saved.vertex, saved.pixel, fixed);
     }
     catch (const std::bad_alloc&)
     {
@@ -274,6 +360,8 @@ bool MaterialFog::Apply(IDirect3DDevice9* device)
         return false;
     }
     saved.resources = pair->resources;
+    saved.vertexConstantCount = fixed.vertexConstantCount;
+    saved.pixelConstantCount = fixed.pixelConstantCount;
     bool read = SUCCEEDED(device->GetPixelShaderConstantF(saved.resources.constantBase, &saved.constants[0][0],
                                                           kFogMaterialConstantCount)) &&
                 SUCCEEDED(device->GetTexture(saved.resources.sampler, &saved.texture)) &&
@@ -281,6 +369,12 @@ bool MaterialFog::Apply(IDirect3DDevice9* device)
     for (size_t index = 0; index < kAtlasSamplerStateCount && read; ++index)
         read = SUCCEEDED(device->GetSamplerState(saved.resources.sampler, kAtlasSamplerStates[index],
                                                   &saved.samplerStates[index]));
+    if (read && saved.vertexConstantCount)
+        read = SUCCEEDED(device->GetVertexShaderConstantF(0, &saved.vertexConstants[0][0],
+                                                           saved.vertexConstantCount));
+    if (read && saved.pixelConstantCount)
+        read = SUCCEEDED(device->GetPixelShaderConstantF(0, &saved.pixelConstants[0][0],
+                                                          saved.pixelConstantCount));
     if (!read)
     {
         saved.Clear();
@@ -296,7 +390,14 @@ bool MaterialFog::Apply(IDirect3DDevice9* device)
         {premultiplied, additive, m_volume.linear ? (m_volume.sceneCopy ? 1.0f : 2.0f) : 0.0f, m_volume.glow},
     };
     bool applied = SUCCEEDED(device->SetVertexShader(pair->fogVertex)) &&
-                   SUCCEEDED(device->SetPixelShader(pair->fogPixel)) &&
+                   SUCCEEDED(device->SetPixelShader(pair->fogPixel));
+    if (applied && fixed.vertexConstantCount)
+        applied = SUCCEEDED(device->SetVertexShaderConstantF(0, &fixed.vertexConstants[0][0],
+                                                              fixed.vertexConstantCount));
+    if (applied && fixed.pixelConstantCount)
+        applied = SUCCEEDED(device->SetPixelShaderConstantF(0, &fixed.pixelConstants[0][0],
+                                                             fixed.pixelConstantCount));
+    applied = applied &&
                    SUCCEEDED(device->SetTexture(saved.resources.sampler, m_volume.atlas)) &&
                    SUCCEEDED(device->SetPixelShaderConstantF(saved.resources.constantBase, &uniforms[0][0],
                                                              kFogMaterialConstantCount)) &&
@@ -324,6 +425,10 @@ void MaterialFog::Restore()
         device->SetPixelShader(saved.pixel);
         device->SetPixelShaderConstantF(saved.resources.constantBase, &saved.constants[0][0],
                                         kFogMaterialConstantCount);
+        if (saved.vertexConstantCount)
+            device->SetVertexShaderConstantF(0, &saved.vertexConstants[0][0], saved.vertexConstantCount);
+        if (saved.pixelConstantCount)
+            device->SetPixelShaderConstantF(0, &saved.pixelConstants[0][0], saved.pixelConstantCount);
         device->SetTexture(saved.resources.sampler, saved.texture);
         for (size_t index = 0; index < kAtlasSamplerStateCount; ++index)
             device->SetSamplerState(saved.resources.sampler, kAtlasSamplerStates[index], saved.samplerStates[index]);

@@ -128,6 +128,16 @@ extern "C" int __cdecl vf_test_material_fog_compatible()
     return MaterialFogCompatible(LatestFogDevice()) ? 1 : 0;
 }
 
+extern "C" void __cdecl vf_test_material_fog_requested(int requested)
+{
+    SetMaterialFogRequested(LatestFogDevice(), requested != 0);
+}
+
+extern "C" const char* __cdecl vf_test_material_fog_failure()
+{
+    return MaterialFogFailureReason(LatestFogDevice());
+}
+
 extern "C" int __cdecl vf_test_overlay_visible()
 {
     return OverlayVisible() ? 1 : 0;

@@ -110,7 +110,8 @@ bool DrawDensity(Config& c)
     const Section section("Density", ImGuiTreeNodeFlags_DefaultOpen);
     if (!section)
         return false;
-    bool changed = Multiplier("Density", c.density, "Global density multiplier");
+    bool changed = Multiplier("Density", c.density,
+                              "Fog thickness affects visibility and scattered light. Use Sun scatter for the halo.");
     changed |= Multiplier("Haze", c.haze, "Distance haze where no Classic data exists");
     changed |= Multiplier("Ground fog", c.groundFog, "Low ground mist where no Classic data exists");
     changed |= Multiplier("Distance fog", c.farFog, "The distance fog that replaces the stock fog");
@@ -138,7 +139,7 @@ bool DrawLight(Config& c)
     bool changed = Multiplier("Sun scatter", c.sunScatter, "In-scattered sun or moon light: the halo and the shafts");
     changed |= Multiplier("Ambient", c.ambient, "Ambient fog brightness");
     changed |= Multiplier("Exposure", c.exposure, "Brightness of the layers used where no Classic data exists");
-    changed |= Multiplier("Classic exposure", c.classicExposure, "Brightness of the Classic layers, 1 = as authored");
+    changed |= Multiplier("Classic exposure", c.classicExposure, "Brightness of the Classic layers, 1 = default");
     changed |= Toggle("Linear light", c.colorSpace,
                       "Scatter and blend in linear light like the modern client, with a soft highlight roll-off. "
                       "Off: gamma");

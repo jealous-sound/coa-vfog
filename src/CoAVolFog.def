@@ -12,6 +12,8 @@ EXPORTS
     vf_test_end_native_glare
     vf_test_end_material_fog
     vf_test_material_fog_compatible
+    vf_test_material_fog_requested
+    vf_test_material_fog_failure
     vf_test_force_depth_write
     vf_test_overlay_visible
     vf_test_draw_overlay

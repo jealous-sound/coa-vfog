@@ -90,6 +90,7 @@ add_library(CoAVolFog SHARED
     src/engine.cpp
     src/engine_lights.cpp
     src/engine_shadows.cpp
+    src/fixed_function_material.cpp
     src/fog_data.cpp
     src/fog_model.cpp
     src/hooks.cpp
@@ -112,7 +113,8 @@ target_link_libraries(version PRIVATE CoAVolFog)
 target_compile_definitions(version PRIVATE WIN32_LEAN_AND_MEAN)
 
 add_executable(vfog_harness tests/harness.cpp src/config.cpp src/engine_lights.cpp
-               src/fog_data.cpp src/fog_model.cpp src/log.cpp src/noise_volume.cpp src/shader_instrumentation.cpp)
+               src/fixed_function_material.cpp src/fog_data.cpp src/fog_model.cpp src/log.cpp
+               src/noise_volume.cpp src/shader_instrumentation.cpp)
 target_include_directories(vfog_harness PRIVATE src ${SHADER_OUT})
 target_compile_definitions(vfog_harness PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(vfog_harness PRIVATE CoAVolFog user32 ole32 windowscodecs)

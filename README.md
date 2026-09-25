@@ -25,11 +25,12 @@ slot a screen effect forces (the ghost effect forces slot 4, death), otherwise c
 blended toward storm (slot 2) by the client's storm weight. The DLL interpolates the two time keys around
 the current time and pairs layers by their Classic layer index; a layer only one side has keeps its
 colours and shape and has its density scaled by that side's weight. Each time key also keeps Classic's direct
-light colour, blended the same way. In a storm the fog's sun scattering is scaled toward the client's direct
-light luminance over Classic's (at most 1, weighted by the storm weight): 3.3.5 storms are lit far darker than
-Classic's (0.41 at 20:00 in Goldshire), so the storm fog no longer glows like a Classic storm in front of a grey
-scene. Clear weather keeps the authored scattering, which zones like Duskwood rely on although their client
-light is darker than Classic's (0.34 at Darkshire at 18:00). Then it applies the Classic transforms:
+light colour, blended the same way. The fog's sun scattering is scaled by the client's direct-light luminance
+over Classic's, capped at 1, in clear weather, storms and screen-effect conditions. This keeps fog lighting
+consistent with the older client's darker world lighting (about 0.41 in Goldshire's 20:00 storm and 0.34 at
+Darkshire at 18:00 in linear mode). The correction preserves authored hue, extinction and ambient emission;
+it is a compatibility calibration, not a measured reproduction of the modern renderer. Missing or near-black
+Classic reference light leaves the authored scattering unchanged. Then it applies the Classic transforms:
 density ×0.01, heights relative to the player when flag bit 1 is set, sun shadowing for flag bit 0
 (a light below the horizon counts as shadow), `1 + strength·((d − start)/range)^exponent` over a 5,000-yd
 fog range, and scatter intensities up to 10 in linear light. The fog is blended over the scene in linear
@@ -73,9 +74,14 @@ or four at medium/high, then a cumulative pass composes the intervals from front
 requires an FP16 render target; unavailable resources select final-pass fog. Shader-model 2 and 3 vertex/pixel
 pairs are instrumented together, including the depth interpolator, with separate straight-alpha, premultiplied
 and additive treatment. Original shader objects, constants and sampler state are restored after each draw.
-Material processing ends before
-screen effects and the UI. Unsupported material shaders or blending suspend this path until the next device
-reset; the next frame uses final-pass fog. Disabling this option also selects the final world pass.
+Legacy unlit XYZ materials can generate a missing shader stage from their vertex declaration, transforms and
+texture combiners, then use the same instrumentation. The bridge supports up to seven 2D texture stages,
+COUNT2/3/4 transforms and camera-space-position texture generation. When retaining a native pixel shader, a
+missing vertex stage requires shader model 2 and nonprojected texture transforms. Native pixel shader model 3
+with fixed-function vertices retains the compatibility fallback. Material processing ends before screen effects
+and the UI. Unsupported material shaders or blending suspend this path; the next frame uses final-pass fog. The panel
+shows the actual failure reason, and toggling Material fog off and on explicitly retries without restarting.
+A device reset also clears the fallback. Disabling this option selects the final world pass.
 
 The native sun/moon glare draws later with the sky viewport, outside the world-material filter. Its colour is
 captured at the original draw point while retaining the original depth surface and occlusion-query timing.
@@ -170,6 +176,12 @@ Engine notes behind the code:
   world depth at `0x9AC2B1`, and ends it at `0x9AC367`. Terrain/WMO pass `0x7984A0` runs after the opaque hook.
   The glare capture therefore keeps the original timing and depth surface and redirects only its colour output;
   the native model, render-state and viewport stacks remain responsible for their own state restoration.
+- Legacy world materials. Ground spell circles at `0x4F8A40` use the acceptable/unacceptable textures at
+  `0xAC799C`/`0xAC79A0` and camera-space-position texture generation (`0x7E3FE2`, `0x7E400F`, D3D mapping
+  `0x6A413F`). Lightning effects dispatch through `0x7F9EC0` to `0x9AB070`/`0x9AA210`; the source marker is
+  `Common\\Lightning.cpp`. Missile trajectories at `0x6FDFB0` use XYZ positions, packed diffuse colour and UVs.
+  These are relevant legacy material families, not an attribution of the owner's original failing draw.
+  Fallback logging records missing shader stages, declaration elements and texture-stage state to identify it.
 - Far clip. The clamp `0x780770` is cdecl `float(float farclip, int mapId)`, result in ST0, caller pops; it bounds
   the value to `[0xA3E708]` (183.33) .. `[0xA3E710]` (1583.33). Its calls at `0x780810` (in the `farclip` CVar setter
   `0x780800`, also reached from Extensions.dll on zone changes) and `0x781444` (map load `0x781430`) are rare, so the
@@ -333,7 +345,7 @@ through the same entry the hook uses, and checks:
 - Classic light blending and time-key interpolation at a known position against hand-computed values;
 - storm and screen-effect slot selection, layers paired by Classic index, zone-light outlines (interior,
   edge fade, nesting) and the fog thinning into a Classic light without fog;
-- the storm fog's sun scattering following the client's darker storm light;
+- authored fog's sun scattering following the client's darker direct light in clear weather and storms;
 - temporal accumulation converging on a static camera, and identical stationary frames with it disabled;
 - analytic Beer–Lambert opacity for partial cells and thin layers at every march quality, including jitter;
 - previous-depth rejection, world/sky separation and validated bilinear taps in the actual temporal shader;
@@ -342,7 +354,9 @@ through the same entry the hook uses, and checks:
 - point-light attenuation and selection, narrow ray/light intersections, HDR bounds and interior transitions;
 - thin silhouettes, tiled volume depth interpolation and world-anchored density variation;
 - material shader instrumentation, colour and blend matching, all four wrapped draw calls, compatibility
-  fallback and state restoration;
+  fallback, explicit off/on retry and state restoration;
+- legacy unlit material colours against native D3D9, texture combiners and transforms, fragment depth,
+  mixed programmable stages, cached uniform refresh and restoration of shader constants and vertex streams;
 - liquid depth-write restoration after native state blocks, and malformed fog-data counts and index ranges;
 - `OverlayKey` parsing, and saving from the settings window into a copy of the shipped INI (only changed lines
   rewritten, comments kept, restart-only keys untouched, values clamped like the INI, Revert);
@@ -425,7 +439,7 @@ the native client's systems.
 - The current march and composite kernels require more than the 512 instruction slots guaranteed by
   [baseline pixel shader 3.0](
   https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/dx9-graphics-reference-asm-ps-3-0).
-  The largest current pass uses 944 slots, 32 temporary registers and four nested loops. Lower quality reduces
+  The largest current pass uses 1,023 slots, 32 temporary registers and four nested loops. Lower quality reduces
   integration work, not this static shader requirement. An unsupported required shader disables volumetric fog
   for that device and logs its name, HRESULT and available shader caps; native fog remains the fallback.
   Device-loss and memory-allocation failures are retried instead of being cached as unsupported.
@@ -434,10 +448,11 @@ the native client's systems.
 - Local lighting captures the current M2 scene's point-light table. It does not create spotlight cones, local
   shadow maps or guarantee coverage of every WMO-only light. Influence is capped at 200 yd, with a smooth outer
   fade and an attenuation denominator floor of 1 to bound the point emitter's near-field brightness.
-- Material fog needs compatible programmable shaders and blending. Unsupported material paths retain their
-  original draw and are logged. The next frame switches to final-pass fog until a device reset; disabling
-  `MaterialFog` also restores final-pass fog. The volume's spatial and depth resolution is finite, and blending
-  follows the client's existing render-target conventions. All 5,058 unique shader variants from the effective
+- Material fog needs compatible shaders or supported legacy unlit materials and blending. Unsupported paths
+  retain their original draw and are logged. The next frame switches to final-pass fog until an explicit off/on
+  retry or device reset; disabling `MaterialFog` also restores final-pass fog. Legacy lighting, skinning and
+  pretransformed POSITIONT vertices remain unsupported. The volume's spatial and depth resolution is finite;
+  blending follows the client's existing render-target conventions. All 5,058 unique shader variants from the effective
   native material assets passed offline instrumentation and D3D9 shader creation; this does not cover every
   live shader pairing, render state or third-party modification.
 - Stock fog suppression is prepared before the world draw; an unexpected fog draw failure can leave one frame
