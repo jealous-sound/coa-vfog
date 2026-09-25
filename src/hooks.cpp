@@ -441,6 +441,15 @@ bool InstallEngineHooks()
     return true;
 }
 
+FogFrameStatus LastFogFrameStatus()
+{
+    if (g_failed)
+        return {false, "stopped after an exception, see CoAVolFog.log"};
+    if (g_renderedLastFrame)
+        return {true, ""};
+    return {false, *g_lastSkip ? g_lastSkip : "waiting for the world to render"};
+}
+
 void InstallFarClipHooks()
 {
     if (GlobalConfig().Get().farClipMax <= kFarClipMaxKeepsClientCap)

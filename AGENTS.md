@@ -32,7 +32,8 @@ reverse-engineering evidence.
 
 - `proxy/` — the `version.dll` loader that forwards to the system copy.
 - `src/` — `d3d9_wrap` (device wrapper, INTZ depth), `hooks` (call-site thunks), `engine` (client addresses and frame
-  inputs), `fog_data` (Classic fog data), `fog_model` (layer parameters), `renderer` (passes), `config`, `log`.
+  inputs), `fog_data` (Classic fog data), `fog_model` (layer parameters), `renderer` (passes), `overlay` (ImGui
+  settings window: input chaining, drawing at `Present`), `settings_panel` (its widgets), `config`, `log`.
 - `shaders/` — the ps_3_0 passes: march, temporal, composite, god rays, depth probe.
 - `tests/harness.cpp` — the offline D3D9 harness; `--scene harbour` renders a logged in-game frame.
 - `tools/` — the Classic data converter and the comment check.

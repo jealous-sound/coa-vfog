@@ -1,6 +1,7 @@
 #include "d3d9_wrap.h"
 
 #include "log.h"
+#include "overlay.h"
 #include "renderer.h"
 
 namespace
@@ -99,6 +100,7 @@ public:
     HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS* pp) override;
     HRESULT STDMETHODCALLTYPE Present(const RECT* src, const RECT* dst, HWND wnd, const RGNDATA* dirty) override
     {
+        DrawOverlay(m_real);
         return m_real->Present(src, dst, wnd, dirty);
     }
     HRESULT STDMETHODCALLTYPE GetBackBuffer(UINT sc, UINT i, D3DBACKBUFFER_TYPE t, IDirect3DSurface9** out) override
@@ -466,6 +468,11 @@ void ApplyFogParameters(D3DPRESENT_PARAMETERS& pp)
     pp.MultiSampleQuality = 0;
 }
 
+HWND DeviceWindow(HWND focusWindow, const D3DPRESENT_PARAMETERS& pp)
+{
+    return pp.hDeviceWindow ? pp.hDeviceWindow : focusWindow;
+}
+
 void CopyBackParameters(D3DPRESENT_PARAMETERS* engine, const D3DPRESENT_PARAMETERS& used)
 {
     D3DPRESENT_PARAMETERS copy = used;
@@ -616,6 +623,8 @@ HRESULT WrappedD3D9::CreateDevice(UINT adapter, D3DDEVTYPE type, HWND window, DW
                 device->FogActive() ? 1 : 0);
     if (device->FogActive())
         g_latestFogDevice = device;
+    if (device->FogActive() && GlobalConfig().Get().overlay)
+        AttachOverlay(real, DeviceWindow(window, *pp));
     *out = device;
     return hr;
 }
@@ -630,6 +639,7 @@ FogDevice::FogDevice(WrappedD3D9* parent, IDirect3DDevice9* real, bool fog, D3DF
 
 FogDevice::~FogDevice()
 {
+    DetachOverlay(m_real);
     Unregister(this);
     m_renderer.ReleaseAll();
     ReleaseDepth();
@@ -732,6 +742,7 @@ HRESULT FogDevice::Reset(D3DPRESENT_PARAMETERS* pp)
 {
     if (!pp)
         return D3DERR_INVALIDCALL;
+    ReleaseOverlayDeviceObjects(m_real);
     if (!m_fog)
         return m_real->Reset(pp);
 

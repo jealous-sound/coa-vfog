@@ -4,6 +4,7 @@
 #include "fog_data.h"
 #include "hooks.h"
 #include "log.h"
+#include "overlay.h"
 
 #include <windows.h>
 
@@ -84,4 +85,14 @@ extern "C" void __cdecl vf_test_force_depth_write(int force)
 extern "C" int __cdecl vf_test_render(const FrameInputs* in, const char** skipReason)
 {
     return RenderFog(LatestFogDevice(), *in, GlobalConfig().Get(), skipReason) ? 1 : 0;
+}
+
+extern "C" int __cdecl vf_test_overlay_visible()
+{
+    return OverlayVisible() ? 1 : 0;
+}
+
+extern "C" void __cdecl vf_test_draw_overlay()
+{
+    DrawOverlay(RealDevice(LatestFogDevice()));
 }

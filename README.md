@@ -72,6 +72,7 @@ size-class culling (`environmentDetail`), and creatures the server's visibility 
 | Depth | The wrapper creates the device without auto depth and binds an `INTZ` texture as the depth-stencil, which the client caches as its world depth. MSAA is reported unavailable and forced off; `D3DCREATE_PUREDEVICE` is removed. The client draws the world with viewport depth `[0, 0.94]` (`[0xADEEE4]`, set at `0x4F9019`), the distant WDL terrain into `[0.998, 0.999]` with its own projection, and leaves the sky at the clear depth 1; the shaders read depth through the captured world viewport's range and treat anything deeper as beyond the far clip. |
 | Hooks | Four 5-byte call displacements: the world render call (`0x4FB03D`, stock-fog override and restore), after the opaque M2 pass (`0x4F911D`, records the world viewport and matrices), the liquid surface pass (`0x4F9170`, depth writes forced on so water is fogged by its own distance) and before the frame effects (`0x4F9281`, renders the fog). The original bytes are checked first; on any mismatch nothing is patched. Two more retarget the far-clip clamp calls (`0x780810`, `0x781444`) when `FarClipMax` is set at start-up, independently of the fog hooks. |
 | State | Every state the passes touch is captured with a recorded state block and restored, plus render targets, depth and stream 0 (whose offset state blocks drop). The client's shader-constant cache stays valid. |
+| Overlay | When a fog device is created, the device window's procedure is chained so the settings window sees input first, and the wrapper's `Present` draws the window over the finished frame (see In-game settings). |
 
 Engine inputs (all static addresses in the 12340 image):
 
@@ -127,13 +128,47 @@ Engine notes behind the code:
   the blend weight; a light without fog in the active slot counts with zero density, so the fog thins smoothly
   into it and the distance fog hides the far clip there. Maps without Classic fog use the derived layers.
 
+- Present. The D3D9 backend presents with `IDirect3DDevice9::Present(NULL, NULL, NULL, NULL)` (vtable `+0x44`) on the
+  device it keeps at Gx device `+0x397C`: `0x6A3584` in `0x6A3450` and `0x6A7724` in `0x6A7610`. That device is the
+  wrapper, so every frame passes through its `Present`.
+- Input. `GxWindowClassD3d` and `GxWindowClassD3d9Ex` (registered at `0x68EB9C` and `0x6A08BC`) share the window
+  procedure `0x6A0360`, which reads the Gx device from `GWL_USERDATA` and hands keyboard and mouse messages to its
+  input callback `[gx + 0xF54]` (`DefWindowProcA` without one). The pump runs `GetMessageA` (`0x869F72`), a pre-filter
+  `0x86CB00`, then `TranslateMessage` and `DispatchMessageA` (`0x869F9E`, `0x869FA4`). The pre-filter only acts on the
+  client's own dialog windows (the registry at `0xD41618`): accelerators through `TranslateAcceleratorA` while such a
+  dialog is the active window, and Escape and characters for their controls. DirectInput only enumerates game
+  controllers (`EnumDevices` class 4 at `0x870725`), so keyboard and mouse reach the chained window procedure.
+
 Two readings in the kit were corrected against the disassembly: the fog end is `0xD38BA8` (the kit's
 `0xD38B98` is a density-like value that Extensions.dll patches), and `0xD38C9C` is a near-constant model
 lighting direction (polar angle 110–127°), not the visible sun, so shafts use the sprite positions.
 
+## In-game settings
+
+`Ctrl+F7` (`OverlayKey`) shows and hides a Dear ImGui window over the game. It edits every setting below except
+`Enable`, `EngineHooks`, `Overlay` and `OverlayKey`, and the next frame uses the change. **Save** writes the changed
+keys back to `CoAVolFog.ini` through `WritePrivateProfileString`, which keeps the comments and every other line;
+**Revert** reloads the file. Editing the INI by hand still works while the window is open, and the reload replaces
+unsaved changes made in the window. The window also shows whether the fog drew in the last frame, or why it did not.
+
+- Input. The hotkey, its key-up and its characters never reach the client. While the window is open, clicks and the
+  wheel go to the client unless ImGui wants the mouse (the cursor is over the window, or a drag started on it);
+  key-downs and characters go to the client unless an ImGui text field is active (Ctrl+click on a slider). Mouse
+  moves and key-ups always reach the client, so its cursor keeps following the pointer and no game key sticks. The
+  client draws a D3D cursor (`SetCursorProperties` at `0x6A009C`, `ShowCursor` on `WM_SETCURSOR` at `0x6A058E`), so
+  ImGui leaves the cursor shape alone. Coordinates are scaled from the client area to the back buffer.
+- Drawing. The window is drawn in the wrapper's `Present`, over the client's UI, in its own scene. A full state
+  block, the render targets and stream 0 (with its offset) are captured and restored, and the states ImGui's DX9
+  backend leaves alone are set for it (colour write mask, sRGB write, clip planes, texture-coordinate index and
+  transform, stage result, sampler sRGB and mip filter). ImGui's font texture and buffers live in the default pool
+  and are released before every `Reset`. The window scales with the back-buffer height above 1080 lines.
+- Hidden, the overlay only checks the hotkey. An exception in it turns the overlay off for the session and is
+  logged; `Overlay=0` leaves the game window untouched from the next start.
+
 ## Build
 
-Requirements: Visual Studio 2022 (C++ x86), the Windows 10/11 SDK (`fxc.exe`), CMake 3.20+.
+Requirements: Visual Studio 2022 (C++ x86), the Windows 10/11 SDK (`fxc.exe`), CMake 3.20+. The first configure
+downloads Dear ImGui v1.92.9b (FetchContent, pinned by SHA-256) into the build directory.
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A Win32
@@ -163,9 +198,14 @@ through the same entry the hook uses, and checks:
   edge fade, nesting) and the fog thinning into a Classic light without fog;
 - the storm fog's sun scattering following the client's darker storm light;
 - temporal accumulation converging on a static camera;
+- `OverlayKey` parsing, and saving from the settings window into a copy of the shipped INI (only changed lines
+  rewritten, comments kept, restart-only keys untouched, values clamped like the INI, Revert);
+- the overlay hotkey through the chained window procedure, clicks and keys routed to the window or the client,
+  device state restored around the overlay, its pixels confined to its window, nothing drawn while hidden, and
+  drawing again after Reset;
 - Reset at a new size and reference counts reaching zero.
 
-It writes `before.png`, `after.png` and the debug views to `build/harness-out`.
+It writes `before.png`, `after.png`, `overlay.png` and the debug views to `build/harness-out`.
 
 `vfog_harness --scene harbour <dir> --data data/fogdata.bin` renders the logged in-game frame at the
 Stormwind harbour (sunset, far clip 791.6 yd) with ideal depth and with the client's depth range, and
@@ -180,12 +220,15 @@ writes `CoAVolFog.log` next to itself.
 
 ## Settings
 
-`CoAVolFog.ini` is re-read within a second while the game runs (except `Enable` and `EngineHooks`).
+`CoAVolFog.ini` is re-read within a second while the game runs (except `Enable` and `EngineHooks`). In the game,
+`Ctrl+F7` opens the same settings in a window (see In-game settings).
 
 | Key | Default | Meaning |
 |---|---|---|
 | `Enable` | 1 | Master switch (restart) |
 | `EngineHooks` | 1 | Install the hooks; 0 leaves the client unmodified (restart) |
+| `Overlay` | 1 | In-game settings window; 0 hides it at once, and from the next start leaves the game window alone |
+| `OverlayKey` | Ctrl+F7 | Key that shows and hides the window: F1-F24, Insert, Delete, Home, End, PageUp, PageDown, Pause, ScrollLock, a letter or a digit, with optional `Ctrl+`, `Shift+`, `Alt+` |
 | `Quality` | 2 | 1 quarter resolution / 16 steps, 2 half / 24, 3 half / 32 |
 | `Density`, `Haze`, `GroundFog`, `FarFog` | 1, 1, 0.6, 1 | Density multipliers |
 | `StockFog` | 1 | 1 replaces the stock fog with the distance fog, 0 keeps it |
@@ -210,7 +253,8 @@ writes `CoAVolFog.log` next to itself.
 - Tested in the client with native D3D9; DXVK and Wine are untested.
 - Transparent effects, particles and water are fogged by the opaque depth behind them (kit IP-B), so
   near effects in front of the sky are dimmed slightly.
-- Interiors get the outdoor layers; the `gxApi d3d9ex` path is not wrapped (fog stays off there).
+- Interiors get the outdoor layers; the `gxApi d3d9ex` path is not wrapped (fog and the settings window stay off
+  there). The settings window also needs a fog device, so it is missing when INTZ depth is unsupported.
 - Water surfaces write depth only in the outdoor liquid pass; WMO liquids (city canals) still do not.
   Pixels beyond the far clip below the horizon are marched as level rays so they meet the sky at eye level.
 - The modern fog path applies no exposure or tonemap and its frame is graded with a clamp and a LUT; the

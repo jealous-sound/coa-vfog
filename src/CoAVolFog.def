@@ -5,3 +5,5 @@ EXPORTS
     vf_test_set_config
     vf_test_render
     vf_test_force_depth_write
+    vf_test_overlay_visible
+    vf_test_draw_overlay
