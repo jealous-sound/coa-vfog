@@ -150,12 +150,6 @@ float ScreenSpaceSunVisibility(float3 viewPosition, float sampleDistance, float 
     return visibility;
 }
 
-float StepCoverage(FogLayer layer, float stepStart, float sampleDistance, float stepLength)
-{
-    return saturate((sampleDistance - layer.start) / max(stepLength, 1e-3)) *
-           saturate((layer.limit - stepStart) / max(stepLength, 1e-3));
-}
-
 float DistanceCurve(FogLayer layer, float sampleDistance)
 {
     return 1 + layer.strength * pow(saturate(max(sampleDistance - layer.start, 0) / DistanceCurveRange()) + 1e-6,
@@ -168,16 +162,19 @@ float HeightProfile(FogLayer layer, float height)
            saturate(exp((height - layer.lowerHeight) * layer.lowerFalloff));
 }
 
-void AccumulateLayer(FogLayer layer, float phase, float skyDensityScale, float stepStart, float sampleDistance,
-                     float stepLength, float sampleHeight, float sunVisibility, inout float3 radiance,
-                     inout float opticalDepth)
+void AccumulateLayer(FogLayer layer, float phase, float skyDensityScale, float stepStart, float stepEnd,
+                     float jitter, float cameraHeight, float heightPerYard, float sunVisibility,
+                     inout float3 radiance, inout float opticalDepth)
 {
-    float coverage = StepCoverage(layer, stepStart, sampleDistance, stepLength);
+    float layerStart = max(stepStart, layer.start);
+    float layerLength = max(min(stepEnd, layer.limit) - layerStart, 0);
+    float sampleDistance = layerStart + layerLength * jitter;
+    float sampleHeight = cameraHeight + heightPerYard * sampleDistance;
     float distanceCurve = DistanceCurve(layer, sampleDistance);
     float heightProfile = HeightProfile(layer, sampleHeight);
     float directLight = lerp(1, sunVisibility, layer.shadowed);
     float shadowDensityScale = lerp(1, lerp(layer.shadowDensity, 1, sunVisibility), layer.shadowed);
-    float layerOpticalDepth = layer.density * skyDensityScale * stepLength * coverage * distanceCurve * heightProfile *
+    float layerOpticalDepth = layer.density * skyDensityScale * layerLength * distanceCurve * heightProfile *
                               shadowDensityScale;
     float3 emissive = lerp(layer.emissive, lerp(layer.shadowEmissive, layer.emissive, sunVisibility), layer.shadowed);
     radiance += (layer.diffuse * (directLight * phase) + emissive) * layerOpticalDepth;
@@ -227,17 +224,15 @@ float4 main(float2 lowResTexel : VPOS) : COLOR0
         float endFraction = startFraction + stepFraction;
         float stepStart = marchLength * startFraction * startFraction;
         float stepEnd = marchLength * endFraction * endFraction;
-        float stepLength = stepEnd - stepStart;
         float sampleDistance = lerp(stepStart, stepEnd, jitter);
-        float sampleHeight = cameraWorld.z + riseLevelledAtHorizon * sampleDistance;
         float sunVisibility = LightAboveHorizon();
         [branch] if (ShadowsEnabled())
             sunVisibility *= ScreenSpaceSunVisibility(viewDirection * sampleDistance, sampleDistance, jitter);
         float3 stepRadiance = 0;
         float stepOpticalDepth = 0;
         [unroll] for (int j = 0; j < kFogLayers; j++)
-            AccumulateLayer(LoadFogLayer(j), phase[j], skyDensityScale[j], stepStart, sampleDistance, stepLength,
-                            sampleHeight, sunVisibility, stepRadiance, stepOpticalDepth);
+            AccumulateLayer(LoadFogLayer(j), phase[j], skyDensityScale[j], stepStart, stepEnd, jitter, cameraWorld.z,
+                            riseLevelledAtHorizon, sunVisibility, stepRadiance, stepOpticalDepth);
         [branch] if (stepOpticalDepth > 1e-6)
         {
             float stepTransmittance = exp(-stepOpticalDepth);

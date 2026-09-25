@@ -38,6 +38,7 @@ private:
     IDirect3DVertexShader9* m_vs = nullptr;
     IDirect3DPixelShader9* m_march[3] = {};
     IDirect3DPixelShader9* m_temporal = nullptr;
+    IDirect3DPixelShader9* m_historyDepthShader = nullptr;
     IDirect3DPixelShader9* m_composite = nullptr;
     IDirect3DPixelShader9* m_rayMask = nullptr;
     IDirect3DPixelShader9* m_rayBlur = nullptr;
@@ -47,6 +48,7 @@ private:
 
     IDirect3DTexture9* m_marchTarget = nullptr;
     IDirect3DTexture9* m_history[2] = {};
+    IDirect3DTexture9* m_historyDepth = nullptr;
     IDirect3DTexture9* m_rays[2] = {};
     IDirect3DTexture9* m_sceneCopy = nullptr;
     IDirect3DTexture9* m_probeTarget = nullptr;
@@ -59,10 +61,12 @@ private:
     UINT m_sceneCopyH = 0;
     bool m_sceneCopyFailed = false;
     bool m_probeFailed = false;
-    bool m_fogFilterable = false;
 
     int m_historyIndex = 0;
     bool m_historyValid = false;
+    Config m_prevConfig;
+    int m_prevMap = -1;
+    int m_prevLightSlot = -1;
     float m_prevWorldToView[16] = {};
     float m_prevProj[16] = {};
     float m_prevCam[3] = {};

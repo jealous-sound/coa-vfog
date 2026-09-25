@@ -508,7 +508,7 @@ float SmoothStep(float e0, float e1, float x)
 }
 
 float ReferenceUnshadowedSkyTransmittance(const FrameInputs& in, const Config& cfg, const AuthoredFog* authored,
-                                          float px, float py, int steps, float jitter)
+                                          float px, float py)
 {
     FogParams fog = BuildFogParams(in, cfg, authored);
     const float* P = in.glProjection;
@@ -521,31 +521,25 @@ float ReferenceUnshadowedSkyTransmittance(const FrameInputs& in, const Config& c
     const float* m = in.cameraRelativeView;
     Vec3 dirW = {v.x * m[0] + v.y * m[1] + v.z * m[2], v.x * m[4] + v.y * m[5] + v.z * m[6],
                  v.x * m[8] + v.y * m[9] + v.z * m[10]};
-    float z = fog.maxDistance;
-    z = z + (fog.maxDistance - z) * SmoothStep(fog.horizonStart, fog.farClip, z);
-    float tMax = std::fmin(z * len, fog.maxDistance);
+    const double upward = std::fmax(dirW.z, 0.0f);
     double tau = 0.0;
-    for (int s = 0; s < steps; ++s)
+    for (const FogLayer& layer : fog.layers)
     {
-        float u0 = static_cast<float>(s) / steps;
-        float u1 = u0 + 1.0f / steps;
-        float ta = tMax * u0 * u0;
-        float tb = tMax * u1 * u1;
-        float dt = tb - ta;
-        float t = ta + (tb - ta) * jitter;
-        float h = in.camPos[2] + dirW.z * t;
-        auto clamp01 = [](float x) { return std::fmin(std::fmax(x, 0.0f), 1.0f); };
-        for (const FogLayer& l : fog.layers)
+        const double begin = std::fmax(layer.start, 0.0f);
+        const double end = std::fmin(layer.endDistance, fog.maxDistance);
+        if (layer.density == 0.0f || end <= begin)
+            continue;
+        const double dt = (end - begin) / kReferenceIntegrationSteps;
+        const double skyScale = std::exp(-upward * layer.skyFalloff);
+        for (int sample = 0; sample < kReferenceIntegrationSteps; ++sample)
         {
-            float scale = std::exp(-std::fmax(dirW.z, 0.0f) * l.skyFalloff);
-            float cover =
-                clamp01((t - l.start) / std::fmax(dt, 1e-3f)) * clamp01((l.endDistance - ta) / std::fmax(dt, 1e-3f));
-            float curve = 1.0f + l.strength * std::pow(std::fmin(std::fmax(t - l.start, 0.0f) / fog.maxDistance, 1.0f) +
-                                                           1e-6f,
-                                                       l.exponent);
-            float heightF = std::fmin(std::exp((l.upperHeight - h) * l.upperFalloff), 1.0f) *
-                            std::fmin(std::exp((h - l.lowerHeight) * l.lowerFalloff), 1.0f);
-            tau += l.density * scale * dt * cover * curve * heightF;
+            const double distance = begin + (sample + 0.5) * dt;
+            const double height = in.camPos[2] + upward * distance;
+            const double ramp = std::fmin((distance - layer.start) / fog.maxDistance, 1.0);
+            const double curve = 1.0 + layer.strength * std::pow(ramp, layer.exponent);
+            const double heightFactor = std::exp(std::fmin((layer.upperHeight - height) * layer.upperFalloff, 0.0) +
+                                                 std::fmin((height - layer.lowerHeight) * layer.lowerFalloff, 0.0));
+            tau += layer.density * skyScale * dt * curve * heightFactor;
         }
     }
     return static_cast<float>(std::exp(-tau));
@@ -1400,6 +1394,40 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
     DrawOverlayFrames(1);
 }
 
+#include "fog_integration_checks.h"
+#include "temporal_quality_checks.h"
+#include "runtime_quality_checks.h"
+
+void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3 at,
+                                   const float* proj, const D3DVIEWPORT9& world)
+{
+    Config stable = cfg;
+    stable.temporal = 0.0f;
+    stable.lightShafts = false;
+    stable.godRays = 0.0f;
+    stable.debugView = 2;
+    stable.dataMode = 0;
+    stable.quality = 1;
+    vf_test_set_config(&stable);
+    float view[16];
+    CameraRelativeLookAt(eye, at, view);
+    FrameInputs in = MakeInputs(view, proj, eye, at, world);
+    Image captures[2];
+    bool rendered = true;
+    for (int frame = 0; frame < 2; ++frame)
+    {
+        h.BeginFrame();
+        h.DrawScene(eye, view, proj, world);
+        const char* skip = "";
+        rendered = vf_test_render(&in, &skip) != 0 && rendered;
+        captures[frame] = Capture(h.dev);
+        h.dev->EndScene();
+    }
+    Check(rendered && captures[0].bgra == captures[1].bgra,
+          "disabling temporal accumulation keeps stationary fog identical between frames");
+    vf_test_set_config(&cfg);
+}
+
 int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstring& iniPath)
 {
     FogData classic;
@@ -1417,6 +1445,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     CheckOverlayKeyNames();
     CheckSettingsSaveKeepsTheIni(outDir, FullPath(iniPath));
+    CheckFogDataBounds(outDir, dataPath);
 
     WNDCLASSW wc = {};
     wc.lpfnWndProc = ClientWindowProc;
@@ -1477,6 +1506,8 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
         parent->Release();
 
     h.CreateEngineObjects();
+    CheckFogIntegration(h.dev);
+    CheckTemporalQuality(h.dev);
     const float aspect = 1280.0f / 688.0f;
     const D3DVIEWPORT9 world = {0, 0, 1280, 688, 0.0f, 1.0f};
     float proj[16];
@@ -1567,6 +1598,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     SavePng(outDir + L"\\after.png", after.w, after.h, after.bgra);
 
     CheckLinearComposite(h, cfg, eye, at, proj, world);
+    CheckDisabledTemporalIsStable(h, cfg, eye, at, proj, world);
 
     auto renderDebugIn = [&](int mode, float maxDist, const D3DVIEWPORT9& vp, float wdlPatchRawDepth) {
         Config c = cfg;
@@ -1608,19 +1640,10 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
         bool match = true;
         for (const auto& s : samples)
         {
-            float lo = 1.0f;
-            float hi = 0.0f;
-            for (int j = 0; j < 16; ++j)
-            {
-                float r = ReferenceUnshadowedSkyTransmittance(in, c, nullptr, s[0] + 0.5f, s[1] + 0.5f, 24,
-                                                              (j + 0.5f) / 16.0f);
-                lo = std::fmin(lo, r);
-                hi = std::fmax(hi, r);
-            }
+            float reference = ReferenceUnshadowedSkyTransmittance(in, c, nullptr, s[0] + 0.5f, s[1] + 0.5f);
             float got = t.At(s[0], s[1])[2] / 255.0f;
-            std::printf("     sky transmittance at %u,%u: shader %.3f, reference %.3f..%.3f\n", s[0], s[1], got, lo,
-                        hi);
-            match = match && got > lo - 0.02f && got < hi + 0.02f;
+            std::printf("     sky transmittance at %u,%u: shader %.3f, reference %.3f\n", s[0], s[1], got, reference);
+            match = match && std::fabs(got - reference) < 0.02f;
         }
         Check(match, "sky transmittance matches the CPU reference (world-space reconstruction)");
 
@@ -1713,19 +1736,12 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
         const UINT samples[3][2] = {{101, 101}, {1181, 101}, {101, 201}};
         for (const auto& s : samples)
         {
-            float lo = 1.0f;
-            float hi = 0.0f;
-            for (int j = 0; j < 16; ++j)
-            {
-                float r = ReferenceUnshadowedSkyTransmittance(in, c, resolved ? &authored : nullptr, s[0] + 0.5f,
-                                                              s[1] + 0.5f, 24, (j + 0.5f) / 16.0f);
-                lo = std::fmin(lo, r);
-                hi = std::fmax(hi, r);
-            }
+            float reference = ReferenceUnshadowedSkyTransmittance(in, c, resolved ? &authored : nullptr,
+                                                                  s[0] + 0.5f, s[1] + 0.5f);
             float got = t.At(s[0], s[1])[2] / 255.0f;
-            std::printf("     Classic sky transmittance at %u,%u: shader %.3f, reference %.3f..%.3f\n", s[0], s[1], got,
-                        lo, hi);
-            match = match && got > lo - 0.02f && got < hi + 0.02f;
+            std::printf("     Classic sky transmittance at %u,%u: shader %.3f, reference %.3f\n", s[0], s[1], got,
+                        reference);
+            match = match && std::fabs(got - reference) < 0.02f;
         }
         Check(match, "Classic-layer sky transmittance matches the CPU reference");
         vf_test_set_config(&cfg);
@@ -1808,6 +1824,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
               "liquid-pass depth writes stay on while forced and the client's last request is restored");
     }
 
+    CheckDepthWriteStateBlockRestore(h.dev);
     Config restored = cfg;
     vf_test_set_config(&restored);
 

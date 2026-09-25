@@ -141,7 +141,7 @@ void AuthoredLayers(const AuthoredFog& fog, const Config& cfg, const FogParams& 
             continue;
         const AuthoredLayer& a = fog.layers[i];
         const float heightBase = a.flags & kFlagRelativeHeights ? p.referenceZ : 0.0f;
-        l.start = std::min(p.maxDistance - kFogRangeMargin, a.start);
+        l.start = std::clamp(a.start, 0.0f, std::max(p.maxDistance - kFogRangeMargin, 0.0f));
         l.density = a.density * kClassicUnits * cfg.density;
         l.g = std::clamp(a.g, -0.99f, 0.99f);
         l.isotropic = 0.0f;

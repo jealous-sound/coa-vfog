@@ -19,11 +19,6 @@ float AngularFalloffExponent()
     return cRayMask.w;
 }
 
-float FullPixelsPerRayTexel()
-{
-    return cRaySource.x;
-}
-
 float LuminanceThreshold()
 {
     return cRaySource.y;
@@ -36,7 +31,8 @@ float2 RayTexelSize()
 
 float4 main(float2 rayTexel : VPOS) : COLOR0
 {
-    float2 pixel = min(ViewportOrigin() + (rayTexel + 0.5) * FullPixelsPerRayTexel(), ViewportLastPixelCentre());
+    float2 fullPixelsPerRayTexel = ViewportSize() * RayTexelSize();
+    float2 pixel = min(ViewportOrigin() + (rayTexel + 0.5) * fullPixelsPerRayTexel, ViewportLastPixelCentre());
     float skyMask = IsSky(SampleDepth(sDepth, pixel)) ? 1 : 0;
     float3 viewDirection = normalize(ViewRayAtUnitDepth(pixel));
     float sunFalloff = pow(saturate(dot(viewDirection, DirectionToSunView())), AngularFalloffExponent());

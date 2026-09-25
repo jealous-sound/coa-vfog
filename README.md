@@ -51,11 +51,20 @@ data is Classic-derived; keep it in private repositories.
   buildings and terrain cast shafts into the fog.
 - **God rays** (optional): a radial blur of the bright sky around the sun.
 
+Each march step integrates only its overlap with a layer's start and end distances, sampling the height and
+distance profile inside that overlap. This keeps thin layers and partial boundary steps consistent across
+quality levels. With temporal filtering disabled, samples stay at fixed midpoints so a stationary frame does
+not shimmer. With it enabled, samples vary between frames and the filter rejects history from a different
+surface depth or from a different depth class (world, distant terrain, sky). Each history tap is validated
+before bilinear filtering; sky reprojection follows rotation without camera translation. Settings, map,
+screen-effect slot, projection and large camera changes discard history.
+
 The effect is composited over the world before glow and the UI. The client's glow (`screen + g·blur²`, with
 `g` from the day/night light) runs afterwards and would bleach bright fog to white, so fogged pixels are
 pre-compensated with the live glow amount. Its other term, a blend toward the blur used by screen effects such as
 drunkenness, is left as is. While the effect draws, the stock fog is pushed out of range for
-the world render and restored afterwards; a frame the effect skips keeps the stock fog.
+the world render and restored afterwards. Known unavailable frames keep the stock fog; an unexpected draw
+failure restores the fallback on the next frame.
 
 **View distance.** Ascension's Extensions.dll detours the far-clip clamp (`0x780770`) and caps maps 0, 1, 530
 and 571 at 791.66 yd; the engine allows 1583.33 and instances use it. With `FarClipMax` set, the DLL's calls
@@ -207,7 +216,11 @@ through the same entry the hook uses, and checks:
 - storm and screen-effect slot selection, layers paired by Classic index, zone-light outlines (interior,
   edge fade, nesting) and the fog thinning into a Classic light without fog;
 - the storm fog's sun scattering following the client's darker storm light;
-- temporal accumulation converging on a static camera;
+- temporal accumulation converging on a static camera, and identical stationary frames with it disabled;
+- analytic Beer–Lambert opacity for partial cells and thin layers at every march quality, including jitter;
+- previous-depth rejection, world/sky separation and validated bilinear taps in the actual temporal shader;
+- packed history depth accuracy and god-ray occlusion with an odd-sized, offset world viewport;
+- liquid depth-write restoration after native state blocks, and malformed fog-data counts and index ranges;
 - `OverlayKey` parsing, and saving from the settings window into a copy of the shipped INI (only changed lines
   rewritten, comments kept, restart-only keys untouched, values clamped like the INI, Revert);
 - the overlay hotkey through the chained window procedure, clicks and keys routed to the window or the client,
@@ -260,9 +273,24 @@ writes `CoAVolFog.log` next to itself.
 
 ## Status and limits
 
+This is an atmospheric approximation, not a reproduction of WoW Forever's complete lighting renderer.
+[Blizzard's official overview](
+https://news.blizzard.com/en-gb/article/24303862/world-of-warcraft-forever-whats-next-panel-recap)
+describes mist over water and moonlight through trees. Matching those scenes requires matched camera, time,
+weather and exposure captures; shared Classic fog data alone does not establish visual parity.
+
+The highest-impact future work is world-space sun visibility, local volumetric lights and interior-aware fog,
+followed by spatial density variation and scene calibration. The current sun visibility test reads only the
+camera depth buffer, so unseen blockers cannot cast fog shadows. There is no point/spot light injection or
+replacement of surface lighting, indirect illumination, bloom or colour grading. The low-resolution upsampler
+can still bleed background fog onto silhouettes that all four depth taps miss. Transparent objects need their
+own fog evaluation, and temporal surface-depth rejection does not track moving shadows within a fog column.
+
 - Tested in the client with native D3D9; DXVK and Wine are untested.
 - Transparent effects and particles are fogged by the opaque depth behind them, so near effects in front of the
   sky are dimmed slightly.
+- Stock fog suppression is prepared before the world draw; an unexpected fog draw failure can leave one frame
+  without replacement fog before the next frame restores the fallback.
 - Interiors get the outdoor layers; the `gxApi d3d9ex` path is not wrapped (fog and the settings window stay off
   there). The settings window also needs a fog device, so it is missing when INTZ depth is unsupported.
 - Pixels beyond the far clip below the horizon are marched as level rays so they meet the sky at eye level.

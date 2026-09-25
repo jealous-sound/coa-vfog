@@ -58,6 +58,8 @@ public:
     {
         if (force == m_forceDepthWrite)
             return;
+        if (force && FAILED(m_real->GetRenderState(D3DRS_ZWRITEENABLE, &m_clientRequestedDepthWrite)))
+            return;
         m_forceDepthWrite = force;
         m_real->SetRenderState(D3DRS_ZWRITEENABLE, DepthWriteToApply());
     }
