@@ -5,6 +5,11 @@ EXPORTS
     vf_test_set_config
     vf_test_get_config
     vf_test_render
+    vf_test_adaptive_lighting_history
+    vf_test_begin_material_fog
+    vf_test_begin_rendered_material_fog
+    vf_test_end_material_fog
+    vf_test_material_fog_compatible
     vf_test_force_depth_write
     vf_test_overlay_visible
     vf_test_draw_overlay

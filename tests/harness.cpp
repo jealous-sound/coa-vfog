@@ -2,11 +2,15 @@
 #include "engine.h"
 #include "fog_data.h"
 #include "fog_model.h"
+#include "fog_volume.h"
+#include "noise_volume.h"
+#include "shader_instrumentation.h"
 
 #include <windows.h>
 #include <d3d9.h>
 #include <wincodec.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -17,6 +21,7 @@ extern "C" __declspec(dllimport) IDirect3D9* __cdecl vf_test_wrap_direct3d9(IDir
 extern "C" __declspec(dllimport) void __cdecl vf_test_set_config(const Config*);
 extern "C" __declspec(dllimport) void __cdecl vf_test_get_config(Config*);
 extern "C" __declspec(dllimport) int __cdecl vf_test_render(const FrameInputs*, const char**);
+extern "C" __declspec(dllimport) int __cdecl vf_test_adaptive_lighting_history();
 extern "C" __declspec(dllimport) void __cdecl vf_test_force_depth_write(int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_overlay_visible();
 extern "C" __declspec(dllimport) void __cdecl vf_test_draw_overlay();
@@ -224,8 +229,8 @@ Image Capture(IDirect3DDevice9* dev)
     return img;
 }
 
-constexpr DWORD kFogPassTextureStages = 4;
-constexpr UINT kFogPassPixelConstants = 36;
+constexpr DWORD kFogPassTextureStages = 10;
+constexpr UINT kFogPassPixelConstants = 99;
 
 struct Sentinel
 {
@@ -275,8 +280,10 @@ void ReadSentinel(IDirect3DDevice9* dev, Sentinel& s)
 
 void ReleaseSentinel(Sentinel& s)
 {
-    IUnknown* refs[] = {s.textures[0], s.textures[1], s.textures[2], s.textures[3], s.vs,
-                        s.ps,          s.decl,        s.stream,      s.rt,          s.ds};
+    for (IDirect3DBaseTexture9* texture : s.textures)
+        if (texture)
+            texture->Release();
+    IUnknown* refs[] = {s.vs, s.ps, s.decl, s.stream, s.rt, s.ds};
     for (IUnknown* r : refs)
         if (r)
             r->Release();
@@ -1395,8 +1402,17 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 }
 
 #include "fog_integration_checks.h"
+#include "local_lights_checks.h"
+#include "noise_variation_checks.h"
+#include "world_shadow_hardware_checks.h"
+#include "local_light_gpu_checks.h"
+#include "fog_atlas_checks.h"
+#include "silhouette_quality_checks.h"
 #include "temporal_quality_checks.h"
 #include "runtime_quality_checks.h"
+#include "lighting_history_checks.h"
+#include "shader_instrumentation_checks.h"
+#include "material_fog_checks.h"
 
 void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3 at,
                                    const float* proj, const D3DVIEWPORT9& world)
@@ -1489,6 +1505,12 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     D3DDEVICE_CREATION_PARAMETERS cp;
     h.dev->GetCreationParameters(&cp);
     Check((cp.BehaviorFlags & D3DCREATE_PUREDEVICE) == 0, "pure-device flag removed");
+    D3DADAPTER_IDENTIFIER9 adapter = {};
+    D3DCAPS9 caps = {};
+    h.d3d->GetAdapterIdentifier(0, 0, &adapter);
+    h.dev->GetDeviceCaps(&caps);
+    std::printf("     adapter %s, PS3 slots %lu, executed instructions %lu\n", adapter.Description,
+                caps.MaxPixelShader30InstructionSlots, caps.MaxPShaderInstructionsExecuted);
     Check(h.pp.EnableAutoDepthStencil == TRUE && h.pp.AutoDepthStencilFormat == D3DFMT_D24S8,
           "engine-visible depth parameters preserved");
     IDirect3DSurface9* depth = nullptr;
@@ -1506,8 +1528,18 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
         parent->Release();
 
     h.CreateEngineObjects();
+    CheckShaderInstrumentation(h.dev);
+    CheckRuntimeMaterialFog(h.dev);
     CheckFogIntegration(h.dev);
+    CheckLocalLightInputs();
+    CheckInteriorFogInputs();
+    CheckNoiseVariation(h.dev);
+    CheckHardwareWorldShadowIntegration(h.dev);
+    local_light_gpu::CheckLocalLightIntegration(h.dev);
+    fog_atlas_gpu::CheckFogAtlas(h.dev);
+    silhouette_quality::CheckSilhouettes(h.dev);
     CheckTemporalQuality(h.dev);
+    CheckLightDisappearanceHistory(h);
     const float aspect = 1280.0f / 688.0f;
     const D3DVIEWPORT9 world = {0, 0, 1280, 688, 0.0f, 1.0f};
     float proj[16];
@@ -1517,6 +1549,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     float view[16];
 
     Config cfg = {};
+    cfg.noiseAmount = 0.0f;
     cfg.maxDistance = 5000.0f;
     Config withGodRays = cfg;
     withGodRays.godRays = 0.2f;
@@ -1859,6 +1892,8 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     Check(OverlayProbeChange(beforeOverlay, Capture(h.dev)) > 0.05, "the overlay draws again after Reset");
     PressHotkey(h.window, kDefaultOverlayHotkey);
 
+    CheckRenderedMaterialFog(h, resized, outDir);
+    vf_test_set_config(&restored);
     h.ReleaseEngineObjects();
     ULONG devRefs = h.dev->Release();
     ULONG d3dRefs = h.d3d->Release();
@@ -2372,6 +2407,11 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
 }
 }
 
+namespace
+{
+#include "performance_scene.h"
+}
+
 int wmain(int argc, wchar_t** argv)
 {
     std::wstring out = L"harness-out";
@@ -2399,9 +2439,11 @@ int wmain(int argc, wchar_t** argv)
     }
     if (scene == L"harbour")
         return RunHarbour(out, data);
+    if (scene == L"performance")
+        return RunPerformance();
     if (!scene.empty())
     {
-        std::printf("unknown scene %ls (known: harbour)\n", scene.c_str());
+        std::printf("unknown scene %ls (known: harbour, performance)\n", scene.c_str());
         return 2;
     }
     return Run(out, data, ini);

@@ -122,7 +122,7 @@ struct Fixture
         return SUCCEEDED(inputs[0]->UnlockRect(0));
     }
 
-    float Draw(bool historyValid = true, float captureDepth = 0.0f)
+    float Draw(bool historyValid = true, float captureDepth = 0.0f, bool adaptiveLighting = false)
     {
         float constants[14][4] = {
             {0, 0, kSize, kSize},
@@ -132,7 +132,7 @@ struct Fixture
             {1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1},
             {kSize, kSize, 1.0f / kSize, 1.0f / kSize},
             {}, {}, {}, {},
-            {kWeight, historyValid ? 1.0f : 0.0f, 0, 0},
+            {kWeight, historyValid ? 1.0f : 0.0f, adaptiveLighting ? 1.0f : 0.0f, 0},
         };
         std::memcpy(constants[9], reproject, sizeof(reproject));
         if (captureDepth > 0.0f)
@@ -259,6 +259,20 @@ void CheckTemporalQuality(IDirect3DDevice9* dev)
         return;
     const float accumulated = kCurrentFog * (1 - kWeight) + kHistoryFog * kWeight;
     Check(NearTemporal(fixture.Draw(), accumulated), "temporal matching surface reuses history");
+    Check(NearTemporal(fixture.Draw(true, 0, true), kCurrentFog),
+          "moving light darkening rejects radiance history despite matching depth and neighbourhood range");
+    Check(Fill(fixture.inputs[1], Grey(0.22f)) &&
+              NearTemporal(fixture.Draw(true, 0, true), kCurrentFog * (1 - kWeight) + 0.22f * kWeight),
+          "stable lighting retains the configured history weight for small radiance differences");
+    Check(Fill(fixture.inputs[1], Grey(kCurrentFog / 0.7f)) &&
+              NearTemporal(fixture.Draw(true, 0, true), kCurrentFog + (kCurrentFog / 0.7f - kCurrentFog) *
+                                                                          kWeight * 0.5f),
+          "temporal lighting rejection fades continuously through intermediate radiance changes");
+    Check(Fill(fixture.inputs[0], Grey(kCurrentFog), 5, Grey(kHistoryFog)) &&
+              Fill(fixture.inputs[1], Grey(kCurrentFog)) &&
+              NearTemporal(fixture.Draw(true, 0, true), kHistoryFog),
+          "moving light brightening rejects stale radiance at the same surface depth");
+    fixture.Reset();
     fixture.reproject[15] = 1.0f;
     Check(Fill(fixture.inputs[3], PackedDepth(2.0f, 0)) && NearTemporal(fixture.Draw(), accumulated),
           "temporal camera translation validates distance in the previous view");

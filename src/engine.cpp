@@ -211,6 +211,7 @@ bool BuildFrameInputsUnsafe(FrameInputs& out)
     out.inLiquid = CameraInLiquid();
     out.mapId = Read<int32_t>(kCurrentMap);
     out.lightParams = ReadLightParamsSelection();
+    CaptureLocalLightInputs(out.camPos, out.localLights);
 
     out.zoneFogDistance = Read<float>(kZoneFogDistance);
     out.clientGlowAmount = out.inLiquid ? 0.0f : GlowScreenEffectAmount();

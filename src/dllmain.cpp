@@ -75,6 +75,7 @@ extern "C" IDirect3D9* __cdecl vf_test_wrap_direct3d9(Direct3DCreate9Fn realCrea
 extern "C" void __cdecl vf_test_set_config(const Config* cfg)
 {
     GlobalConfig().Override(*cfg);
+    LogSetLevel(cfg->logLevel);
 }
 
 extern "C" void __cdecl vf_test_get_config(Config* out)
@@ -90,6 +91,31 @@ extern "C" void __cdecl vf_test_force_depth_write(int force)
 extern "C" int __cdecl vf_test_render(const FrameInputs* in, const char** skipReason)
 {
     return RenderFog(LatestFogDevice(), *in, GlobalConfig().Get(), skipReason) ? 1 : 0;
+}
+
+extern "C" int __cdecl vf_test_adaptive_lighting_history()
+{
+    return AdaptiveLightingHistory(LatestFogDevice()) ? 1 : 0;
+}
+
+extern "C" int __cdecl vf_test_begin_material_fog(const MaterialFogVolume* volume)
+{
+    return volume && BeginMaterialFog(LatestFogDevice(), *volume) ? 1 : 0;
+}
+
+extern "C" int __cdecl vf_test_begin_rendered_material_fog()
+{
+    return BeginRenderedMaterialFog(LatestFogDevice()) ? 1 : 0;
+}
+
+extern "C" void __cdecl vf_test_end_material_fog()
+{
+    EndMaterialFog(LatestFogDevice());
+}
+
+extern "C" int __cdecl vf_test_material_fog_compatible()
+{
+    return MaterialFogCompatible(LatestFogDevice()) ? 1 : 0;
 }
 
 extern "C" int __cdecl vf_test_overlay_visible()

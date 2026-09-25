@@ -4,6 +4,7 @@
 #include <d3d9.h>
 
 #include "fog_data.h"
+#include "engine_lights.h"
 
 #include <cstdint>
 
@@ -29,6 +30,7 @@ struct FrameInputs
     bool inLiquid;
     int mapId;
     LightParamsSelection lightParams;
+    LocalLightInputs localLights;
 };
 
 namespace engine

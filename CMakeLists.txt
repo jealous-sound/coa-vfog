@@ -28,7 +28,10 @@ function(vf_shader name source profile)
         OUTPUT ${out}
         COMMAND "${FXC}" /nologo /O3 /T ${profile} /E main /Vn g_${name} ${ARGN}
                 /Fh ${out} /Fc ${SHADER_OUT}/${name}.asm ${SHADER_DIR}/${source}
-        DEPENDS ${SHADER_DIR}/${source} ${SHADER_DIR}/vf_common.hlsli
+        DEPENDS ${SHADER_DIR}/${source} ${SHADER_DIR}/vf_common.hlsli ${SHADER_DIR}/vf_world_shadows.hlsli
+                ${SHADER_DIR}/vf_integrate.hlsli
+                ${SHADER_DIR}/vf_local_lights.hlsli
+                ${SHADER_DIR}/vf_density_variation.hlsli
         COMMENT "fxc ${name}"
         VERBATIM)
     set(SHADER_HEADERS ${SHADER_HEADERS} ${out} PARENT_SCOPE)
@@ -38,12 +41,20 @@ vf_shader(vs_fullscreen vf_fullscreen_vs.hlsl vs_3_0)
 vf_shader(ps_march_low vf_march.hlsl ps_3_0 /DSTEPS=16)
 vf_shader(ps_march_mid vf_march.hlsl ps_3_0 /DSTEPS=24)
 vf_shader(ps_march_high vf_march.hlsl ps_3_0 /DSTEPS=32)
+vf_shader(ps_atlas_low vf_fog_atlas.hlsl ps_3_0 /DSTEPS=2)
+vf_shader(ps_atlas_mid vf_fog_atlas.hlsl ps_3_0 /DSTEPS=4)
+vf_shader(ps_atlas_high vf_fog_atlas.hlsl ps_3_0 /DSTEPS=4)
+vf_shader(ps_atlas_prefix vf_atlas_prefix.hlsl ps_3_0)
+vf_shader(ps_density_probe vf_density_probe.hlsl ps_3_0)
 vf_shader(ps_temporal vf_temporal.hlsl ps_3_0)
 vf_shader(ps_history_depth vf_history_depth.hlsl ps_3_0)
-vf_shader(ps_composite vf_composite.hlsl ps_3_0)
+vf_shader(ps_composite_low vf_composite.hlsl ps_3_0 /DSTEPS=16)
+vf_shader(ps_composite_mid vf_composite.hlsl ps_3_0 /DSTEPS=24)
+vf_shader(ps_composite_high vf_composite.hlsl ps_3_0 /DSTEPS=32)
 vf_shader(ps_ray_mask vf_ray_mask.hlsl ps_3_0)
 vf_shader(ps_ray_blur vf_ray_blur.hlsl ps_3_0)
 vf_shader(ps_probe vf_probe.hlsl ps_3_0)
+vf_shader(ps_material_footer vf_material_footer.hlsl ps_3_0)
 add_custom_target(vf_shaders DEPENDS ${SHADER_HEADERS})
 
 include(FetchContent)
@@ -74,13 +85,18 @@ add_library(CoAVolFog SHARED
     src/d3d9_wrap.cpp
     src/dllmain.cpp
     src/engine.cpp
+    src/engine_lights.cpp
+    src/engine_shadows.cpp
     src/fog_data.cpp
     src/fog_model.cpp
     src/hooks.cpp
     src/log.cpp
+    src/material_fog.cpp
+    src/noise_volume.cpp
     src/overlay.cpp
     src/renderer.cpp
     src/settings_panel.cpp
+    src/shader_instrumentation.cpp
     src/CoAVolFog.def)
 add_dependencies(CoAVolFog vf_shaders)
 target_include_directories(CoAVolFog PRIVATE src ${SHADER_OUT})
@@ -92,7 +108,8 @@ add_library(version SHARED proxy/version_proxy.cpp proxy/version.def)
 target_link_libraries(version PRIVATE CoAVolFog)
 target_compile_definitions(version PRIVATE WIN32_LEAN_AND_MEAN)
 
-add_executable(vfog_harness tests/harness.cpp src/config.cpp src/fog_data.cpp src/fog_model.cpp src/log.cpp)
+add_executable(vfog_harness tests/harness.cpp src/config.cpp src/engine_lights.cpp
+               src/fog_data.cpp src/fog_model.cpp src/log.cpp src/noise_volume.cpp src/shader_instrumentation.cpp)
 target_include_directories(vfog_harness PRIVATE src ${SHADER_OUT})
 target_compile_definitions(vfog_harness PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(vfog_harness PRIVATE CoAVolFog user32 ole32 windowscodecs)

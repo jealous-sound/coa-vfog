@@ -21,6 +21,20 @@ bool HistoryInvalid()
     return cTemporal.y <= 0;
 }
 
+float LightingHistoryWeight(float3 current, float3 history)
+{
+    float weight = HistoryWeight();
+    [branch] if (cTemporal.z > 0)
+    {
+        float3 difference = abs(current - history);
+        float peakDifference = max(difference.r, max(difference.g, difference.b));
+        float3 peak = max(current, history);
+        float brightness = max(0.05, max(peak.r, max(peak.g, peak.b)));
+        weight *= 1 - smoothstep(0.20, 0.40, peakDifference / brightness);
+    }
+    return weight;
+}
+
 void CurrentNeighbourhoodRange(float2 uv, float4 centre, out float4 lowest, out float4 highest)
 {
     lowest = centre;
@@ -86,5 +100,5 @@ float4 main(float2 lowResTexel : VPOS) : COLOR0
     [branch] if (any(previousUv < 0) || any(previousUv > 1))
         return current;
     float4 history = clamp(ValidatedHistory(previousUv, previousClip.w, depthClass, current), lowest, highest);
-    return lerp(current, history, HistoryWeight());
+    return lerp(current, history, LightingHistoryWeight(current.rgb, history.rgb));
 }

@@ -82,6 +82,115 @@ void CheckShortRangeAuthoredFog()
           "a short fog range never moves an authored layer behind the camera");
 }
 
+void CheckWorldShadowIntegration(IDirect3DDevice9* device, const FogIntegrationResources& resources, int quality)
+{
+    IDirect3DTexture9* shadow = nullptr;
+    bool ready = SUCCEEDED(device->CreateTexture(4, 4, 1, 0, D3DFMT_R32F, D3DPOOL_MANAGED, &shadow, nullptr));
+    D3DLOCKED_RECT locked = {};
+    ready = ready && SUCCEEDED(shadow->LockRect(0, &locked, nullptr, 0));
+    if (ready)
+    {
+        for (int y = 0; y < 4; ++y)
+        {
+            float* row = reinterpret_cast<float*>(static_cast<unsigned char*>(locked.pBits) + y * locked.Pitch);
+            for (int x = 0; x < 4; ++x)
+                row[x] = x < 2 ? 0.25f : 0.75f;
+        }
+        shadow->UnlockRect(0);
+    }
+    Check(ready, "world shadow depth fixture created");
+    if (!ready)
+    {
+        if (shadow)
+            shadow->Release();
+        return;
+    }
+    for (DWORD stage = 4; stage < 8; ++stage)
+    {
+        device->SetTexture(stage, shadow);
+        device->SetSamplerState(stage, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+        device->SetSamplerState(stage, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+        device->SetSamplerState(stage, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+        device->SetSamplerState(stage, D3DSAMP_SRGBTEXTURE, FALSE);
+        device->SetSamplerState(stage, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+        device->SetSamplerState(stage, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+    }
+    struct ShadowCase
+    {
+        const char* name;
+        float count;
+        float characterX;
+        float nearX;
+        float middleX;
+        float farX;
+        float receiverDepth;
+        float visibility;
+    };
+    const ShadowCase cases[] = {
+        {"disabled preserves the unobstructed screen-space fallback", 0, -0.5f, 2, 2, 2, 0.5f, 1},
+        {"off-screen character occluder blocks light", 1, -0.5f, 2, 2, 2, 0.5f, 0},
+        {"receiver before the caster remains lit", 1, -0.5f, 2, 2, 2, 0.1f, 1},
+        {"outside shadow depth range uses fallback", 1, -0.5f, 2, 2, 2, 1.1f, 1},
+        {"four depth comparisons filter a shadow edge", 1, 0, 2, 2, 2, 0.5f, 0.5f},
+        {"character map border fades without a seam", 1, -0.845f, 2, 2, 2, 0.5f, 0.5f},
+        {"off-screen environment caster blocks light", 4, 2, -0.5f, 2, 2, 0.5f, 0},
+        {"middle cascade covers missing near cascade", 4, 2, 2, -0.5f, 2, 0.5f, 0},
+        {"far cascade covers missing nearer cascades", 4, 2, 2, 2, -0.5f, 0.5f, 0},
+        {"near cascade takes precedence over coarse far depth", 4, 2, 0.5f, -0.5f, -0.5f, 0.5f, 1},
+        {"cascade border blends into the next map", 4, 2, -0.845f, 0.5f, 0.5f, 0.5f, 0.5f},
+    };
+    const float quad[4][4] = {{-0.5f, -0.5f, 0, 1}, {7.5f, -0.5f, 0, 1},
+                             {-0.5f, 7.5f, 0, 1}, {7.5f, 7.5f, 0, 1}};
+    for (const ShadowCase& sample : cases)
+    {
+        float constants[99][4] = {};
+        constants[0][2] = constants[0][3] = 8;
+        constants[1][0] = constants[1][2] = constants[1][3] = 1;
+        constants[2][0] = constants[2][1] = 1;
+        constants[3][0] = 1.0004f;
+        constants[3][1] = -0.40016f;
+        constants[3][2] = 1000;
+        constants[3][3] = 0.94f;
+        for (int row = 0; row < 4; ++row)
+            constants[4 + row][row] = 1;
+        constants[8][0] = constants[8][1] = 8;
+        constants[8][2] = constants[8][3] = 0.125f;
+        constants[9][2] = constants[9][3] = 1;
+        constants[10][0] = 1.5f;
+        constants[10][1] = 0.035f;
+        constants[10][2] = 1;
+        constants[10][3] = 4;
+        constants[11][1] = constants[11][3] = 1000;
+        constants[11][2] = 850;
+        constants[12][1] = 0.001f;
+        constants[12][3] = 1;
+        constants[14][0] = constants[14][1] = constants[14][2] = constants[14][3] = 1;
+        constants[16][3] = 1;
+        constants[17][0] = 1;
+        constants[17][2] = 1000;
+        constants[36][0] = sample.count;
+        const float mapX[] = {sample.characterX, sample.nearX, sample.middleX, sample.farX};
+        for (int map = 0; map < 4; ++map)
+        {
+            constants[37 + map * 3][3] = mapX[map];
+            constants[39 + map * 3][3] = sample.receiverDepth;
+            constants[49 + map][0] = constants[49 + map][1] = 0.25f;
+        }
+        device->SetPixelShaderConstantF(0, &constants[0][0], 99);
+        device->BeginScene();
+        const HRESULT draw = device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(quad[0]));
+        device->EndScene();
+        const float actual = ReadFogIntegrationOpacity(device, resources);
+        const float expected = sample.visibility * (1.0f - std::exp(-1.0f));
+        char label[160];
+        std::snprintf(label, sizeof(label), "world shadow quality %d: %s", quality, sample.name);
+        Check(SUCCEEDED(draw) && std::fabs(actual - expected) <= 2.0f / 255.0f, label);
+    }
+    for (DWORD stage = 4; stage < 8; ++stage)
+        device->SetTexture(stage, nullptr);
+    shadow->Release();
+}
+
 void CheckFogIntegration(IDirect3DDevice9* device)
 {
     CheckShortRangeAuthoredFog();
@@ -139,7 +248,7 @@ void CheckFogIntegration(IDirect3DDevice9* device)
             float worst = 0.0f;
             for (int sample = 0; sample < 4; ++sample)
             {
-                float constants[36][4] = {};
+                float constants[99][4] = {};
                 constants[0][2] = constants[0][3] = 8.0f;
                 constants[1][0] = 1.0f;
                 constants[1][1] = static_cast<float>(sample * 17);
@@ -165,7 +274,7 @@ void CheckFogIntegration(IDirect3DDevice9* device)
                 constants[15][1] = medium.heightFalloff;
                 constants[16][3] = 1.0f;
                 constants[17][2] = medium.end;
-                device->SetPixelShaderConstantF(0, &constants[0][0], 36);
+                device->SetPixelShaderConstantF(0, &constants[0][0], 99);
                 device->BeginScene();
                 device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(quad[0]));
                 device->EndScene();
@@ -183,6 +292,7 @@ void CheckFogIntegration(IDirect3DDevice9* device)
                           medium.name, quality + 1, worst * 255.0f);
             Check(worst <= 2.0f / 255.0f, label);
         }
+        CheckWorldShadowIntegration(device, resources, quality + 1);
         shader->Release();
     }
     device->SetRenderTarget(0, resources.previousTarget);

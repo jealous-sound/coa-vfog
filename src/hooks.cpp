@@ -33,6 +33,7 @@ uintptr_t g_screenEffectsTarget = engine::kScreenEffectsTarget;
 bool g_failed = false;
 bool g_renderedLastFrame = false;
 bool g_renderedThisFrame = false;
+bool g_opaqueFogRendered = false;
 bool g_stockFogPushed = false;
 engine::StockFog g_savedStockFog = {};
 bool g_deviceChecked = false;
@@ -102,13 +103,15 @@ void RestorePushedStockFog()
 void OnFrameBegin()
 {
     g_renderedThisFrame = false;
+    g_opaqueFogRendered = false;
+    EndMaterialFog(GameFogDevice());
     if (FogDrawsInPlaceOfStockFog())
         PushStockFogOutOfRange();
 }
 
 void OnLiquidSurfaceBegin()
 {
-    if (g_failed || !g_renderedLastFrame || !GlobalConfig().Get().liquidDepth)
+    if (g_failed || g_opaqueFogRendered || !g_renderedLastFrame || !GlobalConfig().Get().liquidDepth)
         return;
     g_liquidDepthWriteDevice = GameFogDevice();
     ForceDepthWrite(g_liquidDepthWriteDevice, true);
@@ -122,17 +125,10 @@ void OnLiquidSurfaceEnd()
 
 void OnFrameEnd()
 {
+    EndMaterialFog(GameFogDevice());
     OnLiquidSurfaceEnd();
     RestorePushedStockFog();
     g_renderedLastFrame = g_renderedThisFrame;
-}
-
-void OnOpaqueDone()
-{
-    FogDevice* device = g_failed ? nullptr : GameFogDevice();
-    if (!device)
-        return;
-    engine::CaptureOpaqueState(RealDevice(device));
 }
 
 void ReloadConfigAfterInterval()
@@ -151,23 +147,19 @@ void UseClientFogRangeInsteadOfPushed(FrameInputs& in)
     in.fogEnd = g_savedStockFog.end[engine::kFrameInputsFogGroup];
 }
 
-void OnWorldDone()
+bool RenderCurrentWorldFog(FogDevice* device, bool materialFog)
 {
-    FogDevice* device = g_failed ? nullptr : GameFogDevice();
     if (!device || !engine::HasOpaqueState())
-    {
-        engine::ClearOpaqueState();
-        return;
-    }
+        return false;
 
     ReloadConfigAfterInterval();
 
     FrameInputs in = {};
     bool valid = engine::BuildFrameInputs(in);
-    engine::ClearOpaqueState();
     if (g_stockFogPushed)
         UseClientFogRangeInsteadOfPushed(in);
-    const Config& cfg = GlobalConfig().Get();
+    Config cfg = GlobalConfig().Get();
+    cfg.materialFog = cfg.materialFog && materialFog;
     const char* skip = "invalid frame inputs";
     bool rendered = false;
     if (valid && (!in.inLiquid || cfg.underwater))
@@ -181,6 +173,32 @@ void OnWorldDone()
         VF_LOG_INFO("fog skipped: %s", skip);
     }
     g_lastSkip = rendered ? "" : skip;
+    return rendered;
+}
+
+void OnOpaqueDone()
+{
+    FogDevice* device = g_failed ? nullptr : GameFogDevice();
+    if (!device)
+        return;
+    engine::CaptureOpaqueState(RealDevice(device));
+    ReloadConfigAfterInterval();
+    const Config& cfg = GlobalConfig().Get();
+    if (cfg.materialFog && cfg.debugView == 0 && cfg.stockFog == 1 && MaterialFogCompatible(device))
+    {
+        g_opaqueFogRendered = RenderCurrentWorldFog(device, true);
+        if (g_opaqueFogRendered)
+            BeginRenderedMaterialFog(device);
+    }
+}
+
+void OnWorldDone()
+{
+    FogDevice* device = GameFogDevice();
+    EndMaterialFog(device);
+    if (!g_failed && !g_opaqueFogRendered)
+        RenderCurrentWorldFog(device, false);
+    engine::ClearOpaqueState();
 }
 
 int GuardFilter(unsigned code, const char* where)
@@ -446,7 +464,11 @@ FogFrameStatus LastFogFrameStatus()
     if (g_failed)
         return {false, "stopped after an exception, see CoAVolFog.log"};
     if (g_renderedLastFrame)
+    {
+        if (GlobalConfig().Get().materialFog && !MaterialFogCompatible(GameFogDevice()))
+            return {true, "Material fog compatibility fallback; see CoAVolFog.log"};
         return {true, ""};
+    }
     return {false, *g_lastSkip ? g_lastSkip : "waiting for the world to render"};
 }
 

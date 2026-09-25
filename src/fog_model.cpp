@@ -86,6 +86,7 @@ void Unbounded(FogLayer& l)
 {
     l.skyFalloff = 0.0f;
     l.endDistance = kNoLimit;
+    l.densityVariation = 1.0f;
 }
 
 void DerivedLayers(const FrameInputs& in, const Config& cfg, const FogParams& p, float sunScatter, float fogDistance,
@@ -258,6 +259,25 @@ float WeatherStormWeight(const LightParamsSelection& selection)
                                                                    : 0.0f;
 }
 
+float InteriorWeight(const FrameInputs& in, const Config& cfg)
+{
+    return cfg.interiorAware && in.localLights.cameraInterior && std::isfinite(in.localLights.interiorBlend)
+               ? std::clamp(in.localLights.interiorBlend, 0.0f, 1.0f)
+               : 0.0f;
+}
+
+void ApplyInteriorFog(float weight, const Config& cfg, FogParams& fog)
+{
+    const float retainedDensity = std::isfinite(cfg.interiorDensity) ? std::clamp(cfg.interiorDensity, 0.0f, 1.0f)
+                                                                   : 0.15f;
+    const float densityScale = 1.0f + (retainedDensity - 1.0f) * weight;
+    for (int i = 0; i < kSceneLayers; ++i)
+        fog.layers[i].density *= densityScale;
+    for (FogLayer& layer : fog.layers)
+        Scale(layer.diffuse, 1.0f - weight, layer.diffuse);
+    fog.lightVisibility *= 1.0f - weight;
+}
+
 float ClientToClassicDirectLight(const AuthoredFog& fog, const float* clientDirectLight, bool linear)
 {
     if (!fog.hasClassicDirectLight)
@@ -283,6 +303,7 @@ FogParams BuildFogParams(const FrameInputs& in, const Config& cfg, const Authore
     FogParams p = {};
     p.linear = cfg.colorSpace == 1;
     p.authored = authored != nullptr;
+    const float interiorWeight = InteriorWeight(in, cfg);
     float fogColor[3];
     UnpackColor(in.fogColor, fogColor);
     UnpackColor(in.directColor, p.lightColor);
@@ -313,13 +334,15 @@ FogParams BuildFogParams(const FrameInputs& in, const Config& cfg, const Authore
         AuthoredLayers(*authored, cfg, p, cfg.sunScatter * p.directLightMatch, p.layers);
         HaloHue(*authored, p.rayColor);
         DistanceLayer(in, cfg, p, elevationFadedScatter, fogColor, distanceFog);
-        distanceFog.density *= ClassicFogThinness(p, *authored, in.camPos[2]);
+        const float thinness = ClassicFogThinness(p, *authored, in.camPos[2]);
+        distanceFog.density *= thinness + (1.0f - thinness) * interiorWeight;
     }
     else
     {
         DerivedLayers(in, cfg, p, elevationFadedScatter, fogDistance, fogColor, p.layers);
         DistanceLayer(in, cfg, p, elevationFadedScatter, fogColor, distanceFog);
     }
+    ApplyInteriorFog(interiorWeight, cfg, p);
     return p;
 }
 

@@ -3,6 +3,7 @@
 #include "config.h"
 #include "engine.h"
 #include "fog_data.h"
+#include "fog_volume.h"
 
 #include <d3d9.h>
 
@@ -18,6 +19,8 @@ public:
                 const FrameInputs& in, const Config& cfg);
 
     const char* LastSkipReason() const { return m_skip; }
+    const MaterialFogVolume& MaterialVolume() const { return m_materialVolume; }
+    bool AdaptiveLightingHistory() const { return m_adaptiveLightingHistory; }
 
 private:
     bool EnsureShaders(IDirect3DDevice9* dev);
@@ -36,10 +39,13 @@ private:
                       const D3DSURFACE_DESC& depthDesc, const FrameInputs& in, const Config& cfg);
 
     IDirect3DVertexShader9* m_vs = nullptr;
+    IDirect3DDevice9* m_unsupportedShaderDevice = nullptr;
     IDirect3DPixelShader9* m_march[3] = {};
+    IDirect3DPixelShader9* m_atlasShader[3] = {};
+    IDirect3DPixelShader9* m_atlasPrefix = nullptr;
     IDirect3DPixelShader9* m_temporal = nullptr;
     IDirect3DPixelShader9* m_historyDepthShader = nullptr;
-    IDirect3DPixelShader9* m_composite = nullptr;
+    IDirect3DPixelShader9* m_composite[3] = {};
     IDirect3DPixelShader9* m_rayMask = nullptr;
     IDirect3DPixelShader9* m_rayBlur = nullptr;
     IDirect3DPixelShader9* m_probe = nullptr;
@@ -51,6 +57,13 @@ private:
     IDirect3DTexture9* m_historyDepth = nullptr;
     IDirect3DTexture9* m_rays[2] = {};
     IDirect3DTexture9* m_sceneCopy = nullptr;
+    IDirect3DTexture9* m_localLightData = nullptr;
+    IDirect3DVolumeTexture9* m_densityNoise = nullptr;
+    IDirect3DTexture9* m_fogAtlas = nullptr;
+    IDirect3DTexture9* m_fogIntervals = nullptr;
+    UINT m_atlasWidth = 0;
+    UINT m_atlasHeight = 0;
+    MaterialFogVolume m_materialVolume;
     IDirect3DTexture9* m_probeTarget = nullptr;
     IDirect3DSurface9* m_probeReadback = nullptr;
     UINT m_lowW = 0;
@@ -64,9 +77,12 @@ private:
 
     int m_historyIndex = 0;
     bool m_historyValid = false;
+    bool m_adaptiveLightingHistory = false;
+    uint32_t m_prevLocalLightCount = 0;
     Config m_prevConfig;
     int m_prevMap = -1;
     int m_prevLightSlot = -1;
+    int m_prevShadowMode = -1;
     float m_prevWorldToView[16] = {};
     float m_prevProj[16] = {};
     float m_prevCam[3] = {};
