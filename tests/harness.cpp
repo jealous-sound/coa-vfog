@@ -15,8 +15,11 @@
 
 extern "C" __declspec(dllimport) IDirect3D9* __cdecl vf_test_wrap_direct3d9(IDirect3D9*(WINAPI*)(UINT), UINT);
 extern "C" __declspec(dllimport) void __cdecl vf_test_set_config(const Config*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_get_config(Config*);
 extern "C" __declspec(dllimport) int __cdecl vf_test_render(const FrameInputs*, const char**);
 extern "C" __declspec(dllimport) void __cdecl vf_test_force_depth_write(int);
+extern "C" __declspec(dllimport) int __cdecl vf_test_overlay_visible();
+extern "C" __declspec(dllimport) void __cdecl vf_test_draw_overlay();
 
 namespace
 {
@@ -31,6 +34,24 @@ constexpr float kClientWdlRawDepth = 0.9985f;
 constexpr float kNoWdlPatch = 0.0f;
 constexpr float kDisplayGamma = 2.2f;
 constexpr int kReferenceIntegrationSteps = 8192;
+constexpr BYTE kKeyHeld = 0x80;
+constexpr UINT kKeyRepeatCountOne = 1;
+constexpr UINT kKeyReleaseTransition = 0xC0000000u;
+constexpr int kOverlaySettleFrames = 3;
+constexpr UINT kOverlayProbeLeft = 40;
+constexpr UINT kOverlayProbeTop = 60;
+constexpr UINT kOverlayProbeRight = 400;
+constexpr UINT kOverlayProbeBottom = 300;
+constexpr int kOverlayTitleBarX = 200;
+constexpr int kOverlayTitleBarY = 40;
+constexpr int kBesideOverlayX = 1100;
+constexpr int kBesideOverlayY = 600;
+constexpr int kOverlayBodyX = 480;
+constexpr int kOverlayBodyY = 75;
+constexpr int kDensitySliderY = 197;
+constexpr int kDensitySliderGrabX = 60;
+constexpr int kDensitySliderDragX = 250;
+constexpr float kDensityAfterDragAtLeast = 2.5f;
 
 int g_failures = 0;
 
@@ -1030,7 +1051,356 @@ void SaveClassicSunJustAboveViewCaptures(Harness& h, const Config& cfg, Vec3 eye
     }
 }
 
-int Run(const std::wstring& outDir, const std::string& dataPath)
+std::wstring FullPath(const std::wstring& path)
+{
+    wchar_t full[MAX_PATH] = {};
+    return GetFullPathNameW(path.c_str(), MAX_PATH, full, nullptr) ? std::wstring(full) : path;
+}
+
+std::string NarrowPath(const std::wstring& path)
+{
+    char narrow[MAX_PATH] = {};
+    WideCharToMultiByte(CP_ACP, 0, path.c_str(), -1, narrow, MAX_PATH, nullptr, nullptr);
+    return narrow;
+}
+
+std::string ReadText(const std::wstring& path)
+{
+    std::string text;
+    FILE* f = _wfopen(path.c_str(), L"rb");
+    if (!f)
+        return text;
+    char chunk[4096];
+    for (size_t n; (n = std::fread(chunk, 1, sizeof(chunk), f)) > 0;)
+        text.append(chunk, n);
+    std::fclose(f);
+    return text;
+}
+
+bool SameHotkey(const Hotkey& a, const Hotkey& b)
+{
+    return a.virtualKey == b.virtualKey && a.ctrl == b.ctrl && a.shift == b.shift && a.alt == b.alt;
+}
+
+void CheckOverlayKeyNames()
+{
+    Hotkey key = {};
+    Check(ParseHotkey("Ctrl+F7", key) && SameHotkey(key, {VK_F7, true, false, false}), "OverlayKey Ctrl+F7 parses");
+    Check(ParseHotkey(" shift + ALT + pageup ", key) && SameHotkey(key, {VK_PRIOR, false, true, true}),
+          "OverlayKey modifiers and key names ignore case and spaces");
+    Check(ParseHotkey("o", key) && SameHotkey(key, {'O', false, false, false}) && ParseHotkey("F24", key) &&
+              key.virtualKey == VK_F24,
+          "OverlayKey takes letters and F1-F24");
+    Hotkey untouched = kDefaultOverlayHotkey;
+    const char* const malformed[] = {"", "Ctrl+", "F25", "F0", "Ctrl+F7+F8", "Win+F7", "Space"};
+    bool rejected = true;
+    for (const char* text : malformed)
+        rejected = !ParseHotkey(text, untouched) && rejected;
+    Check(rejected && SameHotkey(untouched, kDefaultOverlayHotkey), "malformed OverlayKey values are rejected");
+    Check(HotkeyName(kDefaultOverlayHotkey) == "Ctrl+F7" &&
+              HotkeyName({VK_HOME, false, true, true}) == "Shift+Alt+Home",
+          "overlay key names read back as written");
+}
+
+void CheckSettingsSaveKeepsTheIni(const std::wstring& outDir, const std::wstring& shippedIni)
+{
+    const std::wstring savedIni = FullPath(outDir + L"\\saved.ini");
+    Check(CopyFileW(shippedIni.c_str(), savedIni.c_str(), FALSE) != FALSE, "shipped CoAVolFog.ini copied");
+    ConfigStore store;
+    store.Load(NarrowPath(savedIni));
+    const Config shipped = store.Get();
+    Check(!store.HasUnsavedChanges(), "a freshly loaded INI has no unsaved changes");
+
+    Config edited = shipped;
+    edited.enable = false;
+    edited.overlay = false;
+    edited.quality = 3;
+    edited.density = 2.5f;
+    edited.temporal = 0.5f;
+    edited.lightShafts = !shipped.lightShafts;
+    edited.farClipMax = 900.0f;
+    edited.debugView = 2;
+    edited.godRays = 99.0f;
+    store.Apply(edited);
+    const Config applied = store.Get();
+    Check(applied.enable == shipped.enable && applied.overlay == shipped.overlay && applied.godRays == 4.0f &&
+              store.HasUnsavedChanges(),
+          "overlay edits keep the restart-only switches and are clamped like the INI");
+    Check(store.Save() && !store.HasUnsavedChanges(), "overlay settings save to the INI");
+
+    ConfigStore reloaded;
+    reloaded.Load(NarrowPath(savedIni));
+    const Config& r = reloaded.Get();
+    Check(SameLiveSettings(r, applied) && r.quality == 3 && r.density == 2.5f && r.farClipMax == 900.0f &&
+              r.lightShafts == edited.lightShafts && r.enable == shipped.enable && r.overlay == shipped.overlay,
+          "saved settings reload unchanged and the restart-only keys stay as they were");
+    const std::string text = ReadText(savedIni);
+    Check(text.rfind("; CoAVolFog settings.", 0) == 0 && text.find("\nDensity=2.5") != std::string::npos &&
+              text.find("\nHaze=1.0") != std::string::npos && text.find("\nEnable=1") != std::string::npos &&
+              text.find("; Global density multiplier") != std::string::npos,
+          "saving rewrites only the changed lines and keeps the comments");
+
+    Config scratch = store.Get();
+    scratch.density = 0.1f;
+    store.Apply(scratch);
+    store.Revert();
+    Check(store.Get().density == 2.5f && !store.HasUnsavedChanges(), "Revert goes back to the saved settings");
+
+    Config typed = store.Get();
+    typed.haze = 1.23456f;
+    store.Apply(typed);
+    WritePrivateProfileStringW(L"CoAVolFog", L"Quality", L"1", savedIni.c_str());
+    const bool mergedSave = store.Save();
+    ConfigStore afterMerge;
+    afterMerge.Load(NarrowPath(savedIni));
+    Check(mergedSave && store.Get().quality == 1 && afterMerge.Get().quality == 1 && afterMerge.Get().density == 2.5f,
+          "Save keeps a hand edit of a setting the window did not change");
+    Check(store.Get().haze == afterMerge.Get().haze && !store.HasUnsavedChanges() &&
+              ReadText(savedIni).find("\nHaze=1.235") != std::string::npos,
+          "Save records the value it wrote, rounded like the INI");
+}
+
+struct ClientInput
+{
+    int keyDowns = 0;
+    int mouseDowns = 0;
+    int mouseUps = 0;
+    int mouseMoves = 0;
+};
+
+ClientInput g_clientInput;
+
+LRESULT CALLBACK ClientWindowProc(HWND window, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)
+        ++g_clientInput.keyDowns;
+    if (msg == WM_LBUTTONDOWN)
+        ++g_clientInput.mouseDowns;
+    if (msg == WM_LBUTTONUP)
+        ++g_clientInput.mouseUps;
+    if (msg == WM_MOUSEMOVE)
+        ++g_clientInput.mouseMoves;
+    return DefWindowProcW(window, msg, wParam, lParam);
+}
+
+void HoldModifiers(bool ctrl, bool shift, bool alt)
+{
+    BYTE keys[256] = {};
+    GetKeyboardState(keys);
+    keys[VK_CONTROL] = ctrl ? kKeyHeld : 0;
+    keys[VK_SHIFT] = shift ? kKeyHeld : 0;
+    keys[VK_MENU] = alt ? kKeyHeld : 0;
+    SetKeyboardState(keys);
+}
+
+void PressKey(HWND window, unsigned virtualKey)
+{
+    const UINT pressed = kKeyRepeatCountOne | (MapVirtualKeyW(virtualKey, MAPVK_VK_TO_VSC) << 16);
+    SendMessageW(window, WM_KEYDOWN, virtualKey, static_cast<LPARAM>(pressed));
+    SendMessageW(window, WM_KEYUP, virtualKey, static_cast<LPARAM>(pressed | kKeyReleaseTransition));
+}
+
+void PressHotkey(HWND window, const Hotkey& key)
+{
+    HoldModifiers(key.ctrl, key.shift, key.alt);
+    PressKey(window, key.virtualKey);
+    HoldModifiers(false, false, false);
+}
+
+LPARAM ClientPointOfBackBufferPixel(const Harness& h, int x, int y)
+{
+    RECT client = {};
+    GetClientRect(h.window, &client);
+    return MAKELPARAM(MulDiv(x, client.right, static_cast<int>(h.pp.BackBufferWidth)),
+                      MulDiv(y, client.bottom, static_cast<int>(h.pp.BackBufferHeight)));
+}
+
+void DrawOverlayFrames(int frames)
+{
+    for (int i = 0; i < frames; ++i)
+        vf_test_draw_overlay();
+}
+
+void ClickAfterHover(HWND window, LPARAM point)
+{
+    SendMessageW(window, WM_MOUSEMOVE, 0, point);
+    DrawOverlayFrames(1);
+    SendMessageW(window, WM_LBUTTONDOWN, MK_LBUTTON, point);
+    SendMessageW(window, WM_LBUTTONUP, 0, point);
+    DrawOverlayFrames(2);
+}
+
+double MeanLumaChange(const Image& a, const Image& b, UINT x0, UINT y0, UINT x1, UINT y1)
+{
+    double sum = 0.0;
+    for (UINT y = y0; y < y1; ++y)
+        for (UINT x = x0; x < x1; ++x)
+            sum += std::fabs(a.Luma(x, y) - b.Luma(x, y));
+    return sum / (static_cast<double>(x1 - x0) * (y1 - y0));
+}
+
+double OverlayProbeChange(const Image& a, const Image& b)
+{
+    return MeanLumaChange(a, b, kOverlayProbeLeft, kOverlayProbeTop, kOverlayProbeRight, kOverlayProbeBottom);
+}
+
+void CheckOverlayInput(Harness& h)
+{
+    const Hotkey key = kDefaultOverlayHotkey;
+    g_clientInput = {};
+    PressHotkey(h.window, key);
+    Check(vf_test_overlay_visible() == 1 && g_clientInput.keyDowns == 0,
+          "the overlay key opens the overlay without reaching the client");
+    PressKey(h.window, 'W');
+    Check(g_clientInput.keyDowns == 1, "other keys reach the client while the overlay is open");
+
+    DrawOverlayFrames(kOverlaySettleFrames);
+    ClickAfterHover(h.window, ClientPointOfBackBufferPixel(h, kOverlayTitleBarX, kOverlayTitleBarY));
+    Check(g_clientInput.mouseDowns == 0, "clicks on the overlay window do not reach the client");
+    Check(g_clientInput.mouseMoves == 1, "mouse moves over the overlay window still reach the client");
+    ClickAfterHover(h.window, ClientPointOfBackBufferPixel(h, kBesideOverlayX, kBesideOverlayY));
+    Check(g_clientInput.mouseDowns == 1, "clicks beside the overlay window reach the client");
+
+    PressHotkey(h.window, key);
+    Check(vf_test_overlay_visible() == 0 && g_clientInput.keyDowns == 1, "the overlay key closes the overlay");
+
+    Config off = {};
+    off.overlay = false;
+    vf_test_set_config(&off);
+    PressHotkey(h.window, key);
+    Check(vf_test_overlay_visible() == 0 && g_clientInput.keyDowns == 2,
+          "with Overlay=0 the overlay key reaches the client");
+    Config on = {};
+    vf_test_set_config(&on);
+}
+
+void DragAcross(HWND window, LPARAM from, LPARAM to)
+{
+    SendMessageW(window, WM_MOUSEMOVE, 0, from);
+    DrawOverlayFrames(1);
+    SendMessageW(window, WM_LBUTTONDOWN, MK_LBUTTON, from);
+    DrawOverlayFrames(2);
+    SendMessageW(window, WM_MOUSEMOVE, MK_LBUTTON, to);
+    DrawOverlayFrames(2);
+    SendMessageW(window, WM_LBUTTONUP, 0, to);
+    DrawOverlayFrames(2);
+}
+
+void CheckOverlayWidgets(Harness& h)
+{
+    Config start = {};
+    vf_test_set_config(&start);
+    PressHotkey(h.window, kDefaultOverlayHotkey);
+    DrawOverlayFrames(kOverlaySettleFrames);
+    DragAcross(h.window, ClientPointOfBackBufferPixel(h, kDensitySliderGrabX, kDensitySliderY),
+               ClientPointOfBackBufferPixel(h, kDensitySliderDragX, kDensitySliderY));
+    Config dragged = {};
+    vf_test_get_config(&dragged);
+    std::printf("     Density after dragging its slider: %.2f\n", dragged.density);
+    Check(dragged.density > kDensityAfterDragAtLeast, "the Density slider drags although its section is named Density");
+
+    g_clientInput = {};
+    const LPARAM panelBody = ClientPointOfBackBufferPixel(h, kOverlayBodyX, kOverlayBodyY);
+    ClickAfterHover(h.window, panelBody);
+    DrawOverlayFrames(kOverlaySettleFrames);
+    PressKey(h.window, VK_TAB);
+    DrawOverlayFrames(kOverlaySettleFrames);
+    PressKey(h.window, 'W');
+    std::printf("     key presses the client saw for Tab then W: %d\n", g_clientInput.keyDowns);
+    Check(g_clientInput.keyDowns == 2, "Tab with the overlay focused does not take the keyboard from the client");
+
+    g_clientInput = {};
+    const LPARAM beside = ClientPointOfBackBufferPixel(h, kBesideOverlayX, kBesideOverlayY);
+    SendMessageW(h.window, WM_MOUSEMOVE, 0, beside);
+    DrawOverlayFrames(kOverlaySettleFrames);
+    SendMessageW(h.window, WM_MOUSEMOVE, 0, panelBody);
+    SendMessageW(h.window, WM_LBUTTONDOWN, MK_LBUTTON, panelBody);
+    DrawOverlayFrames(2);
+    SendMessageW(h.window, WM_LBUTTONUP, 0, panelBody);
+    std::printf("     button presses / releases the client saw: %d / %d\n", g_clientInput.mouseDowns,
+                g_clientInput.mouseUps);
+    Check(g_clientInput.mouseDowns == 1 && g_clientInput.mouseUps == 1,
+          "a button whose press reached the client is released to the client");
+    PressHotkey(h.window, kDefaultOverlayHotkey);
+    vf_test_set_config(&start);
+
+    Config pauseKey = {};
+    pauseKey.overlayKey = {VK_PAUSE, true, false, false};
+    vf_test_set_config(&pauseKey);
+    HoldModifiers(true, false, false);
+    PressKey(h.window, VK_CANCEL);
+    const bool opened = vf_test_overlay_visible() == 1;
+    PressKey(h.window, VK_CANCEL);
+    HoldModifiers(false, false, false);
+    Check(opened && vf_test_overlay_visible() == 0,
+          "Ctrl+Pause toggles the overlay although Windows reports it as Cancel");
+    vf_test_set_config(&start);
+}
+
+void DrawEngineFrameWithoutPresent(Harness& h, const D3DVIEWPORT9& world)
+{
+    h.BeginFrame();
+    h.SetEngineState(world);
+    h.dev->EndScene();
+}
+
+void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring& outDir)
+{
+    IDirect3DIndexBuffer9* engineIndices = nullptr;
+    h.dev->CreateIndexBuffer(64, D3DUSAGE_WRITEONLY, D3DFMT_INDEX16, D3DPOOL_MANAGED, &engineIndices, nullptr);
+    PressHotkey(h.window, kDefaultOverlayHotkey);
+    Image before;
+    Image after;
+    bool statesKept = true;
+    bool indicesKept = engineIndices != nullptr;
+    for (int frame = 0; frame < kOverlaySettleFrames; ++frame)
+    {
+        DrawEngineFrameWithoutPresent(h, world);
+        h.dev->SetIndices(engineIndices);
+        before = Capture(h.dev);
+        Sentinel s0;
+        ReadSentinel(h.dev, s0);
+        vf_test_draw_overlay();
+        Sentinel s1;
+        ReadSentinel(h.dev, s1);
+        if (!SameSentinel(s0, s1))
+        {
+            if (statesKept)
+                ReportSentinelDifferences(s0, s1);
+            statesKept = false;
+        }
+        ReleaseSentinel(s0);
+        ReleaseSentinel(s1);
+        IDirect3DIndexBuffer9* boundIndices = nullptr;
+        h.dev->GetIndices(&boundIndices);
+        indicesKept = boundIndices == engineIndices && indicesKept;
+        if (boundIndices)
+            boundIndices->Release();
+        after = Capture(h.dev);
+    }
+    h.dev->SetIndices(nullptr);
+    if (engineIndices)
+        engineIndices->Release();
+    SavePng(outDir + L"\\overlay.png", after.w, after.h, after.bgra);
+    Check(statesKept && indicesKept,
+          "the overlay restores render, sampler, shader, constant, stream, index, viewport, scissor and target state");
+    const double panelChange = OverlayProbeChange(before, after);
+    std::printf("     mean luma change under the overlay window: %.4f\n", panelChange);
+    Check(panelChange > 0.05, "the overlay draws its window over the frame");
+    Check(MeanLumaChange(before, after, kBesideOverlayX - 200, kBesideOverlayY - 100, after.w, after.h) == 0.0,
+          "the overlay leaves the rest of the frame untouched");
+
+    PressHotkey(h.window, kDefaultOverlayHotkey);
+    DrawEngineFrameWithoutPresent(h, world);
+    const Image hiddenBefore = Capture(h.dev);
+    vf_test_draw_overlay();
+    Check(MeanLumaChange(hiddenBefore, Capture(h.dev), 0, 0, hiddenBefore.w, hiddenBefore.h) == 0.0,
+          "the hidden overlay draws nothing");
+    PressHotkey(h.window, kDefaultOverlayHotkey);
+    DrawOverlayFrames(1);
+}
+
+int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstring& iniPath)
 {
     FogData classic;
     Check(classic.Load(dataPath), "Classic fog data loads");
@@ -1045,9 +1415,11 @@ int Run(const std::wstring& outDir, const std::string& dataPath)
 
     CreateDirectoryW(outDir.c_str(), nullptr);
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    CheckOverlayKeyNames();
+    CheckSettingsSaveKeepsTheIni(outDir, FullPath(iniPath));
 
     WNDCLASSW wc = {};
-    wc.lpfnWndProc = DefWindowProcW;
+    wc.lpfnWndProc = ClientWindowProc;
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.lpszClassName = L"vfog_harness";
     RegisterClassW(&wc);
@@ -1078,6 +1450,8 @@ int Run(const std::wstring& outDir, const std::string& dataPath)
     h.pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
     DWORD engineFlags = D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_PUREDEVICE | D3DCREATE_FPU_PRESERVE;
     Check(engineFlags == 0x52, "harness uses the client's device flags");
+    Config startup = {};
+    vf_test_set_config(&startup);
     HRESULT hr = h.d3d->CreateDevice(0, D3DDEVTYPE_HAL, h.window, engineFlags, &h.pp, &h.dev);
     Check(SUCCEEDED(hr) && h.dev, "CreateDevice through the wrapper");
     if (!h.dev)
@@ -1437,6 +1811,10 @@ int Run(const std::wstring& outDir, const std::string& dataPath)
     Config restored = cfg;
     vf_test_set_config(&restored);
 
+    CheckOverlayInput(h);
+    CheckOverlayWidgets(h);
+    CheckOverlayDraw(h, world, outDir);
+
     h.ReleaseEngineObjects();
     h.pp.BackBufferWidth = 1024;
     h.pp.BackBufferHeight = 600;
@@ -1459,6 +1837,10 @@ int Run(const std::wstring& outDir, const std::string& dataPath)
     FrameInputs in = MakeInputs(view, proj, eye, at, resized);
     Check(vf_test_render(&in, &skip) != 0, (std::string("fog renders after Reset ") + skip).c_str());
     h.dev->EndScene();
+    const Image beforeOverlay = Capture(h.dev);
+    DrawOverlayFrames(kOverlaySettleFrames);
+    Check(OverlayProbeChange(beforeOverlay, Capture(h.dev)) > 0.05, "the overlay draws again after Reset");
+    PressHotkey(h.window, kDefaultOverlayHotkey);
 
     h.ReleaseEngineObjects();
     ULONG devRefs = h.dev->Release();
@@ -1977,6 +2359,7 @@ int wmain(int argc, wchar_t** argv)
 {
     std::wstring out = L"harness-out";
     std::string data = "fogdata.bin";
+    std::wstring ini = L"CoAVolFog.ini";
     std::wstring scene;
     for (int i = 1; i + 1 < argc; ++i)
     {
@@ -1988,6 +2371,8 @@ int wmain(int argc, wchar_t** argv)
             WideCharToMultiByte(CP_ACP, 0, argv[i + 1], -1, path, MAX_PATH, nullptr, nullptr);
             data = path;
         }
+        if (std::wcscmp(argv[i], L"--ini") == 0)
+            ini = argv[i + 1];
         if (std::wcscmp(argv[i], L"--scene") == 0)
         {
             scene = argv[i + 1];
@@ -2002,5 +2387,5 @@ int wmain(int argc, wchar_t** argv)
         std::printf("unknown scene %ls (known: harbour)\n", scene.c_str());
         return 2;
     }
-    return Run(out, data);
+    return Run(out, data, ini);
 }

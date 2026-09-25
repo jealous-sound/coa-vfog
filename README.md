@@ -2,19 +2,19 @@
 
 Volumetric fog and light shafts for the Ascension/CoA 3.3.5a (build 12340) Direct3D 9 client.
 
-It implements the `coa-vfog-kit` plan's loader, D3D9 device wrapper with a readable depth buffer,
-world-render hooks and per-pixel ray-march tier. Fog layers come from the Classic client's own
+It consists of a loader, a D3D9 device wrapper with a readable depth buffer, world-render hooks and a
+per-pixel ray-marching renderer. Fog layers come from the Classic client's own
 `LightDataGlobalVolumeFog` data wherever its lights cover the map, and are derived from the 3.3.5
 day/night lighting elsewhere (Outland, Northrend, custom maps).
 
 ## Classic fog data
 
-`tools/convert_classic_fog.py` converts the kit's Classic `Light`, `LightData`, `LightDataGlobalVolumeFog`,
-`ZoneLight` and `ZoneLightPoint` exports into `data/fogdata.bin` (625 lights with all eight condition slots,
-2,079 time keys, 6,234 layer slots, 18 zone-light outlines):
+`tools/convert_classic_fog.py` converts the Classic client's `Light`, `LightData`, `LightDataGlobalVolumeFog`,
+`ZoneLight` and `ZoneLightPoint` tables, exported from its DB2 files as CSV, into `data/fogdata.bin` (625 lights
+with all eight condition slots, 2,079 time keys, 6,234 layer slots, 18 zone-light outlines):
 
 ```powershell
-python tools/convert_classic_fog.py <path>\coa-vfog-kit.zip data/fogdata.bin
+python tools/convert_classic_fog.py <folder or zip with the CSV exports> data/fogdata.bin
 ```
 
 At run time the DLL blends the Classic lights around the camera (spheres: full weight inside the
@@ -53,8 +53,8 @@ data is Classic-derived; keep it in private repositories.
 
 The effect is composited over the world before glow and the UI. The client's glow (`screen + g·blur²`, with
 `g` from the day/night light) runs afterwards and would bleach bright fog to white, so fogged pixels are
-pre-compensated with the live glow amount. Its other term, a blend toward the blur while drunk or under
-water, is left as is. While the effect draws, the stock fog is pushed out of range for
+pre-compensated with the live glow amount. Its other term, a blend toward the blur used by screen effects such as
+drunkenness, is left as is. While the effect draws, the stock fog is pushed out of range for
 the world render and restored afterwards; a frame the effect skips keeps the stock fog.
 
 **View distance.** Ascension's Extensions.dll detours the far-clip clamp (`0x780770`) and caps maps 0, 1, 530
@@ -70,8 +70,9 @@ size-class culling (`environmentDetail`), and creatures the server's visibility 
 | Loader | `version.dll` proxy (all 17 exports forward lazily to the system copy). Its static import loads `CoAVolFog.dll` before the client starts. |
 | D3D9 | The client resolves `Direct3DCreate9` through the delay-loaded `GetProcAddress` slot `[0xB2ED98]`. The DLL points that slot at a filter that returns a wrapped `IDirect3D9`. No d3d9 code is patched, so DXVK or other `d3d9.dll` builds keep working underneath. |
 | Depth | The wrapper creates the device without auto depth and binds an `INTZ` texture as the depth-stencil, which the client caches as its world depth. MSAA is reported unavailable and forced off; `D3DCREATE_PUREDEVICE` is removed. The client draws the world with viewport depth `[0, 0.94]` (`[0xADEEE4]`, set at `0x4F9019`), the distant WDL terrain into `[0.998, 0.999]` with its own projection, and leaves the sky at the clear depth 1; the shaders read depth through the captured world viewport's range and treat anything deeper as beyond the far clip. |
-| Hooks | Four 5-byte call displacements: the world render call (`0x4FB03D`, stock-fog override and restore), after the opaque M2 pass (`0x4F911D`, records the world viewport and matrices), the liquid surface pass (`0x4F9170`, depth writes forced on so water is fogged by its own distance) and before the frame effects (`0x4F9281`, renders the fog). The original bytes are checked first; on any mismatch nothing is patched. Two more retarget the far-clip clamp calls (`0x780810`, `0x781444`) when `FarClipMax` is set at start-up, independently of the fog hooks. |
+| Hooks | Four 5-byte call displacements: the world render call (`0x4FB03D`, stock-fog override and restore), after the opaque M2 pass (`0x4F911D`, records the world viewport and matrices), the liquid surface pass (`0x4F9170`, depth writes forced on) and before the frame effects (`0x4F9281`, renders the fog). The original bytes are checked first; on any mismatch nothing is patched. Two more retarget the far-clip clamp calls (`0x780810`, `0x781444`) when `FarClipMax` is set at start-up, independently of the fog hooks. |
 | State | Every state the passes touch is captured with a recorded state block and restored, plus render targets, depth and stream 0 (whose offset state blocks drop). The client's shader-constant cache stays valid. |
+| Overlay | When a fog device is created, the device window's procedure is chained so the settings window sees input first, and the wrapper's `Present` draws the window over the finished frame (see In-game settings). |
 
 Engine inputs (all static addresses in the 12340 image):
 
@@ -107,33 +108,77 @@ Engine notes behind the code:
 - Screen effects. FFX end runs the current effect `[0xD45780]` when the `ffx` CVar (`[0xD45774]`, int at `+0x30`) and
   the effect's own CVar (`+4`) are on. The glow effect `[0xB74364]` keeps `ffxGlow` there (`0x8BFEDB`); `0x4F8770`
   feeds it the DayNight glow (`0xD38C2C`) as the additive weight of `lerp(screen, blur, other) + g·blur²`, where
-  `other` is the drunk or underwater amount. Under liquid the wave-glow pass list is used and nothing is compensated.
+  `other` is the screen effect's own blend amount.
 - Far clip. The clamp `0x780770` is cdecl `float(float farclip, int mapId)`, result in ST0, caller pops; it bounds
   the value to `[0xA3E708]` (183.33) .. `[0xA3E710]` (1583.33). Its calls at `0x780810` (in the `farclip` CVar setter
   `0x780800`, also reached from Extensions.dll on zone changes) and `0x781444` (map load `0x781430`) are rare, so the
   hook re-reads the INI on every call.
 - Light params slots. `0x7EB180` returns a light's `LightParams` for a slot (`Light` record `+0x1C + 4·slot`). For
-  each light, `0x7EE510` takes slot 0 (1 under water) and, while the storm weight `[0xD38B88]` is above zero, blends
-  in slot 2 (3 under water) by it (`0x7EC220`). The DayNight update sets that weight to `min(1, 4·[0xD38B4C])` just
-  before the light blend (`0x7F3995`); the weather update writes `[0xD38B4C]` (`0x784A01`). The under-water flag is
-  the camera's liquid type (`LiquidType` `+0x28` light). When `[0xD38B58]` holds a slot, the light blend `0x7F3230`
-  uses that slot instead (`0x7F346F`). `0x7ECEC0` stores it from the current `ScreenEffect` row (`+0x1C`, called at
-  `0x4F712D`; values above 7 become −1) and `0x7ECEE0` clears it when the effect ends. In CoA's `ScreenEffect.dbc`
-  the Ghost effect (ID 1) and the other death-style effects use slot 4; a few event effects force slots 0, 1, 2, 3
-  or 5, which the DLL follows the same way.
+  each light, `0x7EE510` takes slot 0 and, while the storm weight `[0xD38B88]` is above zero, blends in slot 2 by it
+  (`0x7EC220`). The DayNight update sets that weight to `min(1, 4·[0xD38B4C])` just before the light blend
+  (`0x7F3995`); the weather update writes `[0xD38B4C]` (`0x784A01`). When `[0xD38B58]` holds a slot, the light blend
+  `0x7F3230` uses that slot instead (`0x7F346F`). `0x7ECEC0` stores it from the current `ScreenEffect` row (`+0x1C`,
+  called at `0x4F712D`; values above 7 become −1) and `0x7ECEE0` clears it when the effect ends. In CoA's
+  `ScreenEffect.dbc` the Ghost effect (ID 1) and the other death-style effects use slot 4; a few event effects force
+  slots 0, 1, 2, 3 or 5, which the DLL follows the same way.
 - Classic data. The converter keeps the `LightDataGlobalVolumeFog` rows the Classic client selects (flag bit 3) and
   stores them at their layer index (0–2), leaving an empty slot where a key has no layer at that index. On maps where
   any Classic light has fog (the old continents), Classic data applies wherever Classic lights hold at least half of
   the blend weight; a light without fog in the active slot counts with zero density, so the fog thins smoothly
   into it and the distance fog hides the far clip there. Maps without Classic fog use the derived layers.
 
-Two readings in the kit were corrected against the disassembly: the fog end is `0xD38BA8` (the kit's
-`0xD38B98` is a density-like value that Extensions.dll patches), and `0xD38C9C` is a near-constant model
-lighting direction (polar angle 110–127°), not the visible sun, so shafts use the sprite positions.
+- Present. The D3D9 backend presents with `IDirect3DDevice9::Present(NULL, NULL, NULL, NULL)` (vtable `+0x44`) on the
+  device it keeps at Gx device `+0x397C`: `0x6A3584` in `0x6A3450` and `0x6A7724` in `0x6A7610`. That device is the
+  wrapper, so every frame passes through its `Present`.
+- Input. `GxWindowClassD3d` and `GxWindowClassD3d9Ex` (registered at `0x68EB9C` and `0x6A08BC`) share the window
+  procedure `0x6A0360`, which reads the Gx device from `GWL_USERDATA` and hands keyboard and mouse messages to its
+  input callback `[gx + 0xF54]` (`DefWindowProcA` without one). The pump runs `GetMessageA` (`0x869F72`), a pre-filter
+  `0x86CB00`, then `TranslateMessage` and `DispatchMessageA` (`0x869F9E`, `0x869FA4`). The pre-filter only acts on the
+  client's own dialog windows (the registry at `0xD41618`): accelerators through `TranslateAcceleratorA` while such a
+  dialog is the active window, and Escape and characters for their controls. DirectInput only enumerates game
+  controllers (`EnumDevices` class 4 at `0x870725`), so keyboard and mouse reach the chained window procedure.
+
+Two addresses that look relevant are not: `0xD38B98` is a density-like value that Extensions.dll patches (the fog
+end is `0xD38BA8`), and `0xD38C9C` is a near-constant model lighting direction (polar angle 110–127°), not the
+visible sun, so shafts use the sprite positions.
+
+## In-game settings
+
+`Ctrl+F7` (`OverlayKey`) shows and hides a Dear ImGui window over the game. On laptops whose F-keys send media keys
+by default, hold Fn (the log names the key that arrived: `overlay: Ctrl+Media Previous pressed`). The window edits
+every setting below except `Enable`, `EngineHooks`, `Overlay` and `OverlayKey`, and the next frame uses the change.
+**Save** writes the settings changed in the window back to `CoAVolFog.ini` through `WritePrivateProfileString`,
+which keeps the comments and every other line, rounded as the file stores them; settings not changed in the window
+take what the file holds, so hand edits made meanwhile survive. **Revert** reloads the file. The world render also
+reloads a hand-edited file, which replaces unsaved changes made in the window. The window shows whether the fog drew
+in the last frame, or why it did not. The log records when it opens and closes, modified non-typing keys that
+arrive (never letters, digits or punctuation) and the first reason a draw is skipped.
+
+- Input. The hotkey, its key-up and its characters never reach the client; with Ctrl held, Windows reports Pause and
+  ScrollLock as Cancel, which also matches. While the window is open, clicks and the wheel go to the client unless
+  ImGui wants the mouse (the cursor is over the window, or a drag started on it), and a button's release goes where
+  its press went. Key-downs and characters go to the client unless an ImGui text field is active (Ctrl+click on a
+  slider); the window takes no keyboard navigation, so Tab stays the client's. IME messages reach ImGui only while it
+  wants text. Modifier state is read from the keyboard every frame. Mouse moves and key-ups always reach the client,
+  so its cursor keeps following the pointer and no game key sticks. A text field left active is released when the
+  window is shown or hidden. The
+  client draws a D3D cursor (`SetCursorProperties` at `0x6A009C`, `ShowCursor` on `WM_SETCURSOR` at `0x6A058E`), so
+  ImGui leaves the cursor shape alone. Coordinates are scaled from the client area to the back buffer.
+- Drawing. The window is drawn in the wrapper's `Present`, over the client's UI, in its own scene. A full state
+  block, the render targets and stream 0 (with its offset) are captured and restored, and the states ImGui's DX9
+  backend leaves alone are set for it (colour write mask, sRGB write, clip planes, texture-coordinate index and
+  transform, stage result, sampler sRGB and mip filter). ImGui's font texture and buffers live in the default pool
+  and are released before every `Reset`. The window scales with the back-buffer height above 1080 lines.
+- Hidden, the overlay only checks the hotkey. An exception in it turns the overlay off for the session and is
+  logged; the frame's scene is ended, the device state restored and its references released even then, so a later
+  `Reset` still succeeds. `Overlay=0` leaves the game window untouched from the next start.
+- Widgets in each section get their own ID scope, so a control named like its section header (Quality, Density)
+  is not cancelled by the header.
 
 ## Build
 
-Requirements: Visual Studio 2022 (C++ x86), the Windows 10/11 SDK (`fxc.exe`), CMake 3.20+.
+Requirements: Visual Studio 2022 (C++ x86), the Windows 10/11 SDK (`fxc.exe`), CMake 3.20+. The first configure
+downloads Dear ImGui v1.92.9b (FetchContent, pinned by SHA-256) into the build directory.
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A Win32
@@ -163,9 +208,14 @@ through the same entry the hook uses, and checks:
   edge fade, nesting) and the fog thinning into a Classic light without fog;
 - the storm fog's sun scattering following the client's darker storm light;
 - temporal accumulation converging on a static camera;
+- `OverlayKey` parsing, and saving from the settings window into a copy of the shipped INI (only changed lines
+  rewritten, comments kept, restart-only keys untouched, values clamped like the INI, Revert);
+- the overlay hotkey through the chained window procedure, clicks and keys routed to the window or the client,
+  device state restored around the overlay, its pixels confined to its window, nothing drawn while hidden, and
+  drawing again after Reset;
 - Reset at a new size and reference counts reaching zero.
 
-It writes `before.png`, `after.png` and the debug views to `build/harness-out`.
+It writes `before.png`, `after.png`, `overlay.png` and the debug views to `build/harness-out`.
 
 `vfog_harness --scene harbour <dir> --data data/fogdata.bin` renders the logged in-game frame at the
 Stormwind harbour (sunset, far clip 791.6 yd) with ideal depth and with the client's depth range, and
@@ -180,12 +230,15 @@ writes `CoAVolFog.log` next to itself.
 
 ## Settings
 
-`CoAVolFog.ini` is re-read within a second while the game runs (except `Enable` and `EngineHooks`).
+`CoAVolFog.ini` is re-read within a second while the game runs (except `Enable` and `EngineHooks`). In the game,
+`Ctrl+F7` opens the same settings in a window (see In-game settings).
 
 | Key | Default | Meaning |
 |---|---|---|
 | `Enable` | 1 | Master switch (restart) |
 | `EngineHooks` | 1 | Install the hooks; 0 leaves the client unmodified (restart) |
+| `Overlay` | 1 | In-game settings window; 0 hides it at once, and from the next start leaves the game window alone |
+| `OverlayKey` | Ctrl+F7 | Key that shows and hides the window: F1-F24, Insert, Delete, Home, End, PageUp, PageDown, Pause, ScrollLock, a letter or a digit, with optional `Ctrl+`, `Shift+`, `Alt+` |
 | `Quality` | 2 | 1 quarter resolution / 16 steps, 2 half / 24, 3 half / 32 |
 | `Density`, `Haze`, `GroundFog`, `FarFog` | 1, 1, 0.6, 1 | Density multipliers |
 | `StockFog` | 1 | 1 replaces the stock fog with the distance fog, 0 keeps it |
@@ -208,11 +261,11 @@ writes `CoAVolFog.log` next to itself.
 ## Status and limits
 
 - Tested in the client with native D3D9; DXVK and Wine are untested.
-- Transparent effects, particles and water are fogged by the opaque depth behind them (kit IP-B), so
-  near effects in front of the sky are dimmed slightly.
-- Interiors get the outdoor layers; the `gxApi d3d9ex` path is not wrapped (fog stays off there).
-- Water surfaces write depth only in the outdoor liquid pass; WMO liquids (city canals) still do not.
-  Pixels beyond the far clip below the horizon are marched as level rays so they meet the sky at eye level.
+- Transparent effects and particles are fogged by the opaque depth behind them, so near effects in front of the
+  sky are dimmed slightly.
+- Interiors get the outdoor layers; the `gxApi d3d9ex` path is not wrapped (fog and the settings window stay off
+  there). The settings window also needs a fog device, so it is missing when INTZ depth is unsupported.
+- Pixels beyond the far clip below the horizon are marched as level rays so they meet the sky at eye level.
 - The modern fog path applies no exposure or tonemap and its frame is graded with a clamp and a LUT; the
   LUT (and the modern lighting and bloom) are not reproduced, so colours still differ from Classic.
 - The distance fog (`FarFog`, maps without Classic data) has no modern counterpart: it stands in for the
@@ -220,9 +273,9 @@ writes `CoAVolFog.log` next to itself.
 - `FarClipMax` raises memory use (about four times the loaded terrain in a 32-bit process); Ascension's
   reason for the continent cap is unknown. Without the key in the INI it stays off.
 - Classic data follows the client's clear, storm and screen-effect slots and Classic's zone-light outlines.
-  The underwater slots and noise modulation are not used. The zone lights' edge fade distance is chosen here:
-  their `TransitionType` is 0 in every row and the modern client's transition rule is not known.
-- Not implemented from the kit: the froxel pipeline (M3), fitted fog for transparents (M6), in-game CVars.
+  Noise modulation is not used. The zone lights' edge fade distance is chosen here: their `TransitionType` is 0 in
+  every row and the modern client's transition rule is not known.
+- Not implemented: a froxel volume, fog for transparent effects at their own distance, and in-game CVars.
 
 ## License
 

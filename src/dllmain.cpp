@@ -4,6 +4,7 @@
 #include "fog_data.h"
 #include "hooks.h"
 #include "log.h"
+#include "overlay.h"
 
 #include <windows.h>
 
@@ -23,8 +24,8 @@ std::string ModuleDirectory(HMODULE module)
 void Attach(HMODULE module)
 {
     std::string dir = ModuleDirectory(module);
-    GlobalConfig().Load(dir + "CoAVolFog.ini");
     LogOpen((dir + "CoAVolFog.log").c_str());
+    GlobalConfig().Load(dir + "CoAVolFog.ini");
     const Config& cfg = GlobalConfig().Get();
     VF_LOG_INFO("CoAVolFog loaded from %s", dir.c_str());
     GlobalFogData().Load(dir + "fogdata.bin");
@@ -76,6 +77,11 @@ extern "C" void __cdecl vf_test_set_config(const Config* cfg)
     GlobalConfig().Override(*cfg);
 }
 
+extern "C" void __cdecl vf_test_get_config(Config* out)
+{
+    *out = GlobalConfig().Get();
+}
+
 extern "C" void __cdecl vf_test_force_depth_write(int force)
 {
     ForceDepthWrite(LatestFogDevice(), force != 0);
@@ -84,4 +90,14 @@ extern "C" void __cdecl vf_test_force_depth_write(int force)
 extern "C" int __cdecl vf_test_render(const FrameInputs* in, const char** skipReason)
 {
     return RenderFog(LatestFogDevice(), *in, GlobalConfig().Get(), skipReason) ? 1 : 0;
+}
+
+extern "C" int __cdecl vf_test_overlay_visible()
+{
+    return OverlayVisible() ? 1 : 0;
+}
+
+extern "C" void __cdecl vf_test_draw_overlay()
+{
+    DrawOverlay(RealDevice(LatestFogDevice()));
 }

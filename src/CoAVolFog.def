@@ -3,5 +3,8 @@ EXPORTS
     vf_loader_anchor
     vf_test_wrap_direct3d9
     vf_test_set_config
+    vf_test_get_config
     vf_test_render
     vf_test_force_depth_write
+    vf_test_overlay_visible
+    vf_test_draw_overlay

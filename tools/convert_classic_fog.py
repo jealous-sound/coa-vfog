@@ -7,7 +7,6 @@ import sys
 import zipfile
 
 DESCRIPTION = "Convert the Classic client's volumetric fog tables into data/fogdata.bin."
-KIT_PREFIX = "coa-vfog-kit/evidence/modern-extract/db2csv/"
 TABLE_NAMES = ("Light.csv", "LightData.csv", "LightDataGlobalVolumeFog.csv", "ZoneLight.csv", "ZoneLightPoint.csv")
 LAYER_INDEX_SLOTS = 3
 CLIENT_SELECTED_FLAG = 0x8
@@ -67,12 +66,24 @@ def layer_index(row):
     return as_int(field(row, LAYER_INDEX_COLUMN))
 
 
+def archive_members_by_table(archive):
+    members = {}
+    for member in archive.namelist():
+        base = member.rsplit("/", 1)[-1]
+        if base in TABLE_NAMES and base not in members:
+            members[base] = member
+    missing = [name for name in TABLE_NAMES if name not in members]
+    if missing:
+        raise SystemExit("the archive has no %s" % ", ".join(missing))
+    return members
+
+
 def read_tables(source):
     tables = {}
     if zipfile.is_zipfile(source):
         with zipfile.ZipFile(source) as archive:
-            for name in TABLE_NAMES:
-                tables[name] = archive.read(KIT_PREFIX + name).decode("utf-8")
+            for name, member in archive_members_by_table(archive).items():
+                tables[name] = archive.read(member).decode("utf-8")
     else:
         for name in TABLE_NAMES:
             with open(os.path.join(source, name), encoding="utf-8") as handle:
@@ -213,7 +224,7 @@ def convert(tables):
 
 def main():
     parser = argparse.ArgumentParser(description=DESCRIPTION)
-    parser.add_argument("source", help="coa-vfog-kit.zip or a directory with the CSV exports")
+    parser.add_argument("source", help="a folder or zip archive with the Classic DB2 tables exported as CSV")
     parser.add_argument("output", help="output path, normally data/fogdata.bin")
     args = parser.parse_args()
     blob, lights, params, keys, layers, zone_lights = convert(read_tables(args.source))
