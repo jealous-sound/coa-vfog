@@ -3,6 +3,7 @@
 #include "imgui.h"
 
 #include <cfloat>
+#include <cmath>
 
 namespace
 {
@@ -29,9 +30,33 @@ bool Choice(const char* label, int& value, int first, const char* const (&names)
     return changed;
 }
 
-bool Slider(const char* label, float& value, float lo, float hi, const char* format, const char* help)
+class Section
 {
-    const bool changed = ImGui::SliderFloat(label, &value, lo, hi, format);
+public:
+    explicit Section(const char* title, ImGuiTreeNodeFlags flags = 0)
+        : m_title(title), m_open(ImGui::CollapsingHeader(title, flags))
+    {
+        if (m_open)
+            ImGui::PushID(m_title);
+    }
+    ~Section()
+    {
+        if (m_open)
+            ImGui::PopID();
+    }
+    Section(const Section&) = delete;
+    Section& operator=(const Section&) = delete;
+    explicit operator bool() const { return m_open; }
+
+private:
+    const char* m_title;
+    bool m_open;
+};
+
+bool Slider(const char* label, float& value, float lo, float hi, const char* format, const char* help,
+            ImGuiSliderFlags flags = ImGuiSliderFlags_None)
+{
+    const bool changed = ImGui::SliderFloat(label, &value, lo, hi, format, flags);
     ImGui::SetItemTooltip("%s", help);
     return changed;
 }
@@ -68,7 +93,8 @@ void DrawStatus(const FogFrameStatus& status, const std::string& hotkeyName)
 
 bool DrawQuality(Config& c)
 {
-    if (!ImGui::CollapsingHeader("Quality", ImGuiTreeNodeFlags_DefaultOpen))
+    const Section section("Quality", ImGuiTreeNodeFlags_DefaultOpen);
+    if (!section)
         return false;
     bool changed = Choice("Quality", c.quality, 1, kQualityNames, "Resolution and ray-march steps of the fog pass");
     changed |= Slider("Temporal filter", c.temporal, 0.0f, 0.97f, "%.2f",
@@ -78,7 +104,8 @@ bool DrawQuality(Config& c)
 
 bool DrawDensity(Config& c)
 {
-    if (!ImGui::CollapsingHeader("Density", ImGuiTreeNodeFlags_DefaultOpen))
+    const Section section("Density", ImGuiTreeNodeFlags_DefaultOpen);
+    if (!section)
         return false;
     bool changed = Multiplier("Density", c.density, "Global density multiplier");
     changed |= Multiplier("Haze", c.haze, "Distance haze where no Classic data exists");
@@ -96,7 +123,8 @@ bool DrawDensity(Config& c)
 
 bool DrawLight(Config& c)
 {
-    if (!ImGui::CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen))
+    const Section section("Light", ImGuiTreeNodeFlags_DefaultOpen);
+    if (!section)
         return false;
     bool changed = Multiplier("Sun scatter", c.sunScatter, "In-scattered sun or moon light: the halo and the shafts");
     changed |= Multiplier("Ambient", c.ambient, "Ambient fog brightness");
@@ -124,15 +152,17 @@ bool DrawViewDistance(Config& c)
     if (changed)
         c.farClipMax = lifted ? kEngineFarClipMax : kFarClipMaxKeepsClientCap;
     if (lifted)
-        changed |= Slider("View distance", c.farClipMax, kEngineFarClipMin, kEngineFarClipMax, "%.0f yd",
-                          "Continent view distance, within the client's own farclip setting");
+        changed |= Slider("View distance", c.farClipMax, std::ceil(kEngineFarClipMin), kEngineFarClipMax, "%.0f yd",
+                          "Continent view distance, within the client's own farclip setting",
+                          ImGuiSliderFlags_AlwaysClamp);
     ImGui::TextDisabled("Applies at the next farclip change, map load or zone change.");
     return changed;
 }
 
 bool DrawWorld(Config& c)
 {
-    if (!ImGui::CollapsingHeader("World"))
+    const Section section("World");
+    if (!section)
         return false;
     bool changed = Toggle("Fog under water", c.underwater, "Keep the effect while the camera is under water");
     changed |= Toggle("Water writes depth", c.liquidDepth,
@@ -143,7 +173,8 @@ bool DrawWorld(Config& c)
 
 bool DrawDebug(Config& c)
 {
-    if (!ImGui::CollapsingHeader("Debug"))
+    const Section section("Debug");
+    if (!section)
         return false;
     bool changed = Choice("View", c.debugView, 0, kDebugViewNames, "Show one input of the fog instead of the scene");
     changed |= Toggle("Sun marker", c.sunMarker, "Red marker where the sun direction projects on screen");
@@ -158,7 +189,9 @@ void SettingsPanel::Draw(ConfigStore& store, const FogFrameStatus& status, const
     const float width = kPanelWidthInLines * line;
     ImGui::SetNextWindowPos(ImVec2(kPanelMarginInLines * line, kPanelMarginInLines * line), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(width, 0.0f), ImVec2(width, FLT_MAX));
-    if (!ImGui::Begin("CoAVolFog", &open, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
+    if (!ImGui::Begin("CoAVolFog", &open,
+                      ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+                          ImGuiWindowFlags_NoNavInputs))
     {
         ImGui::End();
         return;

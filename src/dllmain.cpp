@@ -24,8 +24,8 @@ std::string ModuleDirectory(HMODULE module)
 void Attach(HMODULE module)
 {
     std::string dir = ModuleDirectory(module);
-    GlobalConfig().Load(dir + "CoAVolFog.ini");
     LogOpen((dir + "CoAVolFog.log").c_str());
+    GlobalConfig().Load(dir + "CoAVolFog.ini");
     const Config& cfg = GlobalConfig().Get();
     VF_LOG_INFO("CoAVolFog loaded from %s", dir.c_str());
     GlobalFogData().Load(dir + "fogdata.bin");
@@ -75,6 +75,11 @@ extern "C" IDirect3D9* __cdecl vf_test_wrap_direct3d9(Direct3DCreate9Fn realCrea
 extern "C" void __cdecl vf_test_set_config(const Config* cfg)
 {
     GlobalConfig().Override(*cfg);
+}
+
+extern "C" void __cdecl vf_test_get_config(Config* out)
+{
+    *out = GlobalConfig().Get();
 }
 
 extern "C" void __cdecl vf_test_force_depth_write(int force)

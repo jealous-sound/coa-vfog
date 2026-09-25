@@ -15,6 +15,7 @@
 
 extern "C" __declspec(dllimport) IDirect3D9* __cdecl vf_test_wrap_direct3d9(IDirect3D9*(WINAPI*)(UINT), UINT);
 extern "C" __declspec(dllimport) void __cdecl vf_test_set_config(const Config*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_get_config(Config*);
 extern "C" __declspec(dllimport) int __cdecl vf_test_render(const FrameInputs*, const char**);
 extern "C" __declspec(dllimport) void __cdecl vf_test_force_depth_write(int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_overlay_visible();
@@ -45,6 +46,12 @@ constexpr int kOverlayTitleBarX = 200;
 constexpr int kOverlayTitleBarY = 40;
 constexpr int kBesideOverlayX = 1100;
 constexpr int kBesideOverlayY = 600;
+constexpr int kOverlayBodyX = 480;
+constexpr int kOverlayBodyY = 75;
+constexpr int kDensitySliderY = 217;
+constexpr int kDensitySliderGrabX = 60;
+constexpr int kDensitySliderDragX = 250;
+constexpr float kDensityAfterDragAtLeast = 2.5f;
 
 int g_failures = 0;
 
@@ -1138,12 +1145,26 @@ void CheckSettingsSaveKeepsTheIni(const std::wstring& outDir, const std::wstring
     store.Apply(scratch);
     store.Revert();
     Check(store.Get().density == 2.5f && !store.HasUnsavedChanges(), "Revert goes back to the saved settings");
+
+    Config typed = store.Get();
+    typed.haze = 1.23456f;
+    store.Apply(typed);
+    WritePrivateProfileStringW(L"CoAVolFog", L"Quality", L"1", savedIni.c_str());
+    const bool mergedSave = store.Save();
+    ConfigStore afterMerge;
+    afterMerge.Load(NarrowPath(savedIni));
+    Check(mergedSave && store.Get().quality == 1 && afterMerge.Get().quality == 1 && afterMerge.Get().density == 2.5f,
+          "Save keeps a hand edit of a setting the window did not change");
+    Check(store.Get().haze == afterMerge.Get().haze && !store.HasUnsavedChanges() &&
+              ReadText(savedIni).find("\nHaze=1.235") != std::string::npos,
+          "Save records the value it wrote, rounded like the INI");
 }
 
 struct ClientInput
 {
     int keyDowns = 0;
     int mouseDowns = 0;
+    int mouseUps = 0;
     int mouseMoves = 0;
 };
 
@@ -1155,6 +1176,8 @@ LRESULT CALLBACK ClientWindowProc(HWND window, UINT msg, WPARAM wParam, LPARAM l
         ++g_clientInput.keyDowns;
     if (msg == WM_LBUTTONDOWN)
         ++g_clientInput.mouseDowns;
+    if (msg == WM_LBUTTONUP)
+        ++g_clientInput.mouseUps;
     if (msg == WM_MOUSEMOVE)
         ++g_clientInput.mouseMoves;
     return DefWindowProcW(window, msg, wParam, lParam);
@@ -1249,6 +1272,69 @@ void CheckOverlayInput(Harness& h)
           "with Overlay=0 the overlay key reaches the client");
     Config on = {};
     vf_test_set_config(&on);
+}
+
+void DragAcross(HWND window, LPARAM from, LPARAM to)
+{
+    SendMessageW(window, WM_MOUSEMOVE, 0, from);
+    DrawOverlayFrames(1);
+    SendMessageW(window, WM_LBUTTONDOWN, MK_LBUTTON, from);
+    DrawOverlayFrames(2);
+    SendMessageW(window, WM_MOUSEMOVE, MK_LBUTTON, to);
+    DrawOverlayFrames(2);
+    SendMessageW(window, WM_LBUTTONUP, 0, to);
+    DrawOverlayFrames(2);
+}
+
+void CheckOverlayWidgets(Harness& h)
+{
+    Config start = {};
+    vf_test_set_config(&start);
+    PressHotkey(h.window, kDefaultOverlayHotkey);
+    DrawOverlayFrames(kOverlaySettleFrames);
+    DragAcross(h.window, ClientPointOfBackBufferPixel(h, kDensitySliderGrabX, kDensitySliderY),
+               ClientPointOfBackBufferPixel(h, kDensitySliderDragX, kDensitySliderY));
+    Config dragged = {};
+    vf_test_get_config(&dragged);
+    std::printf("     Density after dragging its slider: %.2f\n", dragged.density);
+    Check(dragged.density > kDensityAfterDragAtLeast, "the Density slider drags although its section is named Density");
+
+    g_clientInput = {};
+    const LPARAM panelBody = ClientPointOfBackBufferPixel(h, kOverlayBodyX, kOverlayBodyY);
+    ClickAfterHover(h.window, panelBody);
+    DrawOverlayFrames(kOverlaySettleFrames);
+    PressKey(h.window, VK_TAB);
+    DrawOverlayFrames(kOverlaySettleFrames);
+    PressKey(h.window, 'W');
+    std::printf("     key presses the client saw for Tab then W: %d\n", g_clientInput.keyDowns);
+    Check(g_clientInput.keyDowns == 2, "Tab with the overlay focused does not take the keyboard from the client");
+
+    g_clientInput = {};
+    const LPARAM beside = ClientPointOfBackBufferPixel(h, kBesideOverlayX, kBesideOverlayY);
+    SendMessageW(h.window, WM_MOUSEMOVE, 0, beside);
+    DrawOverlayFrames(kOverlaySettleFrames);
+    SendMessageW(h.window, WM_MOUSEMOVE, 0, panelBody);
+    SendMessageW(h.window, WM_LBUTTONDOWN, MK_LBUTTON, panelBody);
+    DrawOverlayFrames(2);
+    SendMessageW(h.window, WM_LBUTTONUP, 0, panelBody);
+    std::printf("     button presses / releases the client saw: %d / %d\n", g_clientInput.mouseDowns,
+                g_clientInput.mouseUps);
+    Check(g_clientInput.mouseDowns == 1 && g_clientInput.mouseUps == 1,
+          "a button whose press reached the client is released to the client");
+    PressHotkey(h.window, kDefaultOverlayHotkey);
+    vf_test_set_config(&start);
+
+    Config pauseKey = {};
+    pauseKey.overlayKey = {VK_PAUSE, true, false, false};
+    vf_test_set_config(&pauseKey);
+    HoldModifiers(true, false, false);
+    PressKey(h.window, VK_CANCEL);
+    const bool opened = vf_test_overlay_visible() == 1;
+    PressKey(h.window, VK_CANCEL);
+    HoldModifiers(false, false, false);
+    Check(opened && vf_test_overlay_visible() == 0,
+          "Ctrl+Pause toggles the overlay although Windows reports it as Cancel");
+    vf_test_set_config(&start);
 }
 
 void DrawEngineFrameWithoutPresent(Harness& h, const D3DVIEWPORT9& world)
@@ -1726,6 +1812,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     vf_test_set_config(&restored);
 
     CheckOverlayInput(h);
+    CheckOverlayWidgets(h);
     CheckOverlayDraw(h, world, outDir);
 
     h.ReleaseEngineObjects();

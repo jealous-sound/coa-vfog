@@ -75,6 +75,13 @@ const NamedKey kNamedKeys[] = {
     {"PageUp", VK_PRIOR},  {"PageDown", VK_NEXT}, {"Pause", VK_PAUSE}, {"ScrollLock", VK_SCROLL},
 };
 
+const NamedKey kReportedOnlyKeys[] = {
+    {"Media Previous", VK_MEDIA_PREV_TRACK}, {"Media Next", VK_MEDIA_NEXT_TRACK},
+    {"Media Play/Pause", VK_MEDIA_PLAY_PAUSE}, {"Media Stop", VK_MEDIA_STOP},
+    {"Volume Mute", VK_VOLUME_MUTE},         {"Volume Down", VK_VOLUME_DOWN},
+    {"Volume Up", VK_VOLUME_UP},             {"Cancel", VK_CANCEL},
+};
+
 unsigned long long FileStamp(const std::string& path)
 {
     WIN32_FILE_ATTRIBUTE_DATA data;
@@ -204,6 +211,9 @@ std::string KeyName(unsigned virtualKey)
             return k.name;
     if (IsLetterOrDigitKey(virtualKey))
         return std::string(1, static_cast<char>(virtualKey));
+    for (const NamedKey& k : kReportedOnlyKeys)
+        if (k.virtualKey == virtualKey)
+            return k.name;
     return "key " + std::to_string(virtualKey);
 }
 }
@@ -293,23 +303,44 @@ void ConfigStore::Apply(const Config& edited)
 
 bool ConfigStore::Save()
 {
+    const Config onDisk = ReadFile();
+    Config merged = m_config;
     bool written = true;
     for (const IntSetting& s : kIntSettings)
-        if (m_config.*s.value != m_saved.*s.value)
+    {
+        if (m_config.*s.value == m_saved.*s.value)
+            merged.*s.value = onDisk.*s.value;
+        else if (m_config.*s.value != onDisk.*s.value)
             written = WriteSetting(m_path, s.key, std::to_string(m_config.*s.value)) && written;
+    }
     for (const FloatSetting& s : kFloatSettings)
-        if (m_config.*s.value != m_saved.*s.value)
-            written = WriteSetting(m_path, s.key, SettingText(m_config.*s.value)) && written;
+    {
+        if (m_config.*s.value == m_saved.*s.value)
+        {
+            merged.*s.value = onDisk.*s.value;
+            continue;
+        }
+        const std::string text = SettingText(m_config.*s.value);
+        merged.*s.value = std::strtof(text.c_str(), nullptr);
+        if (merged.*s.value != onDisk.*s.value)
+            written = WriteSetting(m_path, s.key, text) && written;
+    }
     for (const BoolSetting& s : kBoolSettings)
-        if (m_config.*s.value != m_saved.*s.value)
+    {
+        if (m_config.*s.value == m_saved.*s.value)
+            merged.*s.value = onDisk.*s.value;
+        else if (m_config.*s.value != onDisk.*s.value)
             written = WriteSetting(m_path, s.key, m_config.*s.value ? "1" : "0") && written;
+    }
     m_stamp = FileStamp(m_path);
     if (!written)
     {
         VF_LOG_ERROR("settings could not be written to %s (error %lu)", m_path.c_str(), GetLastError());
         return false;
     }
-    m_saved = m_config;
+    m_config = merged;
+    m_saved = merged;
+    LogSetLevel(merged.logLevel);
     VF_LOG_INFO("settings saved to %s", m_path.c_str());
     return true;
 }
@@ -331,6 +362,14 @@ void ConfigStore::ReadKeepingStartupSwitches()
 
 void ConfigStore::Read()
 {
+    const Config c = ReadFile();
+    m_config = c;
+    m_saved = c;
+    LogSetLevel(c.logLevel);
+}
+
+Config ConfigStore::ReadFile() const
+{
     Config c;
     const std::string& p = m_path;
     c.enable = ReadInt(p, "Enable", 1, 0, 1) != 0;
@@ -344,9 +383,7 @@ void ConfigStore::Read()
     for (const BoolSetting& s : kBoolSettings)
         c.*s.value = ReadInt(p, s.key, c.*s.value ? 1 : 0, 0, 1) != 0;
     ClampLiveSettings(c);
-    m_config = c;
-    m_saved = c;
-    LogSetLevel(c.logLevel);
+    return c;
 }
 
 ConfigStore& GlobalConfig()

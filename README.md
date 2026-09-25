@@ -145,16 +145,24 @@ lighting direction (polar angle 110–127°), not the visible sun, so shafts use
 
 ## In-game settings
 
-`Ctrl+F7` (`OverlayKey`) shows and hides a Dear ImGui window over the game. It edits every setting below except
-`Enable`, `EngineHooks`, `Overlay` and `OverlayKey`, and the next frame uses the change. **Save** writes the changed
-keys back to `CoAVolFog.ini` through `WritePrivateProfileString`, which keeps the comments and every other line;
-**Revert** reloads the file. Editing the INI by hand still works while the window is open, and the reload replaces
-unsaved changes made in the window. The window also shows whether the fog drew in the last frame, or why it did not.
+`Ctrl+F7` (`OverlayKey`) shows and hides a Dear ImGui window over the game. On laptops whose F-keys send media keys
+by default, hold Fn (the log names the key that arrived: `overlay: Ctrl+Media Previous pressed`). The window edits
+every setting below except `Enable`, `EngineHooks`, `Overlay` and `OverlayKey`, and the next frame uses the change.
+**Save** writes the settings changed in the window back to `CoAVolFog.ini` through `WritePrivateProfileString`,
+which keeps the comments and every other line, rounded as the file stores them; settings not changed in the window
+take what the file holds, so hand edits made meanwhile survive. **Revert** reloads the file. The world render also
+reloads a hand-edited file, which replaces unsaved changes made in the window. The window shows whether the fog drew
+in the last frame, or why it did not. The log records when it opens and closes, modified non-typing keys that
+arrive (never letters, digits or punctuation) and the first reason a draw is skipped.
 
-- Input. The hotkey, its key-up and its characters never reach the client. While the window is open, clicks and the
-  wheel go to the client unless ImGui wants the mouse (the cursor is over the window, or a drag started on it);
-  key-downs and characters go to the client unless an ImGui text field is active (Ctrl+click on a slider). Mouse
-  moves and key-ups always reach the client, so its cursor keeps following the pointer and no game key sticks. The
+- Input. The hotkey, its key-up and its characters never reach the client; with Ctrl held, Windows reports Pause and
+  ScrollLock as Cancel, which also matches. While the window is open, clicks and the wheel go to the client unless
+  ImGui wants the mouse (the cursor is over the window, or a drag started on it), and a button's release goes where
+  its press went. Key-downs and characters go to the client unless an ImGui text field is active (Ctrl+click on a
+  slider); the window takes no keyboard navigation, so Tab stays the client's. IME messages reach ImGui only while it
+  wants text. Modifier state is read from the keyboard every frame. Mouse moves and key-ups always reach the client,
+  so its cursor keeps following the pointer and no game key sticks. A text field left active is released when the
+  window is shown or hidden. The
   client draws a D3D cursor (`SetCursorProperties` at `0x6A009C`, `ShowCursor` on `WM_SETCURSOR` at `0x6A058E`), so
   ImGui leaves the cursor shape alone. Coordinates are scaled from the client area to the back buffer.
 - Drawing. The window is drawn in the wrapper's `Present`, over the client's UI, in its own scene. A full state
@@ -163,7 +171,10 @@ unsaved changes made in the window. The window also shows whether the fog drew i
   transform, stage result, sampler sRGB and mip filter). ImGui's font texture and buffers live in the default pool
   and are released before every `Reset`. The window scales with the back-buffer height above 1080 lines.
 - Hidden, the overlay only checks the hotkey. An exception in it turns the overlay off for the session and is
-  logged; `Overlay=0` leaves the game window untouched from the next start.
+  logged; the frame's scene is ended, the device state restored and its references released even then, so a later
+  `Reset` still succeeds. `Overlay=0` leaves the game window untouched from the next start.
+- Widgets in each section get their own ID scope, so a control named like its section header (Quality, Density)
+  is not cancelled by the header.
 
 ## Build
 

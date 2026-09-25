@@ -47,6 +47,25 @@ struct OverlayState
     bool drawLogged = false;
     int loggedShortcutKeys = 0;
     unsigned loggedDrawSkips = 0;
+    unsigned clientHeldButtons = 0;
+    unsigned panelHeldButtons = 0;
+    bool releaseFocusOnNextFrame = false;
+};
+
+struct OverlayFrame
+{
+    IDirect3DSurface9* backBuffer;
+    IDirect3DStateBlock9* state;
+    IDirect3DSurface9* targets[kMaxRenderTargets];
+    IDirect3DSurface9* depth;
+    IDirect3DVertexBuffer9* stream;
+    UINT streamOffset;
+    UINT streamStride;
+    IDirect3DIndexBuffer9* indices;
+    D3DVIEWPORT9 viewport;
+    RECT scissor;
+    bool captured;
+    bool sceneOpen;
 };
 
 struct SubclassedWindow
@@ -124,11 +143,25 @@ void FeedCursorPosition(HWND window)
     ImGui::GetIO().AddMousePosEvent(static_cast<float>(p.x), static_cast<float>(p.y));
 }
 
+bool ModifierDown(int virtualKey)
+{
+    return GetKeyState(virtualKey) < 0;
+}
+
+void FeedModifierState(ImGuiIO& io)
+{
+    io.AddKeyEvent(ImGuiMod_Ctrl, ModifierDown(VK_CONTROL));
+    io.AddKeyEvent(ImGuiMod_Shift, ModifierDown(VK_SHIFT));
+    io.AddKeyEvent(ImGuiMod_Alt, ModifierDown(VK_MENU));
+    io.AddKeyEvent(ImGuiMod_Super, ModifierDown(VK_LWIN) || ModifierDown(VK_RWIN));
+}
+
 void SetVisible(bool visible)
 {
     if (visible == g_overlay.visible || !ImGui::GetCurrentContext())
         return;
     g_overlay.visible = visible;
+    g_overlay.releaseFocusOnNextFrame = true;
     VF_LOG_INFO("overlay %s", visible ? "shown" : "hidden");
     ImGuiIO& io = ImGui::GetIO();
     io.ClearInputKeys();
@@ -157,14 +190,77 @@ bool IsMouseClickOrWheelMessage(UINT msg)
     return msg > WM_MOUSEMOVE && msg <= WM_MOUSELAST;
 }
 
-bool ModifierDown(int virtualKey)
+bool IsImeMessage(UINT msg)
 {
-    return GetKeyState(virtualKey) < 0;
+    return msg == WM_IME_COMPOSITION || msg == WM_IME_CHAR;
+}
+
+unsigned MouseButtonBit(UINT msg, WPARAM wParam)
+{
+    switch (msg)
+    {
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_LBUTTONDBLCLK:
+        return 1u << 0;
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONUP:
+    case WM_RBUTTONDBLCLK:
+        return 1u << 1;
+    case WM_MBUTTONDOWN:
+    case WM_MBUTTONUP:
+    case WM_MBUTTONDBLCLK:
+        return 1u << 2;
+    case WM_XBUTTONDOWN:
+    case WM_XBUTTONUP:
+    case WM_XBUTTONDBLCLK:
+        return GET_XBUTTON_WPARAM(wParam) == XBUTTON1 ? 1u << 3 : 1u << 4;
+    default:
+        return 0;
+    }
+}
+
+bool IsMouseButtonUp(UINT msg)
+{
+    return msg == WM_LBUTTONUP || msg == WM_RBUTTONUP || msg == WM_MBUTTONUP || msg == WM_XBUTTONUP;
+}
+
+bool KeepsButtonWithItsDown(UINT msg, WPARAM wParam, bool takenByPanel)
+{
+    const unsigned button = MouseButtonBit(msg, wParam);
+    if (!button)
+        return takenByPanel;
+    if (IsMouseButtonUp(msg))
+    {
+        const bool clientOwned = (g_overlay.clientHeldButtons & button) != 0;
+        const bool panelOwned = (g_overlay.panelHeldButtons & button) != 0;
+        g_overlay.clientHeldButtons &= ~button;
+        g_overlay.panelHeldButtons &= ~button;
+        return clientOwned ? false : panelOwned || takenByPanel;
+    }
+    if (takenByPanel)
+    {
+        g_overlay.panelHeldButtons |= button;
+        g_overlay.clientHeldButtons &= ~button;
+    }
+    else
+    {
+        g_overlay.clientHeldButtons |= button;
+        g_overlay.panelHeldButtons &= ~button;
+    }
+    return takenByPanel;
+}
+
+bool IsHotkeyKey(const Hotkey& key, WPARAM wParam)
+{
+    if (wParam == key.virtualKey)
+        return true;
+    return key.ctrl && wParam == VK_CANCEL && (key.virtualKey == VK_PAUSE || key.virtualKey == VK_SCROLL);
 }
 
 bool HotkeyPressed(const Hotkey& key, UINT msg, WPARAM wParam)
 {
-    return IsKeyDownMessage(msg) && wParam == key.virtualKey && ModifierDown(VK_CONTROL) == key.ctrl &&
+    return IsKeyDownMessage(msg) && IsHotkeyKey(key, wParam) && ModifierDown(VK_CONTROL) == key.ctrl &&
            ModifierDown(VK_SHIFT) == key.shift && ModifierDown(VK_MENU) == key.alt;
 }
 
@@ -214,12 +310,12 @@ bool TakesHotkey(const Hotkey& key, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         if (!(lParam & kKeyWasDownBit))
             SetVisible(!g_overlay.visible);
-        g_overlay.swallowedKey = key.virtualKey;
+        g_overlay.swallowedKey = static_cast<unsigned>(wParam);
         return true;
     }
     if (!g_overlay.swallowedKey)
         return false;
-    if (IsKeyUpMessage(msg) && wParam == g_overlay.swallowedKey)
+    if (IsKeyUpMessage(msg) && (wParam == g_overlay.swallowedKey || IsHotkeyKey(key, wParam)))
     {
         g_overlay.swallowedKey = 0;
         return true;
@@ -237,10 +333,8 @@ bool PanelWantsMessage(UINT msg)
     return false;
 }
 
-bool OverlayTakesMessage(HWND window, UINT msg, WPARAM wParam, LPARAM lParam)
+bool PanelTakesMessage(HWND window, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    if (g_overlay.failed || !g_overlay.device)
-        return false;
     const Config& cfg = GlobalConfig().Get();
     if (!cfg.overlay)
     {
@@ -252,8 +346,20 @@ bool OverlayTakesMessage(HWND window, UINT msg, WPARAM wParam, LPARAM lParam)
         return true;
     if (!g_overlay.visible)
         return false;
-    ImGui_ImplWin32_WndProcHandler(window, msg, wParam, InBackBufferPixels(window, msg, lParam));
+    if (IsImeMessage(msg) && !ImGui::GetIO().WantTextInput)
+        return false;
+    const LPARAM scaled = InBackBufferPixels(window, msg, lParam);
+    const LRESULT handled = ImGui_ImplWin32_WndProcHandler(window, msg, wParam, scaled);
+    if (IsImeMessage(msg))
+        return handled != 0;
     return PanelWantsMessage(msg);
+}
+
+bool OverlayTakesMessage(HWND window, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (g_overlay.failed || !g_overlay.device)
+        return false;
+    return KeepsButtonWithItsDown(msg, wParam, PanelTakesMessage(window, msg, wParam, lParam));
 }
 
 int OverlayFaultFilter(unsigned code, const char* where)
@@ -317,9 +423,15 @@ void BuildPanelFrame(const D3DSURFACE_DESC& backBuffer)
     ImGui_ImplDX9_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGuiIO& io = ImGui::GetIO();
+    FeedModifierState(io);
     io.DisplaySize = ImVec2(static_cast<float>(backBuffer.Width), static_cast<float>(backBuffer.Height));
     io.DeltaTime = std::max(io.DeltaTime, kMinFrameSeconds);
     ImGui::NewFrame();
+    if (g_overlay.releaseFocusOnNextFrame)
+    {
+        g_overlay.releaseFocusOnNextFrame = false;
+        ImGui::SetWindowFocus(nullptr);
+    }
     bool open = true;
     ConfigStore& store = GlobalConfig();
     g_overlay.panel.Draw(store, LastFogFrameStatus(), HotkeyName(store.Get().overlayKey), open);
@@ -328,64 +440,58 @@ void BuildPanelFrame(const D3DSURFACE_DESC& backBuffer)
         SetVisible(false);
 }
 
-class SavedDeviceState
+bool CaptureDeviceState(IDirect3DDevice9* device, OverlayFrame& frame)
 {
-public:
-    ~SavedDeviceState()
-    {
-        for (IDirect3DSurface9* target : m_targets)
-            if (target)
-                target->Release();
-        if (m_depth)
-            m_depth->Release();
-        if (m_stream)
-            m_stream->Release();
-        if (m_indices)
-            m_indices->Release();
-        if (m_state)
-            m_state->Release();
-    }
+    if (FAILED(device->CreateStateBlock(D3DSBT_ALL, &frame.state)) || FAILED(frame.state->Capture()))
+        return false;
+    for (DWORD i = 0; i < kMaxRenderTargets; ++i)
+        device->GetRenderTarget(i, &frame.targets[i]);
+    device->GetDepthStencilSurface(&frame.depth);
+    device->GetStreamSource(0, &frame.stream, &frame.streamOffset, &frame.streamStride);
+    device->GetIndices(&frame.indices);
+    device->GetViewport(&frame.viewport);
+    device->GetScissorRect(&frame.scissor);
+    frame.captured = frame.targets[0] != nullptr;
+    return frame.captured;
+}
 
-    bool Capture(IDirect3DDevice9* device)
-    {
-        if (FAILED(device->CreateStateBlock(D3DSBT_ALL, &m_state)) || FAILED(m_state->Capture()))
-            return false;
-        for (DWORD i = 0; i < kMaxRenderTargets; ++i)
-            device->GetRenderTarget(i, &m_targets[i]);
-        device->GetDepthStencilSurface(&m_depth);
-        device->GetStreamSource(0, &m_stream, &m_streamOffset, &m_streamStride);
-        device->GetIndices(&m_indices);
-        device->GetViewport(&m_viewport);
-        device->GetScissorRect(&m_scissor);
-        return m_targets[0] != nullptr;
-    }
+void RestoreDeviceState(IDirect3DDevice9* device, const OverlayFrame& frame)
+{
+    for (DWORD i = 0; i < kMaxRenderTargets; ++i)
+        if (frame.targets[i])
+            device->SetRenderTarget(i, frame.targets[i]);
+    device->SetDepthStencilSurface(frame.depth);
+    frame.state->Apply();
+    device->SetStreamSource(0, frame.stream, frame.streamOffset, frame.streamStride);
+    device->SetIndices(frame.indices);
+    device->SetViewport(&frame.viewport);
+    device->SetScissorRect(&frame.scissor);
+}
 
-    IDirect3DSurface9* ExtraTarget(DWORD index) const { return m_targets[index]; }
+template <typename T>
+void ReleaseReference(T*& object)
+{
+    if (object)
+        object->Release();
+    object = nullptr;
+}
 
-    void Restore(IDirect3DDevice9* device)
-    {
-        for (DWORD i = 0; i < kMaxRenderTargets; ++i)
-            if (m_targets[i])
-                device->SetRenderTarget(i, m_targets[i]);
-        device->SetDepthStencilSurface(m_depth);
-        m_state->Apply();
-        device->SetStreamSource(0, m_stream, m_streamOffset, m_streamStride);
-        device->SetIndices(m_indices);
-        device->SetViewport(&m_viewport);
-        device->SetScissorRect(&m_scissor);
-    }
-
-private:
-    IDirect3DStateBlock9* m_state = nullptr;
-    IDirect3DSurface9* m_targets[kMaxRenderTargets] = {};
-    IDirect3DSurface9* m_depth = nullptr;
-    IDirect3DVertexBuffer9* m_stream = nullptr;
-    UINT m_streamOffset = 0;
-    UINT m_streamStride = 0;
-    IDirect3DIndexBuffer9* m_indices = nullptr;
-    D3DVIEWPORT9 m_viewport = {};
-    RECT m_scissor = {};
-};
+void EndOverlayFrame(IDirect3DDevice9* device, OverlayFrame& frame)
+{
+    if (frame.sceneOpen)
+        device->EndScene();
+    if (frame.captured)
+        RestoreDeviceState(device, frame);
+    frame.sceneOpen = false;
+    frame.captured = false;
+    for (IDirect3DSurface9*& target : frame.targets)
+        ReleaseReference(target);
+    ReleaseReference(frame.depth);
+    ReleaseReference(frame.stream);
+    ReleaseReference(frame.indices);
+    ReleaseReference(frame.state);
+    ReleaseReference(frame.backBuffer);
+}
 
 void SetStateImGuiLeavesAlone(IDirect3DDevice9* device)
 {
@@ -404,28 +510,24 @@ void SetStateImGuiLeavesAlone(IDirect3DDevice9* device)
     device->SetSamplerState(0, D3DSAMP_MAXMIPLEVEL, 0);
 }
 
-void RenderPanel(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer)
+void RenderPanel(IDirect3DDevice9* device, OverlayFrame& frame)
 {
-    SavedDeviceState saved;
-    if (!saved.Capture(device))
+    if (!CaptureDeviceState(device, frame))
     {
         LogDrawSkip(kNoStateCapture, "the device state could not be captured", E_FAIL);
         return;
     }
-    const bool ownScene = SUCCEEDED(device->BeginScene());
-    device->SetRenderTarget(0, backBuffer);
+    frame.sceneOpen = SUCCEEDED(device->BeginScene());
+    device->SetRenderTarget(0, frame.backBuffer);
     for (DWORD i = 1; i < kMaxRenderTargets; ++i)
-        if (saved.ExtraTarget(i))
+        if (frame.targets[i])
             device->SetRenderTarget(i, nullptr);
     device->SetDepthStencilSurface(nullptr);
     SetStateImGuiLeavesAlone(device);
     ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
-    if (ownScene)
-        device->EndScene();
-    saved.Restore(device);
 }
 
-void DrawOverlayFrame(IDirect3DDevice9* device)
+void DrawOverlayFrame(IDirect3DDevice9* device, OverlayFrame& frame)
 {
     if (!GlobalConfig().Get().overlay)
     {
@@ -438,20 +540,18 @@ void DrawOverlayFrame(IDirect3DDevice9* device)
         LogDrawSkip(kDeviceNotReady, "the device is not ready", cooperativeLevel);
         return;
     }
-    IDirect3DSurface9* backBuffer = nullptr;
-    const HRESULT backBufferResult = device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
+    const HRESULT backBufferResult = device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &frame.backBuffer);
     if (FAILED(backBufferResult))
     {
         LogDrawSkip(kNoBackBuffer, "no back buffer", backBufferResult);
         return;
     }
     D3DSURFACE_DESC desc = {};
-    backBuffer->GetDesc(&desc);
+    frame.backBuffer->GetDesc(&desc);
     g_overlay.backBufferWidth = desc.Width;
     g_overlay.backBufferHeight = desc.Height;
     BuildPanelFrame(desc);
-    RenderPanel(device, backBuffer);
-    backBuffer->Release();
+    RenderPanel(device, frame);
     if (!g_overlay.drawLogged)
     {
         g_overlay.drawLogged = true;
@@ -459,17 +559,32 @@ void DrawOverlayFrame(IDirect3DDevice9* device)
     }
 }
 
-void DrawOverlayGuarded(IDirect3DDevice9* device)
+void EndOverlayFrameGuarded(IDirect3DDevice9* device, OverlayFrame& frame)
 {
     __try
     {
-        DrawOverlayFrame(device);
+        EndOverlayFrame(device, frame);
+    }
+    __except (OverlayFaultFilter(GetExceptionCode(), "frame cleanup"))
+    {
+        g_overlay.failed = true;
+        g_overlay.visible = false;
+    }
+}
+
+void DrawOverlayGuarded(IDirect3DDevice9* device)
+{
+    OverlayFrame frame = {};
+    __try
+    {
+        DrawOverlayFrame(device, frame);
     }
     __except (OverlayFaultFilter(GetExceptionCode(), "frame"))
     {
         g_overlay.failed = true;
         g_overlay.visible = false;
     }
+    EndOverlayFrameGuarded(device, frame);
 }
 
 void ShutDownImGui()

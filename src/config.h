@@ -69,6 +69,7 @@ public:
 
 private:
     void Read();
+    Config ReadFile() const;
     void ReadKeepingStartupSwitches();
 
     std::string m_path;
