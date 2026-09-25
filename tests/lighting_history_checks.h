@@ -6,7 +6,6 @@ void CheckLightDisappearanceHistory(Harness& harness)
     vf_test_get_config(&saved);
     Config config = saved;
     config.quality = 1;
-    config.materialFog = false;
     config.noiseAmount = 0;
     config.worldShadows = false;
     config.lightShafts = false;

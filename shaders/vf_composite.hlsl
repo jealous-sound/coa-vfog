@@ -7,9 +7,6 @@ float4 cSun : register(c98);
 sampler2D sFog : register(s1);
 sampler2D sGodRays : register(s2);
 sampler2D sSceneBeforeFog : register(s3);
-#if defined(NATIVE_GLARE)
-sampler2D sNativeGlare : register(s10);
-#endif
 
 static const float kHighlightKnee = 0.8;
 static const float kSunMarkerRadius = 6;
@@ -118,7 +115,7 @@ float4 DepthAwareUpsample(float2 pixel, float depth, float viewZ)
         weightSum += weight;
     }
     [branch] if (weightSum <= 1e-6)
-        return IntegrateFogAtPixel(pixel, 0.5, 0, 0, false);
+        return IntegrateFogAtPixel(pixel, 0.5);
     return weightedFog / weightSum;
 }
 
@@ -181,14 +178,6 @@ float4 main(float2 pixelIndex : VPOS) : COLOR0
     fog.rgb *= Exposure();
 
     float2 viewportUv = (pixel - ViewportOrigin()) / ViewportSize();
-#if defined(NATIVE_GLARE)
-    float3 scene = tex2Dlod(sSceneBeforeFog, float4(viewportUv, 0, 0)).rgb;
-    float3 glare = tex2Dlod(sNativeGlare, float4(pixel * DepthTexelSize(), 0, 0)).rgb;
-    float3 rays = DisplaySpaceGodRays(viewportUv);
-    float3 before = BlendGodRays(FogSceneColour(scene, fog), rays);
-    float3 after = BlendGodRays(FogSceneColour(saturate(scene + glare), fog), rays);
-    return float4(max(after - before, 0), 0);
-#else
     float3 godRays = DisplaySpaceGodRays(viewportUv);
     const bool linearLight = BlendsInLinearLight();
 
@@ -207,5 +196,4 @@ float4 main(float2 pixelIndex : VPOS) : COLOR0
     [branch] if (BlendsOverSceneCopy())
         return BlendOverSceneCopy(viewportUv, fog, godRays);
     return PremultipliedForFixedFunctionBlend(fog, godRays, linearLight);
-#endif
 }

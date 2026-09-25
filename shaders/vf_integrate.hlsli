@@ -6,7 +6,7 @@
 #define STEPS 24
 #endif
 
-static const int kShadowSteps = 6;
+static const int kShadowSteps = 12;
 static const int kFogLayers = 4;
 static const int kRegistersPerLayer = 6;
 static const float kShadowMinViewZ = 0.3;
@@ -134,33 +134,39 @@ float PhaseHG(float g, float cosAngle)
     return r * r * r;
 }
 
-bool SceneOccludes(float sceneDepth, float sampleViewZ, float occluderThickness)
+bool SceneOccludes(float sceneDepth, float2 segmentViewZ, float occluderThickness)
 {
     float sceneViewZ = LinearDepth(sceneDepth);
-    return !BeyondFarClip(sceneDepth) && sceneViewZ < sampleViewZ - kShadowDepthBias &&
-           sceneViewZ > sampleViewZ - occluderThickness;
+    return sceneDepth < 1 && !BeyondFarClip(sceneDepth) &&
+           sceneViewZ < max(segmentViewZ.x, segmentViewZ.y) - kShadowDepthBias &&
+           sceneViewZ > min(segmentViewZ.x, segmentViewZ.y) - occluderThickness;
 }
 
 float ScreenSpaceSunVisibility(float3 viewPosition, float sampleDistance, float jitter)
 {
-    float stepLength = max(ShadowMinStep(), sampleDistance * ShadowStepPerYard());
-    float occluderThickness = stepLength * ShadowThicknessInSteps();
-    float3 stepToLight = DirectionToLightView() * stepLength;
-    float3 samplePosition = viewPosition + stepToLight * jitter;
+    [branch] if (viewPosition.z < kShadowMinViewZ)
+        return 1;
+    float traceLength = min(FarClip(), (viewPosition.z - kShadowMinViewZ) /
+                                      max(-DirectionToLightView().z, 1e-6));
+    float3 endPosition = viewPosition + DirectionToLightView() * traceLength;
+    float2 startPixel = ViewToPixel(viewPosition);
+    float2 pixelDelta = ViewToPixel(endPosition) - startPixel;
+    float2 toEdge = min((ViewportOrigin() + ViewportSize() - startPixel) / max(pixelDelta, 1e-6),
+                       (ViewportOrigin() - startPixel) / min(pixelDelta, -1e-6));
+    float endFraction = saturate(min(toEdge.x, toEdge.y));
+    float2 inverseZ = float2(1 / viewPosition.z, 1 / endPosition.z);
+    inverseZ.y = lerp(inverseZ.x, inverseZ.y, endFraction);
+    float3 step = float3(pixelDelta * endFraction, inverseZ.y - inverseZ.x) / kShadowSteps;
+    float3 sample = float3(startPixel, inverseZ.x);
+    float occluderThickness = max(ShadowMinStep(), sampleDistance * ShadowStepPerYard()) * ShadowThicknessInSteps();
     float visibility = 1;
     [loop] for (int k = 0; k < kShadowSteps; k++)
     {
-        samplePosition += stepToLight;
-        [branch] if (samplePosition.z < kShadowMinViewZ)
-            break;
-        float2 pixel = ViewToPixel(samplePosition);
-        [branch] if (OutsideViewport(pixel))
-            break;
-        [branch] if (SceneOccludes(SampleDepth(sDepth, pixel), samplePosition.z, occluderThickness))
-        {
-            visibility = 0;
-            break;
-        }
+        float2 segmentViewZ = 1 / float2(sample.z, sample.z + step.z);
+        float2 pixel = sample.xy + step.xy * jitter;
+        visibility = min(visibility,
+                         SceneOccludes(SampleDepth(sDepth, pixel), segmentViewZ, occluderThickness) ? 0 : 1);
+        sample += step;
     }
     return visibility;
 }
@@ -213,22 +219,17 @@ float StepJitter(float2 lowResTexel)
     return JitterEnabled() ? frac(InterleavedGradientNoise(lowResTexel) + FrameIndex() * kGoldenRatioFraction) : 0.5;
 }
 
-float4 IntegrateFogAtPixel(float2 pixel, float jitter, float startViewZ, float maxViewZ, bool volumeSlice)
+float4 IntegrateFogAtPixel(float2 pixel, float jitter)
 {
     float3 viewRay = ViewRayAtUnitDepth(pixel);
     float distancePerViewZ = length(viewRay);
     float3 viewDirection = viewRay / distancePerViewZ;
     float depth = SampleDepth(sDepth, pixel);
-    float skyMask = volumeSlice ? 0 : (IsSky(depth) ? 1 : 0);
-    float viewZ = volumeSlice ? maxViewZ : LinearDepth(depth);
-    float horizonBlend = volumeSlice ? 0 :
-        max(BeyondFarClip(depth) ? 1 : 0, smoothstep(HorizonBlendStart(), FarClip(), viewZ));
+    float skyMask = IsSky(depth) ? 1 : 0;
+    float viewZ = LinearDepth(depth);
+    float horizonBlend = max(BeyondFarClip(depth) ? 1 : 0, smoothstep(HorizonBlendStart(), FarClip(), viewZ));
     viewZ = lerp(viewZ, MaxFogDistance(), horizonBlend);
     float marchLength = min(viewZ * distancePerViewZ, MaxFogDistance());
-    float marchStart = volumeSlice ? min(startViewZ * distancePerViewZ, marchLength) : 0;
-    float marchSpan = marchLength - marchStart;
-    [branch] if (volumeSlice && marchSpan <= 0)
-        return 0;
 
     float3 cameraWorld = CameraPositionWorld();
     float3 directionWorld = ViewToWorldDirection(viewDirection);
@@ -243,8 +244,8 @@ float4 IntegrateFogAtPixel(float2 pixel, float jitter, float startViewZ, float m
     {
         float startFraction = s * stepFraction;
         float endFraction = startFraction + stepFraction;
-        float stepStart = marchStart + marchSpan * (volumeSlice ? startFraction : startFraction * startFraction);
-        float stepEnd = marchStart + marchSpan * (volumeSlice ? endFraction : endFraction * endFraction);
+        float stepStart = marchLength * startFraction * startFraction;
+        float stepEnd = marchLength * endFraction * endFraction;
         float sampleDistance = lerp(stepStart, stepEnd, jitter);
         float sunVisibility = LightAboveHorizon();
         [branch] if (ShadowsEnabled())

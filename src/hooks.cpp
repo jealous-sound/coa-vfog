@@ -9,7 +9,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <cstring>
 
 namespace
@@ -34,8 +33,6 @@ uintptr_t g_screenEffectsTarget = engine::kScreenEffectsTarget;
 bool g_failed = false;
 bool g_renderedLastFrame = false;
 bool g_renderedThisFrame = false;
-bool g_opaqueFogRendered = false;
-bool g_nativeGlareFallbackLogged = false;
 bool g_stockFogPushed = false;
 engine::StockFog g_savedStockFog = {};
 bool g_deviceChecked = false;
@@ -105,15 +102,13 @@ void RestorePushedStockFog()
 void OnFrameBegin()
 {
     g_renderedThisFrame = false;
-    g_opaqueFogRendered = false;
-    EndMaterialFog(GameFogDevice());
     if (FogDrawsInPlaceOfStockFog())
         PushStockFogOutOfRange();
 }
 
 void OnLiquidSurfaceBegin()
 {
-    if (g_failed || g_opaqueFogRendered || !g_renderedLastFrame || !GlobalConfig().Get().liquidDepth)
+    if (g_failed || !g_renderedLastFrame || !GlobalConfig().Get().liquidDepth)
         return;
     g_liquidDepthWriteDevice = GameFogDevice();
     ForceDepthWrite(g_liquidDepthWriteDevice, true);
@@ -127,7 +122,6 @@ void OnLiquidSurfaceEnd()
 
 void OnFrameEnd()
 {
-    EndMaterialFog(GameFogDevice());
     OnLiquidSurfaceEnd();
     RestorePushedStockFog();
     g_renderedLastFrame = g_renderedThisFrame;
@@ -149,7 +143,7 @@ void UseClientFogRangeInsteadOfPushed(FrameInputs& in)
     in.fogEnd = g_savedStockFog.end[engine::kFrameInputsFogGroup];
 }
 
-bool RenderCurrentWorldFog(FogDevice* device, bool materialFog)
+bool RenderCurrentWorldFog(FogDevice* device)
 {
     if (!device || !engine::HasOpaqueState())
         return false;
@@ -160,8 +154,7 @@ bool RenderCurrentWorldFog(FogDevice* device, bool materialFog)
     bool valid = engine::BuildFrameInputs(in);
     if (g_stockFogPushed)
         UseClientFogRangeInsteadOfPushed(in);
-    Config cfg = GlobalConfig().Get();
-    cfg.materialFog = cfg.materialFog && materialFog;
+    const Config& cfg = GlobalConfig().Get();
     const char* skip = "invalid frame inputs";
     bool rendered = false;
     if (valid && (!in.inLiquid || cfg.underwater))
@@ -184,23 +177,12 @@ void OnOpaqueDone()
     if (!device)
         return;
     engine::CaptureOpaqueState(RealDevice(device));
-    ReloadConfigAfterInterval();
-    const Config& cfg = GlobalConfig().Get();
-    SetMaterialFogRequested(device, cfg.materialFog);
-    if (cfg.materialFog && cfg.debugView == 0 && cfg.stockFog == 1 && MaterialFogCompatible(device))
-    {
-        g_opaqueFogRendered = RenderCurrentWorldFog(device, true);
-        if (g_opaqueFogRendered)
-            BeginRenderedMaterialFog(device);
-    }
 }
 
 void OnWorldDone()
 {
-    FogDevice* device = GameFogDevice();
-    EndMaterialFog(device);
-    if (!g_failed && !g_opaqueFogRendered)
-        RenderCurrentWorldFog(device, false);
+    if (!g_failed)
+        RenderCurrentWorldFog(GameFogDevice());
     engine::ClearOpaqueState();
 }
 
@@ -359,59 +341,6 @@ extern "C" void __cdecl vf_on_world_done()
     }
 }
 
-static void EndNativeGlareGuarded(FogDevice* device)
-{
-    __try
-    {
-        EndNativeGlare(device);
-    }
-    __except (GuardFilter(GetExceptionCode(), "native glare end hook"))
-    {
-        g_failed = true;
-    }
-}
-
-static FogDevice* BeginNativeGlareGuarded()
-{
-    FogDevice* device = nullptr;
-    __try
-    {
-        if (g_failed || !g_opaqueFogRendered)
-            return nullptr;
-        device = GameFogDevice();
-        if (BeginNativeGlare(device))
-        {
-            g_nativeGlareFallbackLogged = false;
-            return device;
-        }
-        if (!g_nativeGlareFallbackLogged)
-        {
-            VF_LOG_INFO("native glare capture unavailable; preserving the client's original glare draw");
-            g_nativeGlareFallbackLogged = true;
-        }
-    }
-    __except (GuardFilter(GetExceptionCode(), "native glare begin hook"))
-    {
-        g_failed = true;
-        EndNativeGlareGuarded(device);
-    }
-    return nullptr;
-}
-
-static void __cdecl NativeGlareThunk()
-{
-    FogDevice* device = BeginNativeGlareGuarded();
-    __try
-    {
-        reinterpret_cast<void(__cdecl*)()>(engine::kNativeGlareTarget)();
-    }
-    __finally
-    {
-        if (device)
-            EndNativeGlareGuarded(device);
-    }
-}
-
 __declspec(naked) static void WorldRenderThunk()
 {
     __asm {
@@ -486,7 +415,6 @@ bool InstallEngineHooks()
         {engine::kWorldRenderSite, engine::kWorldRenderTarget, &WorldRenderThunk},
         {engine::kOpaqueM2PassSite, engine::kOpaqueM2PassTarget, &OpaqueM2PassThunk},
         {engine::kLiquidSurfaceSite, engine::kLiquidSurfaceTarget, &LiquidSurfaceThunk},
-        {engine::kNativeGlareSite, engine::kNativeGlareTarget, &NativeGlareThunk},
         {engine::kScreenEffectsSite, engine::kScreenEffectsTarget, &ScreenEffectsThunk},
     };
     for (const CallSite& s : sites)
@@ -510,9 +438,9 @@ bool InstallEngineHooks()
     }
     *slot = &GetProcAddressFilter;
     VF_LOG_INFO("engine hooks installed: GetProcAddress filter, world render 0x%08X, opaque 0x%08X, liquid 0x%08X, "
-                "native glare 0x%08X, world done 0x%08X",
+                "world done 0x%08X",
                 static_cast<unsigned>(engine::kWorldRenderSite), static_cast<unsigned>(engine::kOpaqueM2PassSite),
-                static_cast<unsigned>(engine::kLiquidSurfaceSite), static_cast<unsigned>(engine::kNativeGlareSite),
+                static_cast<unsigned>(engine::kLiquidSurfaceSite),
                 static_cast<unsigned>(engine::kScreenEffectsSite));
     return true;
 }
@@ -522,16 +450,7 @@ FogFrameStatus LastFogFrameStatus()
     if (g_failed)
         return {false, "stopped after an exception, see CoAVolFog.log"};
     if (g_renderedLastFrame)
-    {
-        if (GlobalConfig().Get().materialFog && !MaterialFogCompatible(GameFogDevice()))
-        {
-            static char reason[512];
-            std::snprintf(reason, sizeof(reason), "Material fog unavailable: %s. Using final-pass fog. "
-                          "Turn Material fog off and on to retry.", MaterialFogFailureReason(GameFogDevice()));
-            return {true, reason};
-        }
         return {true, ""};
-    }
     return {false, *g_lastSkip ? g_lastSkip : "waiting for the world to render"};
 }
 

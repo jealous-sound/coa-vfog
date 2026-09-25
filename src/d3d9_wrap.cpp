@@ -1,7 +1,6 @@
 #include "d3d9_wrap.h"
 
 #include "log.h"
-#include "material_fog.h"
 #include "overlay.h"
 #include "renderer.h"
 
@@ -55,14 +54,6 @@ public:
     IDirect3DDevice9* Real() const { return m_real; }
     bool CreateDepth();
     bool Render(const FrameInputs& in, const Config& cfg, const char** skip);
-    bool BeginMaterial(const MaterialFogVolume& volume) { return FogActive() && m_materialFog.Begin(volume); }
-    bool BeginRenderedMaterial() { return BeginMaterial(m_renderer.MaterialVolume()); }
-    bool BeginGlare() { return FogActive() && m_renderer.BeginNativeGlare(m_real); }
-    void EndGlare() { m_renderer.EndNativeGlare(m_real); }
-    void EndMaterial() { m_materialFog.End(); }
-    bool MaterialCompatible() const { return m_materialFog.Compatible(); }
-    void SetMaterialRequested(bool requested) { m_materialFog.SetRequested(requested); }
-    const char* MaterialFailureReason() const { return m_materialFog.FailureReason(); }
     bool AdaptiveLightingHistory() const { return m_renderer.AdaptiveLightingHistory(); }
     void ForceDepthWrite(bool force)
     {
@@ -112,7 +103,6 @@ public:
     HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS* pp) override;
     HRESULT STDMETHODCALLTYPE Present(const RECT* src, const RECT* dst, HWND wnd, const RGNDATA* dirty) override
     {
-        m_materialFog.End();
         DrawOverlay(m_real);
         return m_real->Present(src, dst, wnd, dirty);
     }
@@ -315,34 +305,22 @@ public:
     float STDMETHODCALLTYPE GetNPatchMode() override { return m_real->GetNPatchMode(); }
     HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE t, UINT start, UINT count) override
     {
-        m_materialFog.Apply(m_real);
-        const HRESULT result = m_real->DrawPrimitive(t, start, count);
-        m_materialFog.Restore();
-        return result;
+        return m_real->DrawPrimitive(t, start, count);
     }
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE t, INT base, UINT minIndex, UINT vertices,
                                                    UINT start, UINT count) override
     {
-        m_materialFog.Apply(m_real);
-        const HRESULT result = m_real->DrawIndexedPrimitive(t, base, minIndex, vertices, start, count);
-        m_materialFog.Restore();
-        return result;
+        return m_real->DrawIndexedPrimitive(t, base, minIndex, vertices, start, count);
     }
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE t, UINT count, const void* data, UINT stride) override
     {
-        m_materialFog.Apply(m_real);
-        const HRESULT result = m_real->DrawPrimitiveUP(t, count, data, stride);
-        m_materialFog.Restore();
-        return result;
+        return m_real->DrawPrimitiveUP(t, count, data, stride);
     }
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE t, UINT minIndex, UINT vertices, UINT count,
                                                      const void* indices, D3DFORMAT fmt, const void* data,
                                                      UINT stride) override
     {
-        m_materialFog.Apply(m_real);
-        const HRESULT result = m_real->DrawIndexedPrimitiveUP(t, minIndex, vertices, count, indices, fmt, data, stride);
-        m_materialFog.Restore();
-        return result;
+        return m_real->DrawIndexedPrimitiveUP(t, minIndex, vertices, count, indices, fmt, data, stride);
     }
     HRESULT STDMETHODCALLTYPE ProcessVertices(UINT src, UINT dst, UINT count, IDirect3DVertexBuffer9* buffer,
                                               IDirect3DVertexDeclaration9* decl, DWORD flags) override
@@ -482,7 +460,6 @@ private:
     IDirect3DTexture9* m_depthTexture = nullptr;
     IDirect3DSurface9* m_depthSurface = nullptr;
     Renderer m_renderer;
-    MaterialFog m_materialFog;
 };
 
 namespace
@@ -667,7 +644,6 @@ FogDevice::~FogDevice()
 {
     DetachOverlay(m_real);
     Unregister(this);
-    m_materialFog.Release();
     m_renderer.ReleaseAll();
     ReleaseDepth();
     m_real->Release();
@@ -769,7 +745,6 @@ HRESULT FogDevice::Reset(D3DPRESENT_PARAMETERS* pp)
 {
     if (!pp)
         return D3DERR_INVALIDCALL;
-    m_materialFog.Release();
     ReleaseOverlayDeviceObjects(m_real);
     if (!m_fog)
         return m_real->Reset(pp);
@@ -793,7 +768,6 @@ HRESULT FogDevice::Reset(D3DPRESENT_PARAMETERS* pp)
 
 bool FogDevice::Render(const FrameInputs& in, const Config& cfg, const char** skip)
 {
-    m_materialFog.End();
     bool ok = FogActive() && m_renderer.Render(m_real, m_depthTexture, m_depthSurface, in, cfg);
     if (skip)
         *skip = FogActive() ? m_renderer.LastSkipReason() : "fog inactive";
@@ -854,50 +828,7 @@ bool RenderFog(FogDevice* device, const FrameInputs& in, const Config& cfg, cons
     return device && device->Render(in, cfg, skipReason);
 }
 
-bool BeginMaterialFog(FogDevice* device, const MaterialFogVolume& volume)
-{
-    return device && device->BeginMaterial(volume);
-}
-
-bool BeginRenderedMaterialFog(FogDevice* device)
-{
-    return device && device->BeginRenderedMaterial();
-}
-
-bool BeginNativeGlare(FogDevice* device)
-{
-    return device && device->BeginGlare();
-}
-
-void EndNativeGlare(FogDevice* device)
-{
-    if (device)
-        device->EndGlare();
-}
-
-bool MaterialFogCompatible(FogDevice* device)
-{
-    return device && device->MaterialCompatible();
-}
-
-void SetMaterialFogRequested(FogDevice* device, bool requested)
-{
-    if (device)
-        device->SetMaterialRequested(requested);
-}
-
-const char* MaterialFogFailureReason(FogDevice* device)
-{
-    return device ? device->MaterialFailureReason() : "device unavailable";
-}
-
 bool AdaptiveLightingHistory(FogDevice* device)
 {
     return device && device->AdaptiveLightingHistory();
-}
-
-void EndMaterialFog(FogDevice* device)
-{
-    if (device)
-        device->EndMaterial();
 }

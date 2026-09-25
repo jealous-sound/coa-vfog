@@ -66,7 +66,6 @@ const FloatSetting kFloatSettings[] = {
 const BoolSetting kBoolSettings[] = {
     {"LightShafts", &Config::lightShafts}, {"GlowCompensation", &Config::glowCompensation},
     {"WorldShadows", &Config::worldShadows},
-    {"MaterialFog", &Config::materialFog},
     {"LocalLights", &Config::localLights}, {"InteriorAware", &Config::interiorAware},
     {"Underwater", &Config::underwater},   {"LiquidDepth", &Config::liquidDepth},
     {"SunMarker", &Config::sunMarker},

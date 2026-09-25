@@ -147,8 +147,6 @@ bool DrawLight(Config& c)
                       "Shadowed in-scattering: light shafts through trees, buildings and terrain");
     changed |= Toggle("World shadows", c.worldShadows,
                       "Use the client's world shadow maps when available, including off-screen shadow casters");
-    changed |= Toggle("Material fog", c.materialFog,
-                      "Apply fog at the depth of compatible transparent world materials");
     changed |= Toggle("Local lights", c.localLights, "Scatter nearby point lights from the world into the fog");
     changed |= Slider("Local light intensity", c.localLightIntensity, 0.0f, 8.0f, "%.2f",
                       "Brightness of nearby point lights in the fog");

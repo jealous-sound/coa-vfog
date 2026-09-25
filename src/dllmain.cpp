@@ -98,46 +98,6 @@ extern "C" int __cdecl vf_test_adaptive_lighting_history()
     return AdaptiveLightingHistory(LatestFogDevice()) ? 1 : 0;
 }
 
-extern "C" int __cdecl vf_test_begin_material_fog(const MaterialFogVolume* volume)
-{
-    return volume && BeginMaterialFog(LatestFogDevice(), *volume) ? 1 : 0;
-}
-
-extern "C" int __cdecl vf_test_begin_rendered_material_fog()
-{
-    return BeginRenderedMaterialFog(LatestFogDevice()) ? 1 : 0;
-}
-
-extern "C" int __cdecl vf_test_begin_native_glare()
-{
-    return BeginNativeGlare(LatestFogDevice()) ? 1 : 0;
-}
-
-extern "C" void __cdecl vf_test_end_native_glare()
-{
-    EndNativeGlare(LatestFogDevice());
-}
-
-extern "C" void __cdecl vf_test_end_material_fog()
-{
-    EndMaterialFog(LatestFogDevice());
-}
-
-extern "C" int __cdecl vf_test_material_fog_compatible()
-{
-    return MaterialFogCompatible(LatestFogDevice()) ? 1 : 0;
-}
-
-extern "C" void __cdecl vf_test_material_fog_requested(int requested)
-{
-    SetMaterialFogRequested(LatestFogDevice(), requested != 0);
-}
-
-extern "C" const char* __cdecl vf_test_material_fog_failure()
-{
-    return MaterialFogFailureReason(LatestFogDevice());
-}
-
 extern "C" int __cdecl vf_test_overlay_visible()
 {
     return OverlayVisible() ? 1 : 0;

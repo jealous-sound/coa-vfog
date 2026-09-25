@@ -145,14 +145,13 @@ bool MeasureCases(Harness& h)
     EngineGlDepthProjection(1.0f / std::tan(kFovY * 0.5f), 1920.0f / 1080.0f, kNear, kFar, projection);
     const D3DVIEWPORT9 viewport = {0, 0, 1920, 1080, 0, kClientWorldMaxZ};
     const FrameInputs original = MakeInputs(view, projection, eye, at, viewport);
-    std::printf("quality,point_lights,material_atlas,median_ms,p95_ms\n");
+    std::printf("quality,point_lights,median_ms,p95_ms\n");
     for (int quality = 1; quality <= 3; ++quality)
     {
-        for (int variant = 0; variant < 3; ++variant)
+        for (int variant = 0; variant < 2; ++variant)
         {
             Config config;
             config.quality = quality;
-            config.materialFog = variant == 2;
             config.worldShadows = false;
             config.logLevel = 0;
             config.overlay = false;
@@ -181,8 +180,7 @@ bool MeasureCases(Harness& h)
             std::sort(samples.begin(), samples.end());
             const double median = (samples[kMeasuredFrames / 2 - 1] + samples[kMeasuredFrames / 2]) * 0.5;
             const double p95 = samples[(kMeasuredFrames * 95 + 99) / 100 - 1];
-            std::printf("%d,%u,%d,%.3f,%.3f\n", quality, inputs.localLights.pointLightCount,
-                        config.materialFog, median, p95);
+            std::printf("%d,%u,%.3f,%.3f\n", quality, inputs.localLights.pointLightCount, median, p95);
             std::fflush(stdout);
         }
     }

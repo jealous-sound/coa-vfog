@@ -2,10 +2,7 @@
 #include "engine.h"
 #include "fog_data.h"
 #include "fog_model.h"
-#include "fixed_function_material.h"
-#include "fog_volume.h"
 #include "noise_volume.h"
-#include "shader_instrumentation.h"
 
 #include <windows.h>
 #include <d3d9.h>
@@ -1483,15 +1480,11 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "noise_variation_checks.h"
 #include "world_shadow_hardware_checks.h"
 #include "local_light_gpu_checks.h"
-#include "fog_atlas_checks.h"
 #include "silhouette_quality_checks.h"
 #include "god_ray_quality_checks.h"
 #include "temporal_quality_checks.h"
 #include "runtime_quality_checks.h"
 #include "lighting_history_checks.h"
-#include "shader_instrumentation_checks.h"
-#include "material_fog_checks.h"
-#include "fixed_function_material_checks.h"
 
 void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3 at,
                                    const float* proj, const D3DVIEWPORT9& world)
@@ -1607,16 +1600,12 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
         parent->Release();
 
     h.CreateEngineObjects();
-    CheckShaderInstrumentation(h.dev);
-    CheckFixedFunctionMaterials(h.dev);
-    CheckRuntimeMaterialFog(h.dev);
     CheckFogIntegration(h.dev);
     CheckLocalLightInputs();
     CheckInteriorFogInputs();
     CheckNoiseVariation(h.dev);
     CheckHardwareWorldShadowIntegration(h.dev);
     local_light_gpu::CheckLocalLightIntegration(h.dev);
-    fog_atlas_gpu::CheckFogAtlas(h.dev);
     silhouette_quality::CheckSilhouettes(h.dev);
     god_ray_quality::CheckGodRays(h.dev);
     CheckTemporalQuality(h.dev);
@@ -1973,7 +1962,6 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     Check(OverlayProbeChange(beforeOverlay, Capture(h.dev)) > 0.05, "the overlay draws again after Reset");
     PressHotkey(h.window, kDefaultOverlayHotkey);
 
-    CheckRenderedMaterialFog(h, resized, outDir);
     vf_test_set_config(&restored);
     h.ReleaseEngineObjects();
     ULONG devRefs = h.dev->Release();

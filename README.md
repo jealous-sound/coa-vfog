@@ -50,6 +50,9 @@ data is Classic-derived; keep it in private repositories.
 - **Forward scattering** around the sun or moon (Henyey–Greenstein phase).
 - **Light shafts**: native world shadow maps include off-screen casters. Character shadows and three
   environment regions are filtered and blended at their edges; a screen-space march covers unavailable regions.
+  The fallback projects a ray up to the far-clip distance toward the light, clips it to the viewport and near
+  plane, and checks 12 perspective-correct depth intervals. This finds distant blockers that a short contact
+  trace misses. Clear sky and geometry behind the ray do not occlude it.
 - **Local lights**: up to eight nearby native point lights scatter into the medium with the client's constant,
   linear and quadratic attenuation. Light/ray intersections preserve small light volumes between march samples.
 - **Interior transitions**: the camera's native WMO blend reduces outdoor layers and sunlight while preserving
@@ -67,27 +70,9 @@ Animated lighting also reduces history weight when current and previous radiance
 depth stays unchanged. The composite rejects depth-mismatched taps and marches at full resolution when all
 nearby samples miss a thin silhouette.
 
-With `MaterialFog=1`, opaque fog is drawn after the opaque M2 pass. A tiled volume stores cumulative radiance
-and opacity at 16, 24 or 32 quadratic depth slices, depending on quality. Subsequent compatible world materials
-sample that volume at their own depth. Each depth interval is integrated once with two substeps at low quality
-or four at medium/high, then a cumulative pass composes the intervals from front to back. The intermediate
-requires an FP16 render target; unavailable resources select final-pass fog. Shader-model 2 and 3 vertex/pixel
-pairs are instrumented together, including the depth interpolator, with separate straight-alpha, premultiplied
-and additive treatment. Original shader objects, constants and sampler state are restored after each draw.
-Legacy unlit XYZ materials can generate a missing shader stage from their vertex declaration, transforms and
-texture combiners, then use the same instrumentation. The bridge supports up to seven 2D texture stages,
-COUNT2/3/4 transforms and camera-space-position texture generation. When retaining a native pixel shader, a
-missing vertex stage requires shader model 2 and nonprojected texture transforms. Native pixel shader model 3
-with fixed-function vertices retains the compatibility fallback. Material processing ends before screen effects
-and the UI. Unsupported material shaders or blending suspend this path; the next frame uses final-pass fog. The panel
-shows the actual failure reason, and toggling Material fog off and on explicitly retries without restarting.
-A device reset also clears the fallback. Disabling this option selects the final world pass.
-
-The native sun/moon glare draws later with the sky viewport, outside the world-material filter. Its colour is
-captured at the original draw point while retaining the original depth surface and occlusion-query timing.
-The captured glare contributes the difference between fogged scene-with-glare and fogged scene-without-glare,
-using the same depth-aware fog, highlight roll-off, optional god rays and glow compensation as the opaque pass. This avoids
-leaving the native halo unattenuated or fogging the world twice. Missing capture resources select final-pass fog.
+Fog renders once after the world, including its late geometry and native sun/moon glare, and before screen
+effects. The opaque M2 hook captures camera inputs only. Native material shaders and glare draws are untouched;
+the former Material fog setting and its volume/instrumentation path have been removed. Old INI keys are ignored.
 
 The three scene layers share a continuous, two-octave density field anchored in world space. `NoiseAmount`
 controls modulation around the authored mean, `NoiseScale` controls feature size, and `NoiseWindSpeed` drifts
@@ -120,7 +105,7 @@ size-class culling (`environmentDetail`), and creatures the server's visibility 
 | Loader | `version.dll` proxy (all 17 exports forward lazily to the system copy). Its static import loads `CoAVolFog.dll` before the client starts. |
 | D3D9 | The client resolves `Direct3DCreate9` through the delay-loaded `GetProcAddress` slot `[0xB2ED98]`. The DLL points that slot at a filter that returns a wrapped `IDirect3D9`. No d3d9 code is patched, so DXVK or other `d3d9.dll` builds keep working underneath. |
 | Depth | The wrapper creates the device without auto depth and binds an `INTZ` texture as the depth-stencil, which the client caches as its world depth. MSAA is reported unavailable and forced off; `D3DCREATE_PUREDEVICE` is removed. The client draws the world with viewport depth `[0, 0.94]` (`[0xADEEE4]`, set at `0x4F9019`), the distant WDL terrain into `[0.998, 0.999]` with its own projection, and leaves the sky at the clear depth 1; the shaders read depth through the captured world viewport's range and treat anything deeper as beyond the far clip. |
-| Hooks | Five 5-byte call displacements: the world render call (`0x4FB03D`, stock-fog override and restore), after the opaque M2 pass (`0x4F911D`, captures world inputs and begins material-depth fog), the liquid surface pass (`0x4F9170`, depth writes forced on only in final-pass mode), the native sun/moon glare pass (`0x4F9213`, preserves late occlusion queries and captures glare for fog attenuation), and before the frame effects (`0x4F9281`, ends material processing or draws final-pass fog). The original bytes are checked first; on any mismatch nothing is patched. Two more retarget the far-clip clamp calls (`0x780810`, `0x781444`) when `FarClipMax` is set at start-up, independently of the fog hooks. |
+| Hooks | Four 5-byte call displacements: the world render call (`0x4FB03D`, stock-fog override and restore), after the opaque M2 pass (`0x4F911D`, captures world inputs), the liquid surface pass (`0x4F9170`, forces depth writes), and before the frame effects (`0x4F9281`, draws fog over the completed world). The original bytes are checked first; on any mismatch nothing is patched. Two more retarget the far-clip clamp calls (`0x780810`, `0x781444`) when `FarClipMax` is set at start-up, independently of the fog hooks. |
 | State | Every state the passes touch is captured with a recorded state block and restored, plus render targets, depth and stream 0 (whose offset state blocks drop). The client's shader-constant cache stays valid. |
 | Overlay | When a fog device is created, the device window's procedure is chained so the settings window sees input first, and the wrapper's `Present` draws the window over the finished frame (see In-game settings). |
 
@@ -146,8 +131,7 @@ Engine notes behind the code:
   the thunk keeps ECX across the frame-begin hook. `0x4F911D` calls the opaque M2 pass `0x823CB0`, a thiscall with one
   stack argument (`ret 4`). `0x4F9170` calls the liquid surface pass `0x77F020` (no arguments, outside liquid only).
   `0x4F9213` contains `E8 58 76 2F 00`, calling the native sun/moon glare pass `0x7F0870` with no arguments.
-  Its wrapper calls the original exactly once at the same point, with capture only after successful early fog;
-  a structured-exception finally block ends the capture even when the native call exits through an exception.
+  That glare call is not patched.
   `0x4F9281` calls FFX end `0x8C1010` (no arguments); the thunk renders the fog, then tail-jumps to it.
 - Depth. The world viewport's MaxZ is `[0xADEEE4]` = 0.94, passed to GxXformSetViewport at `0x4F905A` and uploaded as
   `D3DVIEWPORT9::MaxZ` by the D3D9 backend (`0x6A9ACC`). The Gx viewport (`[[0xC5DF88] + 0xF80]`, MinZ/MaxZ) is stored
@@ -169,19 +153,12 @@ Engine notes behind the code:
   It sets Gx blend state 6 to mode 3 at `0x9AC55E`-`0x9AC562`. The D3D9 backend reads source factor 5
   (`D3DBLEND_SRCALPHA`) from `[0xA2F964 + 3*4]` and destination factor 2 (`D3DBLEND_ONE`) from
   `[0xA2F994 + 3*4]`, uploading them at `0x6A4DAF` and `0x6A4DDC`; its second backend has identical tables at
-  `0xA2FB68`/`0xA2FB98`. A black capture therefore contains the native alpha-weighted additive RGB contribution.
-  This differs from the opaque world's `[0, 0.94]`, so ordinary material-depth filtering does not cover it.
-  Moving the whole pass before early fog would change occlusion: update method `0x9AC3C0` selects the GPU-query
+  `0xA2FB68`/`0xA2FB98`. The glare depth range differs from the opaque world's `[0, 0.94]`.
+  Moving the whole pass earlier would change occlusion: update method `0x9AC3C0` selects the GPU-query
   path `0x9ABE00`, which reads the previous result, begins a new query at `0x9ABE5A`, draws against the current
-  world depth at `0x9AC2B1`, and ends it at `0x9AC367`. Terrain/WMO pass `0x7984A0` runs after the opaque hook.
-  The glare capture therefore keeps the original timing and depth surface and redirects only its colour output;
-  the native model, render-state and viewport stacks remain responsible for their own state restoration.
-- Legacy world materials. Ground spell circles at `0x4F8A40` use the acceptable/unacceptable textures at
-  `0xAC799C`/`0xAC79A0` and camera-space-position texture generation (`0x7E3FE2`, `0x7E400F`, D3D mapping
-  `0x6A413F`). Lightning effects dispatch through `0x7F9EC0` to `0x9AB070`/`0x9AA210`; the source marker is
-  `Common\\Lightning.cpp`. Missile trajectories at `0x6FDFB0` use XYZ positions, packed diffuse colour and UVs.
-  These are relevant legacy material families, not an attribution of the owner's original failing draw.
-  Fallback logging records missing shader stages, declaration elements and texture-stage state to identify it.
+  world depth at `0x9AC2B1`, and ends it at `0x9AC367`. World geometry pass `0x7984A0` runs after the opaque hook:
+  `0x4F9154` contains `E8 B7 5E 28 00`, calling `0x77F010`, which jumps to `0x7984A0`.
+  The single final fog pass sees this completed depth and preserves the original glare and occlusion-query order.
 - Far clip. The clamp `0x780770` is cdecl `float(float farclip, int mapId)`, result in ST0, caller pops; it bounds
   the value to `[0xA3E708]` (183.33) .. `[0xA3E710]` (1583.33). Its calls at `0x780810` (in the `farclip` CVar setter
   `0x780800`, also reached from Extensions.dll on zone changes) and `0x781444` (map load `0x781430`) are rare, so the
@@ -352,11 +329,9 @@ through the same entry the hook uses, and checks:
 - packed history depth accuracy and god-ray occlusion with an odd-sized, offset world viewport;
 - native hardware shadow comparison and float-depth maps, coverage transitions and off-screen blockers;
 - point-light attenuation and selection, narrow ray/light intersections, HDR bounds and interior transitions;
-- thin silhouettes, tiled volume depth interpolation and world-anchored density variation;
-- material shader instrumentation, colour and blend matching, all four wrapped draw calls, compatibility
-  fallback, explicit off/on retry and state restoration;
-- legacy unlit material colours against native D3D9, texture combiners and transforms, fragment depth,
-  mixed programmable stages, cached uniform refresh and restoration of shader constants and vertex streams;
+- screen-space shadows for distant rocks, angled rays, nearer blockers, clear sky and foreground silhouettes;
+  full fog integration verifies blocked sunlight, retained ambient light and the Light shafts switch at every quality;
+- thin silhouettes and world-anchored density variation;
 - liquid depth-write restoration after native state blocks, and malformed fog-data counts and index ranges;
 - `OverlayKey` parsing, and saving from the settings window into a copy of the shipped INI (only changed lines
   rewritten, comments kept, restart-only keys untouched, values clamped like the INI, Revert);
@@ -372,10 +347,10 @@ Stormwind harbour (sunset, far clip 791.6 yd) with ideal depth and with the clie
 prints fog opacity and colour at probe points next to a CPU integration.
 
 `vfog_harness --scene performance` measures the fog passes at 1920×1080 with 32 warmup frames and 60 measured
-frames per case. Each quality compares zero lights, eight lights, and eight lights with the material volume;
+frames per case. Each quality compares zero lights and eight lights;
 all cases retain the default density variation. It reports median and p95 GPU time, or explicitly labelled
 event-flushed elapsed time if timestamp queries are unavailable. This excludes native shadow-map generation,
-late material draw overhead and in-game CPU work; it is a controlled renderer cost, not a game frame-rate test.
+native draw overhead and in-game CPU work; it is a controlled renderer cost, not a game frame-rate test.
 
 ## Install
 
@@ -405,7 +380,6 @@ writes `CoAVolFog.log` next to itself.
 | `ClassicExposure` | 1 | Brightness of the Classic layers (1 = as authored) |
 | `LightShafts` | 1 | Shadowed in-scattering |
 | `WorldShadows` | 1 | Use the client's native world shadow maps when available; requires `LightShafts` |
-| `MaterialFog` | 1 | Draw opaque fog before compatible transparent world materials and evaluate their own depth; requires `StockFog=1` and normal display mode |
 | `LocalLights`, `LocalLightIntensity` | 1, 1 | Scatter up to eight nearby world point lights; intensity 0..8 |
 | `InteriorAware`, `InteriorDensity` | 1, 0.15 | Follow the camera's WMO interior transition; retain this fraction of outdoor layer density while preserving native interior distance fog |
 | `GodRays` | 0 | Radial sky rays, 0 = off |
@@ -414,7 +388,7 @@ writes `CoAVolFog.log` next to itself.
 | `MaxDistance` | 5000 | Fog range: sky integration length and the Classic distance-curve scale |
 | `Temporal` | 0.85 | History weight, 0 = off |
 | `Underwater` | 0 | Keep the effect under water |
-| `LiquidDepth` | 1 | Water surfaces write depth in final-pass mode; material fog keeps native water depth ordering |
+| `LiquidDepth` | 1 | Water surfaces write depth so fog uses their distance |
 | `DebugView` | 0 | 1 radiance, 2 transmittance, 3 linear depth |
 | `SunMarker` | 0 | Red dot where the light direction projects |
 | `LogLevel` | 1 | 0 errors, 1 info (frame summary every 60 s, depth probe every 30 s), 2 debug |
@@ -427,19 +401,19 @@ https://news.blizzard.com/en-gb/article/24303862/world-of-warcraft-forever-whats
 describes mist over water and moonlight through trees. Matching those scenes requires matched camera, time,
 weather and exposure captures; shared Classic fog data alone does not establish visual parity.
 
-World shadows, native point-light scattering, camera interior transitions, thin-silhouette reconstruction,
-material-depth fog and world-space density variation are implemented. Their numerical and state contracts are
+World shadows, native point-light scattering, camera interior transitions, thin-silhouette reconstruction
+and world-space density variation are implemented. Their numerical and state contracts are
 covered by the offline D3D9 harness. Client address and shader-format evidence is recorded above; these checks
 do not establish in-game appearance or performance. Matched scene colour and exposure calibration still needs
 owner-controlled client captures. Surface lighting, indirect illumination, bloom and colour grading remain
 the native client's systems.
 
-- The original path has been tested in the client with native D3D9. The new lighting and material paths require
+- The original path has been tested in the client with native D3D9. Changes to lighting and occlusion require
   an owner test; DXVK and Wine are untested.
 - The current march and composite kernels require more than the 512 instruction slots guaranteed by
   [baseline pixel shader 3.0](
   https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/dx9-graphics-reference-asm-ps-3-0).
-  The largest current pass uses 1,023 slots, 32 temporary registers and four nested loops. Lower quality reduces
+  The largest current pass uses 1,013 slots, 32 temporary registers and four nested loops. Lower quality reduces
   integration work, not this static shader requirement. An unsupported required shader disables volumetric fog
   for that device and logs its name, HRESULT and available shader caps; native fog remains the fallback.
   Device-loss and memory-allocation failures are retried instead of being cached as unsupported.
@@ -448,13 +422,8 @@ the native client's systems.
 - Local lighting captures the current M2 scene's point-light table. It does not create spotlight cones, local
   shadow maps or guarantee coverage of every WMO-only light. Influence is capped at 200 yd, with a smooth outer
   fade and an attenuation denominator floor of 1 to bound the point emitter's near-field brightness.
-- Material fog needs compatible shaders or supported legacy unlit materials and blending. Unsupported paths
-  retain their original draw and are logged. The next frame switches to final-pass fog until an explicit off/on
-  retry or device reset; disabling `MaterialFog` also restores final-pass fog. Legacy lighting, skinning and
-  pretransformed POSITIONT vertices remain unsupported. The volume's spatial and depth resolution is finite;
-  blending follows the client's existing render-target conventions. All 5,058 unique shader variants from the effective
-  native material assets passed offline instrumentation and D3D9 shader creation; this does not cover every
-  live shader pairing, render state or third-party modification.
+- Transparent materials without depth writes inherit the depth behind them in the final fog pass. Fog at each
+  transparent surface's own depth is currently unsupported.
 - Stock fog suppression is prepared before the world draw; an unexpected fog draw failure can leave one frame
   without replacement fog before the next frame restores the fallback.
 - Interior treatment follows camera membership and its native transition weight. It is not a spatial room or

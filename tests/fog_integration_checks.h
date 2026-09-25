@@ -191,6 +191,8 @@ void CheckWorldShadowIntegration(IDirect3DDevice9* device, const FogIntegrationR
     shadow->Release();
 }
 
+#include "screen_shadow_checks.h"
+
 void CheckFogIntegration(IDirect3DDevice9* device)
 {
     CheckShortRangeAuthoredFog();
@@ -220,6 +222,7 @@ void CheckFogIntegration(IDirect3DDevice9* device)
     device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
     device->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
     device->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
+    CheckScreenSpaceShadows(device, resources);
     const float quad[4][4] = {{-0.5f, -0.5f, 0, 1}, {7.5f, -0.5f, 0, 1},
                              {-0.5f, 7.5f, 0, 1}, {7.5f, 7.5f, 0, 1}};
     const BYTE* shaders[] = {g_ps_march_low, g_ps_march_mid, g_ps_march_high};
@@ -293,6 +296,7 @@ void CheckFogIntegration(IDirect3DDevice9* device)
             Check(worst <= 2.0f / 255.0f, label);
         }
         CheckWorldShadowIntegration(device, resources, quality + 1);
+        CheckBlockedSunIntegration(device, resources, quality + 1);
         shader->Release();
     }
     device->SetRenderTarget(0, resources.previousTarget);

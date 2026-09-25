@@ -41,7 +41,6 @@ struct Config
     float classicExposure = 1.0f;
     bool lightShafts = true;
     bool worldShadows = true;
-    bool materialFog = true;
     bool localLights = true;
     float localLightIntensity = 1.0f;
     bool interiorAware = true;
