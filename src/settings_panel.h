@@ -8,7 +8,7 @@
 class SettingsPanel
 {
 public:
-    void Draw(ConfigStore& store, const FogFrameStatus& status, const std::string& hotkeyName, bool& open);
+    void Draw(ConfigStore& store, const FogFrameStatus& status, bool& open);
 
 private:
     void DrawSaveRow(ConfigStore& store);

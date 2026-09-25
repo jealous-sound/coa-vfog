@@ -82,13 +82,12 @@ bool Toggle(const char* label, int& value, const char* help)
     return changed;
 }
 
-void DrawStatus(const FogFrameStatus& status, const std::string& hotkeyName)
+void DrawStatus(const FogFrameStatus& status)
 {
     if (status.drawn)
-        ImGui::TextColored(kDrawnColour, "Fog: drawing");
+        ImGui::TextColored(kDrawnColour, "Fog: Drawing");
     else
-        ImGui::TextColored(kSkippedColour, "Fog: not drawn (%s)", status.reason);
-    ImGui::TextDisabled("%s shows and hides this window. Ctrl+click a slider to type a value.", hotkeyName.c_str());
+        ImGui::TextColored(kSkippedColour, "Fog: Not drawing (%s)", status.reason);
 }
 
 bool DrawQuality(Config& c)
@@ -183,7 +182,7 @@ bool DrawDebug(Config& c)
 }
 }
 
-void SettingsPanel::Draw(ConfigStore& store, const FogFrameStatus& status, const std::string& hotkeyName, bool& open)
+void SettingsPanel::Draw(ConfigStore& store, const FogFrameStatus& status, bool& open)
 {
     const float line = ImGui::GetFontSize();
     const float width = kPanelWidthInLines * line;
@@ -196,7 +195,7 @@ void SettingsPanel::Draw(ConfigStore& store, const FogFrameStatus& status, const
         ImGui::End();
         return;
     }
-    DrawStatus(status, hotkeyName);
+    DrawStatus(status);
     Config edited = store.Get();
     bool changed = DrawQuality(edited);
     changed |= DrawDensity(edited);

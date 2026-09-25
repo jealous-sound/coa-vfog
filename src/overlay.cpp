@@ -433,8 +433,7 @@ void BuildPanelFrame(const D3DSURFACE_DESC& backBuffer)
         ImGui::SetWindowFocus(nullptr);
     }
     bool open = true;
-    ConfigStore& store = GlobalConfig();
-    g_overlay.panel.Draw(store, LastFogFrameStatus(), HotkeyName(store.Get().overlayKey), open);
+    g_overlay.panel.Draw(GlobalConfig(), LastFogFrameStatus(), open);
     ImGui::Render();
     if (!open)
         SetVisible(false);
