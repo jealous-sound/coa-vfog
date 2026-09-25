@@ -46,6 +46,8 @@ constexpr uintptr_t kOpaqueM2PassSite = 0x004F911D;
 constexpr uintptr_t kOpaqueM2PassTarget = 0x00823CB0;
 constexpr uintptr_t kLiquidSurfaceSite = 0x004F9170;
 constexpr uintptr_t kLiquidSurfaceTarget = 0x0077F020;
+constexpr uintptr_t kNativeGlareSite = 0x004F9213;
+constexpr uintptr_t kNativeGlareTarget = 0x007F0870;
 constexpr uintptr_t kScreenEffectsSite = 0x004F9281;
 constexpr uintptr_t kScreenEffectsTarget = 0x008C1010;
 

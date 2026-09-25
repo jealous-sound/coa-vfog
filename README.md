@@ -77,6 +77,12 @@ Material processing ends before
 screen effects and the UI. Unsupported material shaders or blending suspend this path until the next device
 reset; the next frame uses final-pass fog. Disabling this option also selects the final world pass.
 
+The native sun/moon glare draws later with the sky viewport, outside the world-material filter. Its colour is
+captured at the original draw point while retaining the original depth surface and occlusion-query timing.
+The captured glare contributes the difference between fogged scene-with-glare and fogged scene-without-glare,
+using the same depth-aware fog, highlight roll-off, optional god rays and glow compensation as the opaque pass. This avoids
+leaving the native halo unattenuated or fogging the world twice. Missing capture resources select final-pass fog.
+
 The three scene layers share a continuous, two-octave density field anchored in world space. `NoiseAmount`
 controls modulation around the authored mean, `NoiseScale` controls feature size, and `NoiseWindSpeed` drifts
 the field along world +X in yards per second. Zero amount restores homogeneous layers; zero wind keeps the
@@ -89,6 +95,11 @@ pre-compensated with the live glow amount. Its other term, a blend toward the bl
 drunkenness, is left as is. While the effect draws, the stock fog is pushed out of range for
 the world render and restored afterwards. Known unavailable frames keep the stock fog; an unexpected draw
 failure restores the fallback on the next frame.
+
+Optional radial god rays use the remaining display highlight range with a smooth exponential blend. The blend
+accounts for the client's glow before adding rays, then converts back to the pre-glow colour. Zero ray strength
+preserves the fog-only result. This artistic screen-space effect requires a scene copy in both colour modes;
+if the copy is unavailable, fog keeps its fixed-function fallback and radial rays are omitted.
 
 **View distance.** Ascension's Extensions.dll detours the far-clip clamp (`0x780770`) and caps maps 0, 1, 530
 and 571 at 791.66 yd; the engine allows 1583.33 and instances use it. With `FarClipMax` set, the DLL's calls
@@ -103,7 +114,7 @@ size-class culling (`environmentDetail`), and creatures the server's visibility 
 | Loader | `version.dll` proxy (all 17 exports forward lazily to the system copy). Its static import loads `CoAVolFog.dll` before the client starts. |
 | D3D9 | The client resolves `Direct3DCreate9` through the delay-loaded `GetProcAddress` slot `[0xB2ED98]`. The DLL points that slot at a filter that returns a wrapped `IDirect3D9`. No d3d9 code is patched, so DXVK or other `d3d9.dll` builds keep working underneath. |
 | Depth | The wrapper creates the device without auto depth and binds an `INTZ` texture as the depth-stencil, which the client caches as its world depth. MSAA is reported unavailable and forced off; `D3DCREATE_PUREDEVICE` is removed. The client draws the world with viewport depth `[0, 0.94]` (`[0xADEEE4]`, set at `0x4F9019`), the distant WDL terrain into `[0.998, 0.999]` with its own projection, and leaves the sky at the clear depth 1; the shaders read depth through the captured world viewport's range and treat anything deeper as beyond the far clip. |
-| Hooks | Four 5-byte call displacements: the world render call (`0x4FB03D`, stock-fog override and restore), after the opaque M2 pass (`0x4F911D`, captures world inputs and begins material-depth fog), the liquid surface pass (`0x4F9170`, depth writes forced on only in final-pass mode) and before the frame effects (`0x4F9281`, ends material processing or draws final-pass fog). The original bytes are checked first; on any mismatch nothing is patched. Two more retarget the far-clip clamp calls (`0x780810`, `0x781444`) when `FarClipMax` is set at start-up, independently of the fog hooks. |
+| Hooks | Five 5-byte call displacements: the world render call (`0x4FB03D`, stock-fog override and restore), after the opaque M2 pass (`0x4F911D`, captures world inputs and begins material-depth fog), the liquid surface pass (`0x4F9170`, depth writes forced on only in final-pass mode), the native sun/moon glare pass (`0x4F9213`, preserves late occlusion queries and captures glare for fog attenuation), and before the frame effects (`0x4F9281`, ends material processing or draws final-pass fog). The original bytes are checked first; on any mismatch nothing is patched. Two more retarget the far-clip clamp calls (`0x780810`, `0x781444`) when `FarClipMax` is set at start-up, independently of the fog hooks. |
 | State | Every state the passes touch is captured with a recorded state block and restored, plus render targets, depth and stream 0 (whose offset state blocks drop). The client's shader-constant cache stays valid. |
 | Overlay | When a fog device is created, the device window's procedure is chained so the settings window sees input first, and the wrapper's `Present` draws the window over the finished frame (see In-game settings). |
 
@@ -128,6 +139,9 @@ Engine notes behind the code:
 - Call sites. `0x4FB03D` calls the world render `0x4F8EA0`, a thiscall on the world frame with no stack arguments;
   the thunk keeps ECX across the frame-begin hook. `0x4F911D` calls the opaque M2 pass `0x823CB0`, a thiscall with one
   stack argument (`ret 4`). `0x4F9170` calls the liquid surface pass `0x77F020` (no arguments, outside liquid only).
+  `0x4F9213` contains `E8 58 76 2F 00`, calling the native sun/moon glare pass `0x7F0870` with no arguments.
+  Its wrapper calls the original exactly once at the same point, with capture only after successful early fog;
+  a structured-exception finally block ends the capture even when the native call exits through an exception.
   `0x4F9281` calls FFX end `0x8C1010` (no arguments); the thunk renders the fog, then tail-jumps to it.
 - Depth. The world viewport's MaxZ is `[0xADEEE4]` = 0.94, passed to GxXformSetViewport at `0x4F905A` and uploaded as
   `D3DVIEWPORT9::MaxZ` by the D3D9 backend (`0x6A9ACC`). The Gx viewport (`[[0xC5DF88] + 0xF80]`, MinZ/MaxZ) is stored
@@ -142,6 +156,20 @@ Engine notes behind the code:
   the effect's own CVar (`+4`) are on. The glow effect `[0xB74364]` keeps `ffxGlow` there (`0x8BFEDB`); `0x4F8770`
   feeds it the DayNight glow (`0xD38C2C`) as the additive weight of `lerp(screen, blur, other) + g·blur²`, where
   `other` is the screen effect's own blend amount.
+- Native glare. `0x7EE150` initializes the sun-glare object at `0xD38EA8` from `Textures\sunGlare.blp`
+  (`0xA41BC4`); `0x7EE230` initializes `0xD38F58` from `Textures\moonGlare.blp` (`0xA41BEC`). The late pass
+  `0x7F0870` updates each with `0x7EF6E0` and draws it with `0x9AC400`. That draw changes the viewport depth to
+  `[0.9990234375, 1]` at `0x9AC54B`, draws its quad at `0x9AC610`, and restores the viewport at `0x9AC63E`.
+  It sets Gx blend state 6 to mode 3 at `0x9AC55E`-`0x9AC562`. The D3D9 backend reads source factor 5
+  (`D3DBLEND_SRCALPHA`) from `[0xA2F964 + 3*4]` and destination factor 2 (`D3DBLEND_ONE`) from
+  `[0xA2F994 + 3*4]`, uploading them at `0x6A4DAF` and `0x6A4DDC`; its second backend has identical tables at
+  `0xA2FB68`/`0xA2FB98`. A black capture therefore contains the native alpha-weighted additive RGB contribution.
+  This differs from the opaque world's `[0, 0.94]`, so ordinary material-depth filtering does not cover it.
+  Moving the whole pass before early fog would change occlusion: update method `0x9AC3C0` selects the GPU-query
+  path `0x9ABE00`, which reads the previous result, begins a new query at `0x9ABE5A`, draws against the current
+  world depth at `0x9AC2B1`, and ends it at `0x9AC367`. Terrain/WMO pass `0x7984A0` runs after the opaque hook.
+  The glare capture therefore keeps the original timing and depth surface and redirects only its colour output;
+  the native model, render-state and viewport stacks remain responsible for their own state restoration.
 - Far clip. The clamp `0x780770` is cdecl `float(float farclip, int mapId)`, result in ST0, caller pops; it bounds
   the value to `[0xA3E708]` (183.33) .. `[0xA3E710]` (1583.33). Its calls at `0x780810` (in the `farclip` CVar setter
   `0x780800`, also reached from Extensions.dll on zone changes) and `0x781444` (map load `0x781430`) are rare, so the

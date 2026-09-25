@@ -108,6 +108,16 @@ extern "C" int __cdecl vf_test_begin_rendered_material_fog()
     return BeginRenderedMaterialFog(LatestFogDevice()) ? 1 : 0;
 }
 
+extern "C" int __cdecl vf_test_begin_native_glare()
+{
+    return BeginNativeGlare(LatestFogDevice()) ? 1 : 0;
+}
+
+extern "C" void __cdecl vf_test_end_native_glare()
+{
+    EndNativeGlare(LatestFogDevice());
+}
+
 extern "C" void __cdecl vf_test_end_material_fog()
 {
     EndMaterialFog(LatestFogDevice());

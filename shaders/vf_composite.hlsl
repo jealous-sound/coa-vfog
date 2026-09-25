@@ -7,6 +7,9 @@ float4 cSun : register(c98);
 sampler2D sFog : register(s1);
 sampler2D sGodRays : register(s2);
 sampler2D sSceneBeforeFog : register(s3);
+#if defined(NATIVE_GLARE)
+sampler2D sNativeGlare : register(s10);
+#endif
 
 static const float kHighlightKnee = 0.8;
 static const float kSunMarkerRadius = 6;
@@ -47,12 +50,12 @@ float BlendMode()
 
 bool BlendsInLinearLight()
 {
-    return BlendMode() > 0.5;
+    return BlendMode() > 0.5 && BlendMode() < 2.5;
 }
 
 bool BlendsOverSceneCopy()
 {
-    return BlendMode() > 0.5 && BlendMode() < 1.5;
+    return (BlendMode() > 0.5 && BlendMode() < 1.5) || BlendMode() > 2.5;
 }
 
 float2 SunPixel()
@@ -127,13 +130,37 @@ float3 DisplaySpaceGodRays(float2 viewportUv)
     return godRays;
 }
 
-float4 BlendOverSceneCopy(float2 viewportUv, float4 fog, float3 godRays)
+float3 BlendGodRays(float3 colour, float3 godRays)
 {
-    float3 scene = GammaToLinear(tex2Dlod(sSceneBeforeFog, float4(viewportUv, 0, 0)).rgb);
+    [branch] if (GodRayStrength() > 0)
+    {
+        float glow = ClientGlowToCompensate();
+        float3 displayed = colour * (1 + glow * colour);
+        displayed += max(1 - displayed, 0) * (1 - exp(-max(godRays, 0)));
+        colour = BeforeClientGlow(displayed, glow);
+    }
+    return colour;
+}
+
+float3 FogSceneColour(float3 scene, float4 fog)
+{
+    [branch] if (!BlendsInLinearLight())
+    {
+        float3 fogColour = RollOffHighlights(fog.rgb / max(fog.a, 1e-4), kHighlightKnee);
+        float3 colour = scene * (1 - fog.a) + fogColour * fog.a;
+        return colour;
+    }
+    scene = GammaToLinear(scene);
     float3 colour = LinearToGamma(RollOffHighlights(scene * (1 - fog.a) + fog.rgb, max(kHighlightKnee, scene)));
     [branch] if (ClientGlowToCompensate() > 0)
         colour = lerp(colour, BeforeClientGlow(colour, ClientGlowToCompensate()), fog.a);
-    return float4(colour + godRays, 1);
+    return colour;
+}
+
+float4 BlendOverSceneCopy(float2 viewportUv, float4 fog, float3 godRays)
+{
+    float3 scene = tex2Dlod(sSceneBeforeFog, float4(viewportUv, 0, 0)).rgb;
+    return float4(BlendGodRays(FogSceneColour(scene, fog), godRays), 1);
 }
 
 float4 PremultipliedForFixedFunctionBlend(float4 fog, float3 godRays, bool linearLight)
@@ -154,6 +181,14 @@ float4 main(float2 pixelIndex : VPOS) : COLOR0
     fog.rgb *= Exposure();
 
     float2 viewportUv = (pixel - ViewportOrigin()) / ViewportSize();
+#if defined(NATIVE_GLARE)
+    float3 scene = tex2Dlod(sSceneBeforeFog, float4(viewportUv, 0, 0)).rgb;
+    float3 glare = tex2Dlod(sNativeGlare, float4(pixel * DepthTexelSize(), 0, 0)).rgb;
+    float3 rays = DisplaySpaceGodRays(viewportUv);
+    float3 before = BlendGodRays(FogSceneColour(scene, fog), rays);
+    float3 after = BlendGodRays(FogSceneColour(saturate(scene + glare), fog), rays);
+    return float4(max(after - before, 0), 0);
+#else
     float3 godRays = DisplaySpaceGodRays(viewportUv);
     const bool linearLight = BlendsInLinearLight();
 
@@ -172,4 +207,5 @@ float4 main(float2 pixelIndex : VPOS) : COLOR0
     [branch] if (BlendsOverSceneCopy())
         return BlendOverSceneCopy(viewportUv, fog, godRays);
     return PremultipliedForFixedFunctionBlend(fog, godRays, linearLight);
+#endif
 }

@@ -9,6 +9,9 @@
 #include "ps_composite_low.h"
 #include "ps_composite_mid.h"
 #include "ps_composite_high.h"
+#include "ps_native_glare_low.h"
+#include "ps_native_glare_mid.h"
+#include "ps_native_glare_high.h"
 #include "ps_march_high.h"
 #include "ps_atlas_low.h"
 #include "ps_atlas_mid.h"
@@ -190,12 +193,13 @@ enum class FogBlend
     GammaFixedFunction,
     LinearOverSceneCopy,
     LinearFixedFunction,
+    GammaOverSceneCopy,
 };
 
 const char* FogBlendName(FogBlend blend)
 {
     static const char* const kNames[] = {"gamma, fixed function", "linear over a scene copy",
-                                         "linear, fixed function (no scene copy)"};
+                                         "linear, fixed function (no scene copy)", "gamma over a scene copy"};
     return kNames[static_cast<int>(blend)];
 }
 
@@ -232,6 +236,12 @@ void Renderer::ReleaseDefaultPool()
     SafeRelease(m_densityNoise);
     SafeRelease(m_fogAtlas);
     SafeRelease(m_fogIntervals);
+    SafeRelease(m_glareCapture);
+    SafeRelease(m_glareOriginalTarget);
+    SafeRelease(m_glareFrameState);
+    SafeRelease(m_glareRestoreState);
+    m_glareWidth = m_glareHeight = 0;
+    m_glareReady = false;
     m_atlasWidth = m_atlasHeight = 0;
     m_materialVolume = {};
     SafeRelease(m_probeTarget);
@@ -259,6 +269,8 @@ void Renderer::ReleaseAll()
     SafeRelease(m_temporal);
     SafeRelease(m_historyDepthShader);
     for (auto*& ps : m_composite)
+        SafeRelease(ps);
+    for (auto*& ps : m_nativeGlare)
         SafeRelease(ps);
     SafeRelease(m_rayMask);
     SafeRelease(m_rayBlur);
@@ -474,6 +486,109 @@ bool Renderer::CopyWorldViewport(IDirect3DDevice9* dev, IDirect3DSurface9* targe
     return copied;
 }
 
+bool Renderer::EnsureNativeGlare(IDirect3DDevice9* dev, const D3DSURFACE_DESC& desc)
+{
+    if (!m_nativeGlare[0])
+    {
+        const BYTE* codes[] = {g_ps_native_glare_low, g_ps_native_glare_mid, g_ps_native_glare_high};
+        bool ready = true;
+        for (unsigned i = 0; i < 3; ++i)
+            ready = SUCCEEDED(dev->CreatePixelShader(reinterpret_cast<const DWORD*>(codes[i]),
+                                                      &m_nativeGlare[i])) && ready;
+        if (!ready)
+        {
+            for (auto*& shader : m_nativeGlare)
+                SafeRelease(shader);
+            return false;
+        }
+    }
+    if (!m_glareCapture || m_glareWidth != desc.Width || m_glareHeight != desc.Height)
+    {
+        SafeRelease(m_glareCapture);
+        if (!CreateTarget(dev, desc.Width, desc.Height, D3DFMT_A8R8G8B8, &m_glareCapture))
+            return false;
+        m_glareWidth = desc.Width;
+        m_glareHeight = desc.Height;
+    }
+    if (!m_glareFrameState && FAILED(dev->CreateStateBlock(D3DSBT_ALL, &m_glareFrameState)))
+        return false;
+    if (!m_glareRestoreState && FAILED(dev->CreateStateBlock(D3DSBT_ALL, &m_glareRestoreState)))
+        return false;
+    return true;
+}
+
+bool Renderer::BeginNativeGlare(IDirect3DDevice9* dev)
+{
+    if (!dev || !m_glareReady || !m_materialVolume.atlas || m_glareOriginalTarget)
+        return false;
+    IDirect3DSurface9* target = nullptr;
+    IDirect3DSurface9* depth = nullptr;
+    IDirect3DSurface9* additionalTarget = nullptr;
+    IDirect3DSurface9* glare = nullptr;
+    D3DVIEWPORT9 viewport = {};
+    dev->GetRenderTarget(1, &additionalTarget);
+    const bool matches = !additionalTarget && SUCCEEDED(dev->GetRenderTarget(0, &target)) &&
+                         target == m_materialVolume.target && SUCCEEDED(dev->GetDepthStencilSurface(&depth)) &&
+                         depth == m_materialVolume.depth && SUCCEEDED(dev->GetViewport(&viewport)) &&
+                         SUCCEEDED(m_glareCapture->GetSurfaceLevel(0, &glare));
+    SafeRelease(additionalTarget);
+    SafeRelease(depth);
+    if (!matches)
+    {
+        SafeRelease(target);
+        SafeRelease(glare);
+        return false;
+    }
+    m_glareOriginalTarget = target;
+    const bool redirected = SUCCEEDED(dev->SetRenderTarget(0, glare)) &&
+                            SUCCEEDED(dev->SetViewport(&viewport)) &&
+                            SUCCEEDED(dev->Clear(0, nullptr, D3DCLEAR_TARGET, 0, 1, 0));
+    SafeRelease(glare);
+    if (!redirected)
+    {
+        dev->SetRenderTarget(0, m_glareOriginalTarget);
+        dev->SetViewport(&viewport);
+        SafeRelease(m_glareOriginalTarget);
+    }
+    return redirected;
+}
+
+void Renderer::EndNativeGlare(IDirect3DDevice9* dev)
+{
+    if (!dev || !m_glareOriginalTarget)
+        return;
+    D3DVIEWPORT9 viewport = {};
+    dev->GetViewport(&viewport);
+    dev->SetRenderTarget(0, m_glareOriginalTarget);
+    dev->SetViewport(&viewport);
+    SafeRelease(m_glareOriginalTarget);
+    IDirect3DSurface9* depth = nullptr;
+    IDirect3DVertexBuffer9* stream = nullptr;
+    UINT offset = 0;
+    UINT stride = 0;
+    dev->GetDepthStencilSurface(&depth);
+    dev->GetStreamSource(0, &stream, &offset, &stride);
+    const bool captured = SUCCEEDED(m_glareRestoreState->Capture());
+    if (captured)
+        dev->SetDepthStencilSurface(nullptr);
+    if (captured && SUCCEEDED(m_glareFrameState->Apply()))
+    {
+        dev->SetPixelShader(m_nativeGlare[m_glareQuality]);
+        BindTexture(dev, 10, m_glareCapture, false);
+        dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+        dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ONE);
+        dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE);
+        DrawFullscreen(dev);
+    }
+    if (captured)
+        m_glareRestoreState->Apply();
+    dev->SetDepthStencilSurface(depth);
+    dev->SetStreamSource(0, stream, offset, stride);
+    SafeRelease(depth);
+    SafeRelease(stream);
+    m_glareReady = false;
+}
+
 bool Renderer::DepthProbeDue(long long now) const
 {
     const bool debugLog = LogEnabled(LogLevel::Debug);
@@ -567,6 +682,7 @@ bool Renderer::Render(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, ID
 {
     m_skip = "";
     m_materialVolume = {};
+    m_glareReady = false;
     if (dev->TestCooperativeLevel() != D3D_OK)
         return Skip("device not ready");
     if (!EnsureShaders(dev) || !EnsureStateBlock(dev))
@@ -606,8 +722,8 @@ bool Renderer::Render(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, ID
         for (DWORD i = 1; i < 4; ++i)
             if (saved[i])
                 dev->SetRenderTarget(i, saved[i]);
-        dev->SetDepthStencilSurface(savedDepth);
         m_state->Apply();
+        dev->SetDepthStencilSurface(savedDepth);
         dev->SetStreamSource(0, stream, streamOffset, streamStride);
         SafeRelease(stream);
     }
@@ -634,6 +750,9 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     const UINT rayH = std::max(1u, static_cast<UINT>(vp.Height) / kRayScale);
     if (!EnsureTargets(dev, lowW, lowH, rayW, rayH))
         return false;
+    const bool materialFog = cfg.materialFog && cfg.debugView == 0 && cfg.stockFog == 1;
+    if (materialFog && !EnsureNativeGlare(dev, depthDesc))
+        return Skip("native glare fog resources unavailable");
 
     float viewToWorld[16];
     float worldToView[16];
@@ -851,7 +970,7 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
                               static_cast<float>(std::fmod(TickSeconds(now) * cfg.noiseWindSpeed, windPeriod)), 0.0f};
     dev->SetPixelShaderConstantF(78, &variation.x, 1);
     BindTexture(dev, 0, depthTexture, false);
-    if (cfg.materialFog && cfg.debugView == 0 && cfg.stockFog == 1)
+    if (materialFog)
     {
         if (!m_atlasShader[0])
         {
@@ -976,9 +1095,13 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     FogBlend blend = FogBlend::GammaFixedFunction;
     if (fog.linear)
         blend = CopyWorldViewport(dev, target, vp) ? FogBlend::LinearOverSceneCopy : FogBlend::LinearFixedFunction;
-    const bool sceneBlend = blend == FogBlend::LinearOverSceneCopy;
-    m_materialVolume.sceneCopy = sceneBlend;
-    if (!sceneBlend)
+    else if ((rays || materialFog) && CopyWorldViewport(dev, target, vp))
+        blend = FogBlend::GammaOverSceneCopy;
+    const bool sceneBlend = blend == FogBlend::LinearOverSceneCopy || blend == FogBlend::GammaOverSceneCopy;
+    if (materialFog && !sceneBlend)
+        return Skip("native glare fog scene copy unavailable");
+    m_materialVolume.sceneCopy = blend == FogBlend::LinearOverSceneCopy;
+    if (!m_materialVolume.sceneCopy)
         m_materialVolume.glow = 0.0f;
     const float blendMode = static_cast<float>(blend);
     if (blendMode != m_loggedBlendMode)
@@ -1002,7 +1125,7 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     dev->SetPixelShaderConstantF(9, &march[0].x, 3);
     dev->SetPixelShaderConstantF(12, &fog.layers[0].start, 6 * kFogLayers);
     const Float4 composite[3] = {
-        {fog.authored ? cfg.classicExposure : cfg.exposure, rays ? rayStrength : 0.0f,
+        {fog.authored ? cfg.classicExposure : cfg.exposure, rays && sceneBlend ? rayStrength : 0.0f,
          static_cast<float>(cfg.debugView), blendMode},
         {fog.rayColor[0], fog.rayColor[1], fog.rayColor[2], 0.0f},
         {sunPx[0], sunPx[1], cfg.sunMarker && sunInFront ? 1.0f : 0.0f,
@@ -1013,6 +1136,13 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     BindTexture(dev, 1, m_history[write], false);
     BindTexture(dev, 2, m_rays[1], true);
     BindTexture(dev, 3, sceneBlend ? m_sceneCopy : nullptr, false);
+    if (materialFog)
+    {
+        m_glareQuality = std::clamp(cfg.quality, 1, 3) - 1;
+        m_glareReady = SUCCEEDED(m_glareFrameState->Capture());
+        if (!m_glareReady)
+            return Skip("native glare fog state unavailable");
+    }
     DrawFullscreen(dev);
 
     if (DepthProbeDue(now))

@@ -34,6 +34,7 @@ bool g_failed = false;
 bool g_renderedLastFrame = false;
 bool g_renderedThisFrame = false;
 bool g_opaqueFogRendered = false;
+bool g_nativeGlareFallbackLogged = false;
 bool g_stockFogPushed = false;
 engine::StockFog g_savedStockFog = {};
 bool g_deviceChecked = false;
@@ -356,6 +357,59 @@ extern "C" void __cdecl vf_on_world_done()
     }
 }
 
+static void EndNativeGlareGuarded(FogDevice* device)
+{
+    __try
+    {
+        EndNativeGlare(device);
+    }
+    __except (GuardFilter(GetExceptionCode(), "native glare end hook"))
+    {
+        g_failed = true;
+    }
+}
+
+static FogDevice* BeginNativeGlareGuarded()
+{
+    FogDevice* device = nullptr;
+    __try
+    {
+        if (g_failed || !g_opaqueFogRendered)
+            return nullptr;
+        device = GameFogDevice();
+        if (BeginNativeGlare(device))
+        {
+            g_nativeGlareFallbackLogged = false;
+            return device;
+        }
+        if (!g_nativeGlareFallbackLogged)
+        {
+            VF_LOG_INFO("native glare capture unavailable; preserving the client's original glare draw");
+            g_nativeGlareFallbackLogged = true;
+        }
+    }
+    __except (GuardFilter(GetExceptionCode(), "native glare begin hook"))
+    {
+        g_failed = true;
+        EndNativeGlareGuarded(device);
+    }
+    return nullptr;
+}
+
+static void __cdecl NativeGlareThunk()
+{
+    FogDevice* device = BeginNativeGlareGuarded();
+    __try
+    {
+        reinterpret_cast<void(__cdecl*)()>(engine::kNativeGlareTarget)();
+    }
+    __finally
+    {
+        if (device)
+            EndNativeGlareGuarded(device);
+    }
+}
+
 __declspec(naked) static void WorldRenderThunk()
 {
     __asm {
@@ -430,6 +484,7 @@ bool InstallEngineHooks()
         {engine::kWorldRenderSite, engine::kWorldRenderTarget, &WorldRenderThunk},
         {engine::kOpaqueM2PassSite, engine::kOpaqueM2PassTarget, &OpaqueM2PassThunk},
         {engine::kLiquidSurfaceSite, engine::kLiquidSurfaceTarget, &LiquidSurfaceThunk},
+        {engine::kNativeGlareSite, engine::kNativeGlareTarget, &NativeGlareThunk},
         {engine::kScreenEffectsSite, engine::kScreenEffectsTarget, &ScreenEffectsThunk},
     };
     for (const CallSite& s : sites)
@@ -453,9 +508,10 @@ bool InstallEngineHooks()
     }
     *slot = &GetProcAddressFilter;
     VF_LOG_INFO("engine hooks installed: GetProcAddress filter, world render 0x%08X, opaque 0x%08X, liquid 0x%08X, "
-                "world done 0x%08X",
+                "native glare 0x%08X, world done 0x%08X",
                 static_cast<unsigned>(engine::kWorldRenderSite), static_cast<unsigned>(engine::kOpaqueM2PassSite),
-                static_cast<unsigned>(engine::kLiquidSurfaceSite), static_cast<unsigned>(engine::kScreenEffectsSite));
+                static_cast<unsigned>(engine::kLiquidSurfaceSite), static_cast<unsigned>(engine::kNativeGlareSite),
+                static_cast<unsigned>(engine::kScreenEffectsSite));
     return true;
 }
 

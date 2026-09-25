@@ -22,6 +22,8 @@ void ForceDepthWrite(FogDevice* device, bool force);
 bool RenderFog(FogDevice* device, const FrameInputs& in, const Config& cfg, const char** skipReason);
 bool BeginMaterialFog(FogDevice* device, const MaterialFogVolume& volume);
 bool BeginRenderedMaterialFog(FogDevice* device);
+bool BeginNativeGlare(FogDevice* device);
+void EndNativeGlare(FogDevice* device);
 bool MaterialFogCompatible(FogDevice* device);
 bool AdaptiveLightingHistory(FogDevice* device);
 void EndMaterialFog(FogDevice* device);

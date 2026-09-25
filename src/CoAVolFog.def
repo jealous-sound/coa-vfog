@@ -8,6 +8,8 @@ EXPORTS
     vf_test_adaptive_lighting_history
     vf_test_begin_material_fog
     vf_test_begin_rendered_material_fog
+    vf_test_begin_native_glare
+    vf_test_end_native_glare
     vf_test_end_material_fog
     vf_test_material_fog_compatible
     vf_test_force_depth_write

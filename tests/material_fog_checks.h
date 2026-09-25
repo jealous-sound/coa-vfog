@@ -6,6 +6,8 @@ extern "C" __declspec(dllimport) int __cdecl vf_test_begin_material_fog(const Ma
 extern "C" __declspec(dllimport) int __cdecl vf_test_begin_rendered_material_fog();
 extern "C" __declspec(dllimport) int __cdecl vf_test_material_fog_compatible();
 extern "C" __declspec(dllimport) void __cdecl vf_test_end_material_fog();
+extern "C" __declspec(dllimport) int __cdecl vf_test_begin_native_glare();
+extern "C" __declspec(dllimport) void __cdecl vf_test_end_native_glare();
 
 namespace material_fog_checks
 {
@@ -214,8 +216,371 @@ void CheckRuntimeMaterialFog(IDirect3DDevice9* device)
     material_fog_checks::Run(device);
 }
 
+void CheckMaterialFogOpaqueParity(Harness& harness, const D3DVIEWPORT9& viewport)
+{
+    IDirect3DStateBlock9* state = nullptr;
+    const bool stateReady = SUCCEEDED(harness.dev->CreateStateBlock(D3DSBT_ALL, &state));
+    Check(stateReady, "sun-facing material fog comparison saves the engine state");
+    if (!stateReady)
+        return;
+    Config config = {};
+    config.dataMode = 0;
+    config.colorSpace = 1;
+    config.noiseAmount = 0;
+    config.temporal = 0;
+    config.godRays = 0;
+    config.worldShadows = false;
+    config.localLights = false;
+    config.lightShafts = false;
+    config.glowCompensation = true;
+    float projection[16];
+    EngineProjection(static_cast<float>(viewport.Width) / viewport.Height, projection);
+    const Vec3 eye = Add({0, 0, 9}, kGameLikeWorldOffset);
+    const Vec3 at = Add(eye, {100, 12, 0});
+    float view[16];
+    CameraRelativeLookAt(eye, at, view);
+    FrameInputs inputs = MakeInputs(view, projection, eye, at, viewport);
+    inputs.clientGlowAmount = 0.65f;
+    for (int quality = 1; quality <= 3; ++quality)
+    {
+        config.quality = quality;
+        Image pictures[2];
+        bool rendered = true;
+        for (unsigned material = 0; material < 2; ++material)
+        {
+            config.materialFog = material != 0;
+            vf_test_set_config(&config);
+            harness.BeginFrame();
+            harness.DrawScene(eye, view, projection, viewport);
+            const char* skip = "";
+            rendered = vf_test_render(&inputs, &skip) && rendered;
+            harness.dev->EndScene();
+            pictures[material] = Capture(harness.dev);
+        }
+        int worst = 0;
+        if (rendered && pictures[0].bgra.size() == pictures[1].bgra.size())
+            for (size_t pixel = 0; pixel < pictures[0].bgra.size(); ++pixel)
+                worst = (std::max)(worst, std::abs(static_cast<int>(pictures[0].bgra[pixel]) -
+                                                  static_cast<int>(pictures[1].bgra[pixel])));
+        else
+            rendered = false;
+        char label[160];
+        std::snprintf(label, sizeof(label),
+                      "material atlas quality %d leaves sun-facing opaque and sky fog unchanged (max %d/255)",
+                      quality, worst);
+        Check(rendered && worst <= 1, label);
+    }
+    state->Apply();
+    state->Release();
+}
+
+namespace native_glare_checks
+{
+struct Vertex
+{
+    float position[4];
+    float colour[4];
+};
+
+struct Fixture
+{
+    IDirect3DDevice9* device;
+    IDirect3DStateBlock9* state = nullptr;
+    IDirect3DVertexShader9* vertex = nullptr;
+    IDirect3DPixelShader9* pixel = nullptr;
+    IDirect3DVertexDeclaration9* declaration = nullptr;
+    IDirect3DSurface9* target = nullptr;
+    IDirect3DSurface9* depth = nullptr;
+
+    explicit Fixture(IDirect3DDevice9* value) : device(value) {}
+    ~Fixture()
+    {
+        vf_test_end_native_glare();
+        if (state)
+        {
+            device->SetRenderTarget(0, target);
+            device->SetDepthStencilSurface(depth);
+            state->Apply();
+        }
+        IUnknown* objects[] = {state, vertex, pixel, declaration, target, depth};
+        for (IUnknown* object : objects)
+            if (object)
+                object->Release();
+    }
+
+    bool Create()
+    {
+        using namespace shader_instrumentation_checks;
+        std::vector<DWORD> vs = {D3DVS_VERSION(3, 0)};
+        Declare(vs, D3DSPR_INPUT, 0, D3DDECLUSAGE_POSITION);
+        Declare(vs, D3DSPR_INPUT, 1, D3DDECLUSAGE_COLOR);
+        Declare(vs, D3DSPR_OUTPUT, 0, D3DDECLUSAGE_POSITION);
+        Declare(vs, D3DSPR_OUTPUT, 1, D3DDECLUSAGE_COLOR);
+        Emit(vs, D3DSIO_MOV, {Dst(D3DSPR_OUTPUT, 0), Src(D3DSPR_INPUT, 0)});
+        Emit(vs, D3DSIO_MOV, {Dst(D3DSPR_OUTPUT, 1), Src(D3DSPR_INPUT, 1)});
+        vs.push_back(D3DSIO_END);
+        std::vector<DWORD> ps = {D3DPS_VERSION(3, 0)};
+        Declare(ps, D3DSPR_INPUT, 0, D3DDECLUSAGE_COLOR);
+        Emit(ps, D3DSIO_MOV, {Dst(D3DSPR_COLOROUT, 0), Src(D3DSPR_INPUT, 0)});
+        ps.push_back(D3DSIO_END);
+        const D3DVERTEXELEMENT9 elements[] = {
+            {0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
+            {0, 16, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR, 0}, D3DDECL_END(),
+        };
+        return SUCCEEDED(device->CreateStateBlock(D3DSBT_ALL, &state)) &&
+               SUCCEEDED(device->GetRenderTarget(0, &target)) &&
+               SUCCEEDED(device->GetDepthStencilSurface(&depth)) &&
+               SUCCEEDED(device->CreateVertexShader(vs.data(), &vertex)) &&
+               SUCCEEDED(device->CreatePixelShader(ps.data(), &pixel)) &&
+               SUCCEEDED(device->CreateVertexDeclaration(elements, &declaration));
+    }
+
+    void SetState(const D3DVIEWPORT9& viewport, bool glare)
+    {
+        for (DWORD stage = 0; stage < 16; ++stage)
+            device->SetTexture(stage, nullptr);
+        device->SetViewport(&viewport);
+        device->SetVertexShader(vertex);
+        device->SetPixelShader(pixel);
+        device->SetVertexDeclaration(declaration);
+        device->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+        device->SetRenderState(D3DRS_ZWRITEENABLE, !glare);
+        device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+        device->SetRenderState(D3DRS_ALPHABLENDENABLE, glare);
+        device->SetRenderState(D3DRS_SRCBLEND, glare ? D3DBLEND_SRCALPHA : D3DBLEND_ONE);
+        device->SetRenderState(D3DRS_DESTBLEND, glare ? D3DBLEND_ONE : D3DBLEND_ZERO);
+        device->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD);
+        device->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, FALSE);
+        device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+        device->SetRenderState(D3DRS_FOGENABLE, FALSE);
+        device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+        device->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
+        device->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
+        device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+        device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+        device->SetRenderState(D3DRS_CLIPPLANEENABLE, 0);
+        device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+    }
+
+    bool DrawOccluder()
+    {
+        const Vertex quad[] = {{{0.2f, 0.4f, 0.4f, 1}, {0.13f, 0.16f, 0.2f, 1}},
+                               {{0.7f, 0.4f, 0.4f, 1}, {0.13f, 0.16f, 0.2f, 1}},
+                               {{0.2f, -0.4f, 0.4f, 1}, {0.13f, 0.16f, 0.2f, 1}},
+                               {{0.7f, -0.4f, 0.4f, 1}, {0.13f, 0.16f, 0.2f, 1}}};
+        return SUCCEEDED(device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(Vertex)));
+    }
+
+    bool DrawGlare(float strength = 1)
+    {
+        std::vector<Vertex> fan = {{{0, 0, 0.5f, 1}, {0.9f * strength, 0.6f * strength, 0.3f * strength, 0.75f}}};
+        constexpr unsigned edges = 32;
+        for (unsigned edge = 0; edge <= edges; ++edge)
+        {
+            const float angle = 2 * kPi * edge / edges;
+            fan.push_back({{0.9f * std::cos(angle), 0.9f * std::sin(angle), 0.5f, 1}, {0, 0, 0, 0}});
+        }
+        return SUCCEEDED(device->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, edges, fan.data(), sizeof(Vertex)));
+    }
+};
+
+int Difference(const Image& first, const Image& second)
+{
+    if (first.bgra.size() != second.bgra.size() || first.bgra.empty())
+        return 255;
+    int worst = 0;
+    for (size_t index = 0; index < first.bgra.size(); ++index)
+        if (index % 4 != 3)
+            worst = (std::max)(worst, std::abs(static_cast<int>(first.bgra[index]) - second.bgra[index]));
+    return worst;
+}
+
+void Run(Harness& harness, const D3DVIEWPORT9& viewport, const std::wstring& outDir)
+{
+    Fixture fixture(harness.dev);
+    const bool ready = fixture.Create();
+    Check(ready, "native sky glare fixture retains the colour and depth targets");
+    if (!ready)
+        return;
+    Config config = {};
+    config.dataMode = 0;
+    config.noiseAmount = 0;
+    config.temporal = 0;
+    config.godRays = 0;
+    config.worldShadows = false;
+    config.localLights = false;
+    config.lightShafts = false;
+    config.glowCompensation = true;
+    float projection[16];
+    EngineProjection(static_cast<float>(viewport.Width) / viewport.Height, projection);
+    const Vec3 eye = Add({0, 0, 9}, kGameLikeWorldOffset);
+    const Vec3 at = Add(eye, {100, 12, 0});
+    float view[16];
+    CameraRelativeLookAt(eye, at, view);
+    FrameInputs inputs = MakeInputs(view, projection, eye, at, viewport);
+    inputs.clientGlowAmount = 0.65f;
+    D3DVIEWPORT9 skyViewport = viewport;
+    skyViewport.MinZ = 0.999f;
+    skyViewport.MaxZ = 1;
+    for (int linear = 0; linear < 2; ++linear)
+        for (int fog = 0; fog < 2; ++fog)
+        {
+            config.colorSpace = linear;
+            config.density = static_cast<float>(fog);
+            Image pictures[3];
+            Image native;
+            DWORD samples[3] = {};
+            bool rendered = true;
+            bool statesKept = true;
+            for (unsigned capture = 0; capture < 3; ++capture)
+            {
+                config.materialFog = capture != 0;
+                vf_test_set_config(&config);
+                harness.BeginFrame();
+                fixture.SetState(viewport, false);
+                rendered = fixture.DrawOccluder() && rendered;
+                const char* skip = "";
+                if (capture)
+                    rendered = vf_test_render(&inputs, &skip) && vf_test_begin_rendered_material_fog() && rendered;
+                fixture.SetState(skyViewport, true);
+                if (capture == 1)
+                    rendered = vf_test_begin_native_glare() && rendered;
+                IDirect3DQuery9* query = nullptr;
+                bool queried = capture < 2 && SUCCEEDED(harness.dev->CreateQuery(D3DQUERYTYPE_OCCLUSION, &query));
+                if (queried)
+                    queried = SUCCEEDED(query->Issue(D3DISSUE_BEGIN));
+                rendered = fixture.DrawGlare() && rendered;
+                if (queried)
+                    queried = SUCCEEDED(query->Issue(D3DISSUE_END));
+                if (capture)
+                {
+                    if (capture == 1)
+                        vf_test_end_native_glare();
+                    vf_test_end_material_fog();
+                }
+                IDirect3DSurface9* target = nullptr;
+                IDirect3DSurface9* depth = nullptr;
+                D3DVIEWPORT9 restored = {};
+                harness.dev->GetRenderTarget(0, &target);
+                harness.dev->GetDepthStencilSurface(&depth);
+                harness.dev->GetViewport(&restored);
+                statesKept = statesKept && target == fixture.target && depth == fixture.depth &&
+                             std::memcmp(&restored, &skyViewport, sizeof(restored)) == 0;
+                if (target)
+                    target->Release();
+                if (depth)
+                    depth->Release();
+                if (!capture)
+                {
+                    native = Capture(harness.dev);
+                    rendered = vf_test_render(&inputs, &skip) && rendered;
+                }
+                harness.dev->EndScene();
+                pictures[capture] = Capture(harness.dev);
+                HRESULT result = S_FALSE;
+                const ULONGLONG deadline = GetTickCount64() + 2000;
+                while (queried && result == S_FALSE && GetTickCount64() < deadline)
+                    result = query->GetData(&samples[capture], sizeof(samples[capture]), D3DGETDATA_FLUSH);
+                rendered = rendered && (capture == 2 || (queried && result == S_OK));
+                if (query)
+                    query->Release();
+            }
+            const int difference = Difference(pictures[0], pictures[1]);
+            char label[168];
+            std::snprintf(label, sizeof(label),
+                          "captured native glare matches final fog in colour mode %d, density %d (max %d/255)",
+                          linear, fog, difference);
+            Check(rendered && difference <= 2, label);
+            if (fog)
+            {
+                const int bypassDifference = Difference(pictures[0], pictures[2]);
+                std::snprintf(label, sizeof(label),
+                              "uncaptured late glare reproduces the halo regression in mode %d (max %d/255)",
+                              linear, bypassDifference);
+                Check(rendered && bypassDifference > 5, label);
+            }
+            Check(statesKept, "native glare capture restores the colour target, depth surface and sky viewport");
+            Check(samples[0] > 0 && samples[0] == samples[1],
+                  "native glare keeps occlusion-query timing and the original depth-tested sample count");
+            std::printf("     native glare samples: reference %lu, captured %lu\n", samples[0], samples[1]);
+            if (!fog)
+                Check(Difference(native, pictures[1]) <= 1, "zero fog preserves the original native glare");
+            if (linear && fog)
+            {
+                const wchar_t* names[] = {L"\\native-glare-final-fog.png", L"\\native-glare-material-fog.png",
+                                           L"\\native-glare-bypassed.png"};
+                for (unsigned index = 0; index < 3; ++index)
+                    SavePng(outDir + names[index], pictures[index].w, pictures[index].h, pictures[index].bgra);
+            }
+        }
+    const D3DCOLOR previousSky = harness.clearColor;
+    harness.clearColor = 0xFF202830;
+    config.materialFog = true;
+    config.colorSpace = 1;
+    config.density = 1;
+    Image combined[2];
+    unsigned combinedIndex = 0;
+    for (float strength : {1.0f, 4.0f})
+    {
+        config.godRays = strength;
+        vf_test_set_config(&config);
+        harness.BeginFrame();
+        fixture.SetState(viewport, false);
+        bool rendered = fixture.DrawOccluder();
+        const char* skip = "";
+        rendered = vf_test_render(&inputs, &skip) && vf_test_begin_rendered_material_fog() && rendered;
+        fixture.SetState(skyViewport, true);
+        rendered = vf_test_begin_native_glare() && rendered;
+        IDirect3DQuery9* query = nullptr;
+        bool queried = SUCCEEDED(harness.dev->CreateQuery(D3DQUERYTYPE_OCCLUSION, &query));
+        if (queried)
+            queried = SUCCEEDED(query->Issue(D3DISSUE_BEGIN));
+        rendered = fixture.DrawGlare(0.25f) && rendered;
+        if (queried)
+            queried = SUCCEEDED(query->Issue(D3DISSUE_END));
+        vf_test_end_native_glare();
+        vf_test_end_material_fog();
+        harness.dev->EndScene();
+        const Image picture = Capture(harness.dev);
+        combined[combinedIndex++] = picture;
+        DWORD samples = 0;
+        HRESULT result = S_FALSE;
+        const ULONGLONG deadline = GetTickCount64() + 2000;
+        while (queried && result == S_FALSE && GetTickCount64() < deadline)
+            result = query->GetData(&samples, sizeof(samples), D3DGETDATA_FLUSH);
+        if (query)
+            query->Release();
+        float peak = 0;
+        for (size_t index = 0; index < picture.bgra.size(); ++index)
+            if (index % 4 != 3)
+            {
+                const float value = picture.bgra[index] / 255.0f;
+                peak = std::fmax(peak, value + inputs.clientGlowAmount * value * value);
+            }
+        IDirect3DSurface9* target = nullptr;
+        IDirect3DSurface9* depth = nullptr;
+        harness.dev->GetRenderTarget(0, &target);
+        harness.dev->GetDepthStencilSurface(&depth);
+        const bool restored = target == fixture.target && depth == fixture.depth;
+        if (target)
+            target->Release();
+        if (depth)
+            depth->Release();
+        char label[160];
+        std::snprintf(label, sizeof(label),
+                      "native glare and god rays %.0f preserve queries and bounded glow (peak %.3f)", strength, peak);
+        Check(rendered && restored && queried && result == S_OK && samples > 0 && peak <= 1.01f, label);
+    }
+    Check(Difference(combined[0], combined[1]) > 1,
+          "god-ray strength remains visible when native glare capture is active");
+    harness.clearColor = previousSky;
+}
+}
+
 void CheckRenderedMaterialFog(Harness& harness, const D3DVIEWPORT9& viewport, const std::wstring& outDir)
 {
+    CheckMaterialFogOpaqueParity(harness, viewport);
+    native_glare_checks::Run(harness, viewport, outDir);
     IDirect3DDevice9* device = harness.dev;
     IDirect3DVertexShader9* vertex = nullptr;
     IDirect3DPixelShader9* pixel = nullptr;

@@ -57,6 +57,8 @@ public:
     bool Render(const FrameInputs& in, const Config& cfg, const char** skip);
     bool BeginMaterial(const MaterialFogVolume& volume) { return FogActive() && m_materialFog.Begin(volume); }
     bool BeginRenderedMaterial() { return BeginMaterial(m_renderer.MaterialVolume()); }
+    bool BeginGlare() { return FogActive() && m_renderer.BeginNativeGlare(m_real); }
+    void EndGlare() { m_renderer.EndNativeGlare(m_real); }
     void EndMaterial() { m_materialFog.End(); }
     bool MaterialCompatible() const { return m_materialFog.Compatible(); }
     bool AdaptiveLightingHistory() const { return m_renderer.AdaptiveLightingHistory(); }
@@ -858,6 +860,17 @@ bool BeginMaterialFog(FogDevice* device, const MaterialFogVolume& volume)
 bool BeginRenderedMaterialFog(FogDevice* device)
 {
     return device && device->BeginRenderedMaterial();
+}
+
+bool BeginNativeGlare(FogDevice* device)
+{
+    return device && device->BeginGlare();
+}
+
+void EndNativeGlare(FogDevice* device)
+{
+    if (device)
+        device->EndGlare();
 }
 
 bool MaterialFogCompatible(FogDevice* device)

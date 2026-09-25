@@ -1408,6 +1408,7 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "local_light_gpu_checks.h"
 #include "fog_atlas_checks.h"
 #include "silhouette_quality_checks.h"
+#include "god_ray_quality_checks.h"
 #include "temporal_quality_checks.h"
 #include "runtime_quality_checks.h"
 #include "lighting_history_checks.h"
@@ -1538,6 +1539,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     local_light_gpu::CheckLocalLightIntegration(h.dev);
     fog_atlas_gpu::CheckFogAtlas(h.dev);
     silhouette_quality::CheckSilhouettes(h.dev);
+    god_ray_quality::CheckGodRays(h.dev);
     CheckTemporalQuality(h.dev);
     CheckLightDisappearanceHistory(h);
     const float aspect = 1280.0f / 688.0f;

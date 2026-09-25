@@ -17,6 +17,8 @@ public:
 
     bool Render(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* boundDepthStencil,
                 const FrameInputs& in, const Config& cfg);
+    bool BeginNativeGlare(IDirect3DDevice9* dev);
+    void EndNativeGlare(IDirect3DDevice9* dev);
 
     const char* LastSkipReason() const { return m_skip; }
     const MaterialFogVolume& MaterialVolume() const { return m_materialVolume; }
@@ -28,6 +30,7 @@ private:
     bool EnsureTargets(IDirect3DDevice9* dev, UINT lowW, UINT lowH, UINT rayW, UINT rayH);
     bool EnsureSceneCopy(IDirect3DDevice9* dev, IDirect3DSurface9* target, UINT w, UINT h);
     bool CopyWorldViewport(IDirect3DDevice9* dev, IDirect3DSurface9* target, const D3DVIEWPORT9& vp);
+    bool EnsureNativeGlare(IDirect3DDevice9* dev, const D3DSURFACE_DESC& desc);
     bool Skip(const char* reason);
     void LogLightChange(const FrameInputs& in, const AuthoredFog& fog, bool authored);
     bool DepthProbeDue(long long now) const;
@@ -46,11 +49,20 @@ private:
     IDirect3DPixelShader9* m_temporal = nullptr;
     IDirect3DPixelShader9* m_historyDepthShader = nullptr;
     IDirect3DPixelShader9* m_composite[3] = {};
+    IDirect3DPixelShader9* m_nativeGlare[3] = {};
     IDirect3DPixelShader9* m_rayMask = nullptr;
     IDirect3DPixelShader9* m_rayBlur = nullptr;
     IDirect3DPixelShader9* m_probe = nullptr;
     IDirect3DVertexDeclaration9* m_decl = nullptr;
     IDirect3DStateBlock9* m_state = nullptr;
+    IDirect3DStateBlock9* m_glareFrameState = nullptr;
+    IDirect3DStateBlock9* m_glareRestoreState = nullptr;
+    IDirect3DTexture9* m_glareCapture = nullptr;
+    IDirect3DSurface9* m_glareOriginalTarget = nullptr;
+    UINT m_glareWidth = 0;
+    UINT m_glareHeight = 0;
+    int m_glareQuality = 0;
+    bool m_glareReady = false;
 
     IDirect3DTexture9* m_marchTarget = nullptr;
     IDirect3DTexture9* m_history[2] = {};
