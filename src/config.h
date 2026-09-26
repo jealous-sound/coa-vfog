@@ -40,6 +40,14 @@ struct Config
     float exposure = 1.0f;
     float classicExposure = 1.0f;
     bool lightShafts = true;
+    bool worldShadows = true;
+    bool localLights = true;
+    float localLightIntensity = 1.0f;
+    bool interiorAware = true;
+    float interiorDensity = 0.15f;
+    float noiseAmount = 0.15f;
+    float noiseScale = 0.025f;
+    float noiseWindSpeed = 0.5f;
     float godRays = 0.0f;
     bool glowCompensation = true;
     float farClipMax = kFarClipMaxKeepsClientCap;

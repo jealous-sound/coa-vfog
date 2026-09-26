@@ -52,6 +52,11 @@ const FloatSetting kFloatSettings[] = {
     {"Ambient", &Config::ambient, 0.0f, 10.0f},
     {"Exposure", &Config::exposure, 0.0f, 10.0f},
     {"ClassicExposure", &Config::classicExposure, 0.0f, 10.0f},
+    {"LocalLightIntensity", &Config::localLightIntensity, 0.0f, 8.0f},
+    {"InteriorDensity", &Config::interiorDensity, 0.0f, 1.0f},
+    {"NoiseAmount", &Config::noiseAmount, 0.0f, 1.0f},
+    {"NoiseScale", &Config::noiseScale, 0.001f, 1.0f},
+    {"NoiseWindSpeed", &Config::noiseWindSpeed, 0.0f, 10.0f},
     {"GodRays", &Config::godRays, 0.0f, 4.0f},
     {"FarClipMax", &Config::farClipMax, 0.0f, kEngineFarClipMax},
     {"MaxDistance", &Config::maxDistance, 200.0f, 5000.0f},
@@ -60,6 +65,8 @@ const FloatSetting kFloatSettings[] = {
 
 const BoolSetting kBoolSettings[] = {
     {"LightShafts", &Config::lightShafts}, {"GlowCompensation", &Config::glowCompensation},
+    {"WorldShadows", &Config::worldShadows},
+    {"LocalLights", &Config::localLights}, {"InteriorAware", &Config::interiorAware},
     {"Underwater", &Config::underwater},   {"LiquidDepth", &Config::liquidDepth},
     {"SunMarker", &Config::sunMarker},
 };

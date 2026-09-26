@@ -23,7 +23,7 @@ struct FogLayer
     float shadowed;
     float skyFalloff;
     float endDistance;
-    float unused;
+    float densityVariation;
 };
 
 static_assert(sizeof(FogLayer) == 6 * sizeof(float[4]), "FogLayer uploads as a march layer's six float4 registers");

@@ -18,6 +18,7 @@ public:
                 const FrameInputs& in, const Config& cfg);
 
     const char* LastSkipReason() const { return m_skip; }
+    bool AdaptiveLightingHistory() const { return m_adaptiveLightingHistory; }
 
 private:
     bool EnsureShaders(IDirect3DDevice9* dev);
@@ -36,9 +37,11 @@ private:
                       const D3DSURFACE_DESC& depthDesc, const FrameInputs& in, const Config& cfg);
 
     IDirect3DVertexShader9* m_vs = nullptr;
+    IDirect3DDevice9* m_unsupportedShaderDevice = nullptr;
     IDirect3DPixelShader9* m_march[3] = {};
     IDirect3DPixelShader9* m_temporal = nullptr;
-    IDirect3DPixelShader9* m_composite = nullptr;
+    IDirect3DPixelShader9* m_historyDepthShader = nullptr;
+    IDirect3DPixelShader9* m_composite[3] = {};
     IDirect3DPixelShader9* m_rayMask = nullptr;
     IDirect3DPixelShader9* m_rayBlur = nullptr;
     IDirect3DPixelShader9* m_probe = nullptr;
@@ -47,8 +50,11 @@ private:
 
     IDirect3DTexture9* m_marchTarget = nullptr;
     IDirect3DTexture9* m_history[2] = {};
+    IDirect3DTexture9* m_historyDepth = nullptr;
     IDirect3DTexture9* m_rays[2] = {};
     IDirect3DTexture9* m_sceneCopy = nullptr;
+    IDirect3DTexture9* m_localLightData = nullptr;
+    IDirect3DVolumeTexture9* m_densityNoise = nullptr;
     IDirect3DTexture9* m_probeTarget = nullptr;
     IDirect3DSurface9* m_probeReadback = nullptr;
     UINT m_lowW = 0;
@@ -59,10 +65,15 @@ private:
     UINT m_sceneCopyH = 0;
     bool m_sceneCopyFailed = false;
     bool m_probeFailed = false;
-    bool m_fogFilterable = false;
 
     int m_historyIndex = 0;
     bool m_historyValid = false;
+    bool m_adaptiveLightingHistory = false;
+    uint32_t m_prevLocalLightCount = 0;
+    Config m_prevConfig;
+    int m_prevMap = -1;
+    int m_prevLightSlot = -1;
+    int m_prevShadowMode = -1;
     float m_prevWorldToView[16] = {};
     float m_prevProj[16] = {};
     float m_prevCam[3] = {};

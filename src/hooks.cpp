@@ -127,14 +127,6 @@ void OnFrameEnd()
     g_renderedLastFrame = g_renderedThisFrame;
 }
 
-void OnOpaqueDone()
-{
-    FogDevice* device = g_failed ? nullptr : GameFogDevice();
-    if (!device)
-        return;
-    engine::CaptureOpaqueState(RealDevice(device));
-}
-
 void ReloadConfigAfterInterval()
 {
     DWORD now = GetTickCount();
@@ -151,20 +143,15 @@ void UseClientFogRangeInsteadOfPushed(FrameInputs& in)
     in.fogEnd = g_savedStockFog.end[engine::kFrameInputsFogGroup];
 }
 
-void OnWorldDone()
+bool RenderCurrentWorldFog(FogDevice* device)
 {
-    FogDevice* device = g_failed ? nullptr : GameFogDevice();
     if (!device || !engine::HasOpaqueState())
-    {
-        engine::ClearOpaqueState();
-        return;
-    }
+        return false;
 
     ReloadConfigAfterInterval();
 
     FrameInputs in = {};
     bool valid = engine::BuildFrameInputs(in);
-    engine::ClearOpaqueState();
     if (g_stockFogPushed)
         UseClientFogRangeInsteadOfPushed(in);
     const Config& cfg = GlobalConfig().Get();
@@ -181,6 +168,22 @@ void OnWorldDone()
         VF_LOG_INFO("fog skipped: %s", skip);
     }
     g_lastSkip = rendered ? "" : skip;
+    return rendered;
+}
+
+void OnOpaqueDone()
+{
+    FogDevice* device = g_failed ? nullptr : GameFogDevice();
+    if (!device)
+        return;
+    engine::CaptureOpaqueState(RealDevice(device));
+}
+
+void OnWorldDone()
+{
+    if (!g_failed)
+        RenderCurrentWorldFog(GameFogDevice());
+    engine::ClearOpaqueState();
 }
 
 int GuardFilter(unsigned code, const char* where)
@@ -388,6 +391,29 @@ __declspec(naked) static void ScreenEffectsThunk()
     }
 }
 
+static void __cdecl WorldTextDrawThunk(void* batch)
+{
+    FogDevice* device = nullptr;
+    __try
+    {
+        if (!g_failed && GlobalConfig().Get().enable)
+            device = GameFogDevice();
+        SuppressDepthWrite(device, true);
+    }
+    __except (GuardFilter(GetExceptionCode(), "world text depth hook"))
+    {
+        g_failed = true;
+    }
+    __try
+    {
+        reinterpret_cast<void(__cdecl*)(void*)>(engine::kWorldTextDrawTarget)(batch);
+    }
+    __finally
+    {
+        SuppressDepthWrite(device, false);
+    }
+}
+
 namespace
 {
 struct CallSite
@@ -412,6 +438,7 @@ bool InstallEngineHooks()
         {engine::kWorldRenderSite, engine::kWorldRenderTarget, &WorldRenderThunk},
         {engine::kOpaqueM2PassSite, engine::kOpaqueM2PassTarget, &OpaqueM2PassThunk},
         {engine::kLiquidSurfaceSite, engine::kLiquidSurfaceTarget, &LiquidSurfaceThunk},
+        {engine::kWorldTextDrawSite, engine::kWorldTextDrawTarget, &WorldTextDrawThunk},
         {engine::kScreenEffectsSite, engine::kScreenEffectsTarget, &ScreenEffectsThunk},
     };
     for (const CallSite& s : sites)
@@ -435,9 +462,10 @@ bool InstallEngineHooks()
     }
     *slot = &GetProcAddressFilter;
     VF_LOG_INFO("engine hooks installed: GetProcAddress filter, world render 0x%08X, opaque 0x%08X, liquid 0x%08X, "
-                "world done 0x%08X",
+                "world done 0x%08X, world text 0x%08X",
                 static_cast<unsigned>(engine::kWorldRenderSite), static_cast<unsigned>(engine::kOpaqueM2PassSite),
-                static_cast<unsigned>(engine::kLiquidSurfaceSite), static_cast<unsigned>(engine::kScreenEffectsSite));
+                static_cast<unsigned>(engine::kLiquidSurfaceSite),
+                static_cast<unsigned>(engine::kScreenEffectsSite), static_cast<unsigned>(engine::kWorldTextDrawSite));
     return true;
 }
 

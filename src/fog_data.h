@@ -155,6 +155,7 @@ private:
     const Params* FindParams(uint32_t id) const;
     float EnclosedArea(const ZoneLight& zone) const;
     float ZoneWeight(const ZoneLight& zone, const float* position) const;
+    bool ValidateRecords() const;
     bool BuildZoneOutlines();
     bool HasFogInAnySlot(const Light& light) const;
     void CollectMapsWithFog();

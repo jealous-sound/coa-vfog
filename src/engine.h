@@ -4,6 +4,7 @@
 #include <d3d9.h>
 
 #include "fog_data.h"
+#include "engine_lights.h"
 
 #include <cstdint>
 
@@ -29,6 +30,7 @@ struct FrameInputs
     bool inLiquid;
     int mapId;
     LightParamsSelection lightParams;
+    LocalLightInputs localLights;
 };
 
 namespace engine
@@ -44,6 +46,8 @@ constexpr uintptr_t kOpaqueM2PassSite = 0x004F911D;
 constexpr uintptr_t kOpaqueM2PassTarget = 0x00823CB0;
 constexpr uintptr_t kLiquidSurfaceSite = 0x004F9170;
 constexpr uintptr_t kLiquidSurfaceTarget = 0x0077F020;
+constexpr uintptr_t kWorldTextDrawSite = 0x007E5818;
+constexpr uintptr_t kWorldTextDrawTarget = 0x006BCE40;
 constexpr uintptr_t kScreenEffectsSite = 0x004F9281;
 constexpr uintptr_t kScreenEffectsTarget = 0x008C1010;
 

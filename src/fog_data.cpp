@@ -35,6 +35,20 @@ bool ReadArray(std::FILE* f, std::vector<T>& out, uint32_t count)
     return count == 0 || std::fread(out.data(), sizeof(T), count, f) == count;
 }
 
+bool FileHasSize(std::FILE* file, uint64_t expected)
+{
+    if (std::fseek(file, 0, SEEK_END) != 0)
+        return false;
+    const long size = std::ftell(file);
+    return size >= 0 && static_cast<uint64_t>(size) == expected &&
+           std::fseek(file, sizeof(Header), SEEK_SET) == 0;
+}
+
+bool ContainsRange(size_t size, uint32_t first, uint32_t count)
+{
+    return first <= size && count <= size - first;
+}
+
 void UnpackRgb(uint32_t rgb, float* out)
 {
     out[0] = static_cast<float>((rgb >> 16) & 0xFF) / 255.0f;
@@ -165,6 +179,13 @@ void FogData::LightBlend::Scale(float factor)
 bool FogData::Load(const std::string& path)
 {
     m_lights.clear();
+    m_params.clear();
+    m_keys.clear();
+    m_layers.clear();
+    m_zoneLights.clear();
+    m_zonePoints.clear();
+    m_zonesLargestFirst.clear();
+    m_mapsWithFog.clear();
     std::FILE* f = std::fopen(path.c_str(), "rb");
     if (!f)
     {
@@ -173,16 +194,19 @@ bool FogData::Load(const std::string& path)
     }
     Header h = {};
     bool ok = std::fread(&h, sizeof(h), 1, f) == 1 && std::memcmp(h.magic, kFileMagic, sizeof(kFileMagic)) == 0 &&
-              h.version == kFormatVersion && ReadArray(f, m_lights, h.lightCount) &&
+              h.version == kFormatVersion;
+    const uint64_t expectedSize = sizeof(Header) + static_cast<uint64_t>(h.lightCount) * sizeof(Light) +
+                                  static_cast<uint64_t>(h.paramsCount) * sizeof(Params) +
+                                  static_cast<uint64_t>(h.keyCount) * sizeof(Key) +
+                                  static_cast<uint64_t>(h.layerCount) * sizeof(Layer) +
+                                  static_cast<uint64_t>(h.zoneLightCount) * sizeof(ZoneLight) +
+                                  static_cast<uint64_t>(h.zonePointCount) * sizeof(ZonePoint);
+    ok = ok && FileHasSize(f, expectedSize) && ReadArray(f, m_lights, h.lightCount) &&
               ReadArray(f, m_params, h.paramsCount) && ReadArray(f, m_keys, h.keyCount) &&
               ReadArray(f, m_layers, h.layerCount) && ReadArray(f, m_zoneLights, h.zoneLightCount) &&
               ReadArray(f, m_zonePoints, h.zonePointCount);
     std::fclose(f);
-    for (const Params& p : m_params)
-        ok = ok && p.firstKey + p.keyCount <= m_keys.size();
-    for (const Key& k : m_keys)
-        ok = ok && k.firstLayer + k.layerCount <= m_layers.size() && k.halfMinuteOfDay < kHalfMinutesPerDay;
-    ok = ok && BuildZoneOutlines();
+    ok = ok && ValidateRecords() && BuildZoneOutlines();
     if (!ok)
     {
         VF_LOG_ERROR("Classic fog data %s is invalid; derived layers only", path.c_str());
@@ -196,6 +220,18 @@ bool FogData::Load(const std::string& path)
     return true;
 }
 
+bool FogData::ValidateRecords() const
+{
+    for (const Params& params : m_params)
+        if (!ContainsRange(m_keys.size(), params.firstKey, params.keyCount))
+            return false;
+    for (const Key& key : m_keys)
+        if (!ContainsRange(m_layers.size(), key.firstLayer, key.layerCount) ||
+            key.halfMinuteOfDay >= kHalfMinutesPerDay)
+            return false;
+    return true;
+}
+
 bool FogData::BuildZoneOutlines()
 {
     m_zonesLargestFirst.clear();
@@ -203,7 +239,7 @@ bool FogData::BuildZoneOutlines()
     {
         const Light* light = FindLight(zone.lightId);
         if (!light || zone.pointCount < kMinimumOutlinePoints ||
-            zone.firstPoint + zone.pointCount > m_zonePoints.size())
+            !ContainsRange(m_zonePoints.size(), zone.firstPoint, zone.pointCount))
             return false;
         m_zonesLargestFirst.push_back({&zone, light, EnclosedArea(zone)});
     }
@@ -276,10 +312,10 @@ const FogData::Params* FogData::FindParams(uint32_t id) const
 FogData::ConditionFog FogData::InterpolateKeys(const Params& params, float halfMinuteOfDay) const
 {
     ConditionFog fog = {};
-    const Key* keys = &m_keys[params.firstKey];
     const uint32_t count = params.keyCount;
     if (count == 0)
         return fog;
+    const Key* keys = &m_keys[params.firstKey];
 
     uint32_t next = 0;
     while (next < count && keys[next].halfMinuteOfDay <= halfMinuteOfDay)

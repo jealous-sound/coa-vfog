@@ -1,10 +1,9 @@
-#include "vf_common.hlsli"
+#include "vf_integrate.hlsli"
 
-float4 cComposite : register(c9);
-float4 cGodRayColour : register(c10);
-float4 cSun : register(c11);
+float4 cComposite : register(c96);
+float4 cGodRayColour : register(c97);
+float4 cSun : register(c98);
 
-sampler2D sDepth : register(s0);
 sampler2D sFog : register(s1);
 sampler2D sGodRays : register(s2);
 sampler2D sSceneBeforeFog : register(s3);
@@ -48,12 +47,12 @@ float BlendMode()
 
 bool BlendsInLinearLight()
 {
-    return BlendMode() > 0.5;
+    return BlendMode() > 0.5 && BlendMode() < 2.5;
 }
 
 bool BlendsOverSceneCopy()
 {
-    return BlendMode() > 0.5 && BlendMode() < 1.5;
+    return (BlendMode() > 0.5 && BlendMode() < 1.5) || BlendMode() > 2.5;
 }
 
 float2 SunPixel()
@@ -89,29 +88,34 @@ float3 RollOffHighlights(float3 colour, float3 knee)
 
 float3 BeforeClientGlow(float3 onScreen, float glow)
 {
-    return (sqrt(1 + 4 * glow * onScreen) - 1) / (2 * glow);
+    return 2 * onScreen / (1 + sqrt(1 + 4 * glow * onScreen));
 }
 
-float4 DepthAwareUpsample(float2 pixel, float viewZ)
+float4 DepthAwareUpsample(float2 pixel, float depth, float viewZ)
 {
     float2 lowResCoord = FullPixelToLowResTexel(pixel);
     float2 baseTexel = floor(lowResCoord);
     float2 bilinearFraction = lowResCoord - baseTexel;
 
-    static const float2 kTapOffsets[4] = { float2(0, 0), float2(1, 0), float2(0, 1), float2(1, 1) };
     float4 weightedFog = 0;
     float weightSum = 0;
-    [unroll] for (int j = 0; j < 4; j++)
+    [loop] for (int j = 0; j < 4; j++)
     {
-        float2 tapOffset = kTapOffsets[j];
+        float2 tapOffset = float2(frac(j * 0.5) * 2, floor(j * 0.5));
         float2 tapTexel = clamp(baseTexel + tapOffset, 0, LowResSize() - 1);
-        float tapViewZ = LinearDepth(SampleDepth(sDepth, LowResTexelToFullPixel(tapTexel)));
+        float tapDepth = SampleDepth(sDepth, LowResTexelToFullPixel(tapTexel));
+        float tapViewZ = LinearDepth(tapDepth);
         float2 bilinearWeight = lerp(1 - bilinearFraction, bilinearFraction, tapOffset);
+        bool sameClass = IsSky(depth) == IsSky(tapDepth) && BeyondFarClip(depth) == BeyondFarClip(tapDepth);
+        bool sameDepth = abs(tapViewZ - viewZ) <= max(0.5, viewZ * 0.02);
         float relativeDepthDifference = abs(tapViewZ - viewZ) / max(viewZ, 1e-3);
-        float weight = bilinearWeight.x * bilinearWeight.y / (1e-3 + relativeDepthDifference) + 1e-6;
+        float weight = sameClass && sameDepth ?
+            bilinearWeight.x * bilinearWeight.y / (1e-3 + relativeDepthDifference) : 0;
         weightedFog += tex2Dlod(sFog, float4(LowResTexelToUv(tapTexel), 0, 0)) * weight;
         weightSum += weight;
     }
+    [branch] if (weightSum <= 1e-6)
+        return IntegrateFogAtPixel(pixel, 0.5);
     return weightedFog / weightSum;
 }
 
@@ -123,13 +127,37 @@ float3 DisplaySpaceGodRays(float2 viewportUv)
     return godRays;
 }
 
-float4 BlendOverSceneCopy(float2 viewportUv, float4 fog, float3 godRays)
+float3 BlendGodRays(float3 colour, float3 godRays)
 {
-    float3 scene = GammaToLinear(tex2Dlod(sSceneBeforeFog, float4(viewportUv, 0, 0)).rgb);
+    [branch] if (GodRayStrength() > 0)
+    {
+        float glow = ClientGlowToCompensate();
+        float3 displayed = colour * (1 + glow * colour);
+        displayed += max(1 - displayed, 0) * (1 - exp(-max(godRays, 0)));
+        colour = BeforeClientGlow(displayed, glow);
+    }
+    return colour;
+}
+
+float3 FogSceneColour(float3 scene, float4 fog)
+{
+    [branch] if (!BlendsInLinearLight())
+    {
+        float3 fogColour = RollOffHighlights(fog.rgb / max(fog.a, 1e-4), kHighlightKnee);
+        float3 colour = scene * (1 - fog.a) + fogColour * fog.a;
+        return colour;
+    }
+    scene = GammaToLinear(scene);
     float3 colour = LinearToGamma(RollOffHighlights(scene * (1 - fog.a) + fog.rgb, max(kHighlightKnee, scene)));
     [branch] if (ClientGlowToCompensate() > 0)
         colour = lerp(colour, BeforeClientGlow(colour, ClientGlowToCompensate()), fog.a);
-    return float4(colour + godRays, 1);
+    return colour;
+}
+
+float4 BlendOverSceneCopy(float2 viewportUv, float4 fog, float3 godRays)
+{
+    float3 scene = tex2Dlod(sSceneBeforeFog, float4(viewportUv, 0, 0)).rgb;
+    return float4(BlendGodRays(FogSceneColour(scene, fog), godRays), 1);
 }
 
 float4 PremultipliedForFixedFunctionBlend(float4 fog, float3 godRays, bool linearLight)
@@ -144,8 +172,9 @@ float4 PremultipliedForFixedFunctionBlend(float4 fog, float3 godRays, bool linea
 float4 main(float2 pixelIndex : VPOS) : COLOR0
 {
     float2 pixel = pixelIndex + 0.5;
-    float viewZ = LinearDepth(SampleDepth(sDepth, pixel));
-    float4 fog = DepthAwareUpsample(pixel, viewZ);
+    float depth = SampleDepth(sDepth, pixel);
+    float viewZ = LinearDepth(depth);
+    float4 fog = DepthAwareUpsample(pixel, depth, viewZ);
     fog.rgb *= Exposure();
 
     float2 viewportUv = (pixel - ViewportOrigin()) / ViewportSize();

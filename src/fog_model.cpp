@@ -86,6 +86,7 @@ void Unbounded(FogLayer& l)
 {
     l.skyFalloff = 0.0f;
     l.endDistance = kNoLimit;
+    l.densityVariation = 1.0f;
 }
 
 void DerivedLayers(const FrameInputs& in, const Config& cfg, const FogParams& p, float sunScatter, float fogDistance,
@@ -141,7 +142,7 @@ void AuthoredLayers(const AuthoredFog& fog, const Config& cfg, const FogParams& 
             continue;
         const AuthoredLayer& a = fog.layers[i];
         const float heightBase = a.flags & kFlagRelativeHeights ? p.referenceZ : 0.0f;
-        l.start = std::min(p.maxDistance - kFogRangeMargin, a.start);
+        l.start = std::clamp(a.start, 0.0f, std::max(p.maxDistance - kFogRangeMargin, 0.0f));
         l.density = a.density * kClassicUnits * cfg.density;
         l.g = std::clamp(a.g, -0.99f, 0.99f);
         l.isotropic = 0.0f;
@@ -252,10 +253,23 @@ bool HaloHue(const AuthoredFog& fog, float* displayReferredRgb)
     return true;
 }
 
-float WeatherStormWeight(const LightParamsSelection& selection)
+float InteriorWeight(const FrameInputs& in, const Config& cfg)
 {
-    return selection.screenEffectSlot == kNoScreenEffectLightSlot ? std::clamp(selection.stormBlend, 0.0f, 1.0f)
-                                                                   : 0.0f;
+    return cfg.interiorAware && in.localLights.cameraInterior && std::isfinite(in.localLights.interiorBlend)
+               ? std::clamp(in.localLights.interiorBlend, 0.0f, 1.0f)
+               : 0.0f;
+}
+
+void ApplyInteriorFog(float weight, const Config& cfg, FogParams& fog)
+{
+    const float retainedDensity = std::isfinite(cfg.interiorDensity) ? std::clamp(cfg.interiorDensity, 0.0f, 1.0f)
+                                                                   : 0.15f;
+    const float densityScale = 1.0f + (retainedDensity - 1.0f) * weight;
+    for (int i = 0; i < kSceneLayers; ++i)
+        fog.layers[i].density *= densityScale;
+    for (FogLayer& layer : fog.layers)
+        Scale(layer.diffuse, 1.0f - weight, layer.diffuse);
+    fog.lightVisibility *= 1.0f - weight;
 }
 
 float ClientToClassicDirectLight(const AuthoredFog& fog, const float* clientDirectLight, bool linear)
@@ -283,6 +297,7 @@ FogParams BuildFogParams(const FrameInputs& in, const Config& cfg, const Authore
     FogParams p = {};
     p.linear = cfg.colorSpace == 1;
     p.authored = authored != nullptr;
+    const float interiorWeight = InteriorWeight(in, cfg);
     float fogColor[3];
     UnpackColor(in.fogColor, fogColor);
     UnpackColor(in.directColor, p.lightColor);
@@ -308,18 +323,19 @@ FogParams BuildFogParams(const FrameInputs& in, const Config& cfg, const Authore
     p.directLightMatch = 1.0f;
     if (p.authored)
     {
-        const float stormLightMatch = ClientToClassicDirectLight(*authored, p.lightColor, p.linear);
-        p.directLightMatch = 1.0f + (stormLightMatch - 1.0f) * WeatherStormWeight(in.lightParams);
+        p.directLightMatch = ClientToClassicDirectLight(*authored, p.lightColor, p.linear);
         AuthoredLayers(*authored, cfg, p, cfg.sunScatter * p.directLightMatch, p.layers);
         HaloHue(*authored, p.rayColor);
         DistanceLayer(in, cfg, p, elevationFadedScatter, fogColor, distanceFog);
-        distanceFog.density *= ClassicFogThinness(p, *authored, in.camPos[2]);
+        const float thinness = ClassicFogThinness(p, *authored, in.camPos[2]);
+        distanceFog.density *= thinness + (1.0f - thinness) * interiorWeight;
     }
     else
     {
         DerivedLayers(in, cfg, p, elevationFadedScatter, fogDistance, fogColor, p.layers);
         DistanceLayer(in, cfg, p, elevationFadedScatter, fogColor, distanceFog);
     }
+    ApplyInteriorFog(interiorWeight, cfg, p);
     return p;
 }
 

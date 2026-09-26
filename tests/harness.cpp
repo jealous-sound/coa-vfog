@@ -2,11 +2,13 @@
 #include "engine.h"
 #include "fog_data.h"
 #include "fog_model.h"
+#include "noise_volume.h"
 
 #include <windows.h>
 #include <d3d9.h>
 #include <wincodec.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -17,7 +19,9 @@ extern "C" __declspec(dllimport) IDirect3D9* __cdecl vf_test_wrap_direct3d9(IDir
 extern "C" __declspec(dllimport) void __cdecl vf_test_set_config(const Config*);
 extern "C" __declspec(dllimport) void __cdecl vf_test_get_config(Config*);
 extern "C" __declspec(dllimport) int __cdecl vf_test_render(const FrameInputs*, const char**);
+extern "C" __declspec(dllimport) int __cdecl vf_test_adaptive_lighting_history();
 extern "C" __declspec(dllimport) void __cdecl vf_test_force_depth_write(int);
+extern "C" __declspec(dllimport) void __cdecl vf_test_suppress_depth_write(int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_overlay_visible();
 extern "C" __declspec(dllimport) void __cdecl vf_test_draw_overlay();
 
@@ -224,8 +228,8 @@ Image Capture(IDirect3DDevice9* dev)
     return img;
 }
 
-constexpr DWORD kFogPassTextureStages = 4;
-constexpr UINT kFogPassPixelConstants = 36;
+constexpr DWORD kFogPassTextureStages = 10;
+constexpr UINT kFogPassPixelConstants = 99;
 
 struct Sentinel
 {
@@ -275,8 +279,10 @@ void ReadSentinel(IDirect3DDevice9* dev, Sentinel& s)
 
 void ReleaseSentinel(Sentinel& s)
 {
-    IUnknown* refs[] = {s.textures[0], s.textures[1], s.textures[2], s.textures[3], s.vs,
-                        s.ps,          s.decl,        s.stream,      s.rt,          s.ds};
+    for (IDirect3DBaseTexture9* texture : s.textures)
+        if (texture)
+            texture->Release();
+    IUnknown* refs[] = {s.vs, s.ps, s.decl, s.stream, s.rt, s.ds};
     for (IUnknown* r : refs)
         if (r)
             r->Release();
@@ -410,7 +416,8 @@ struct Harness
                              sizeof(SceneVertex));
     }
 
-    void DrawPretransformedQuadAtRawDepth(float x0, float y0, float x1, float y1, float rawDepth)
+    void DrawPretransformedQuadAtRawDepth(float x0, float y0, float x1, float y1, float rawDepth,
+                                         DWORD color = 0xFF808890)
     {
         struct ScreenVertex
         {
@@ -418,8 +425,8 @@ struct Harness
             DWORD color;
         };
         const ScreenVertex quad[6] = {
-            {x0, y0, rawDepth, 1, 0xFF808890}, {x1, y0, rawDepth, 1, 0xFF808890}, {x0, y1, rawDepth, 1, 0xFF808890},
-            {x1, y0, rawDepth, 1, 0xFF808890}, {x1, y1, rawDepth, 1, 0xFF808890}, {x0, y1, rawDepth, 1, 0xFF808890},
+            {x0, y0, rawDepth, 1, color}, {x1, y0, rawDepth, 1, color}, {x0, y1, rawDepth, 1, color},
+            {x1, y0, rawDepth, 1, color}, {x1, y1, rawDepth, 1, color}, {x0, y1, rawDepth, 1, color},
         };
         D3DVIEWPORT9 vp = {};
         dev->GetViewport(&vp);
@@ -508,7 +515,7 @@ float SmoothStep(float e0, float e1, float x)
 }
 
 float ReferenceUnshadowedSkyTransmittance(const FrameInputs& in, const Config& cfg, const AuthoredFog* authored,
-                                          float px, float py, int steps, float jitter)
+                                          float px, float py)
 {
     FogParams fog = BuildFogParams(in, cfg, authored);
     const float* P = in.glProjection;
@@ -521,31 +528,25 @@ float ReferenceUnshadowedSkyTransmittance(const FrameInputs& in, const Config& c
     const float* m = in.cameraRelativeView;
     Vec3 dirW = {v.x * m[0] + v.y * m[1] + v.z * m[2], v.x * m[4] + v.y * m[5] + v.z * m[6],
                  v.x * m[8] + v.y * m[9] + v.z * m[10]};
-    float z = fog.maxDistance;
-    z = z + (fog.maxDistance - z) * SmoothStep(fog.horizonStart, fog.farClip, z);
-    float tMax = std::fmin(z * len, fog.maxDistance);
+    const double upward = std::fmax(dirW.z, 0.0f);
     double tau = 0.0;
-    for (int s = 0; s < steps; ++s)
+    for (const FogLayer& layer : fog.layers)
     {
-        float u0 = static_cast<float>(s) / steps;
-        float u1 = u0 + 1.0f / steps;
-        float ta = tMax * u0 * u0;
-        float tb = tMax * u1 * u1;
-        float dt = tb - ta;
-        float t = ta + (tb - ta) * jitter;
-        float h = in.camPos[2] + dirW.z * t;
-        auto clamp01 = [](float x) { return std::fmin(std::fmax(x, 0.0f), 1.0f); };
-        for (const FogLayer& l : fog.layers)
+        const double begin = std::fmax(layer.start, 0.0f);
+        const double end = std::fmin(layer.endDistance, fog.maxDistance);
+        if (layer.density == 0.0f || end <= begin)
+            continue;
+        const double dt = (end - begin) / kReferenceIntegrationSteps;
+        const double skyScale = std::exp(-upward * layer.skyFalloff);
+        for (int sample = 0; sample < kReferenceIntegrationSteps; ++sample)
         {
-            float scale = std::exp(-std::fmax(dirW.z, 0.0f) * l.skyFalloff);
-            float cover =
-                clamp01((t - l.start) / std::fmax(dt, 1e-3f)) * clamp01((l.endDistance - ta) / std::fmax(dt, 1e-3f));
-            float curve = 1.0f + l.strength * std::pow(std::fmin(std::fmax(t - l.start, 0.0f) / fog.maxDistance, 1.0f) +
-                                                           1e-6f,
-                                                       l.exponent);
-            float heightF = std::fmin(std::exp((l.upperHeight - h) * l.upperFalloff), 1.0f) *
-                            std::fmin(std::exp((h - l.lowerHeight) * l.lowerFalloff), 1.0f);
-            tau += l.density * scale * dt * cover * curve * heightF;
+            const double distance = begin + (sample + 0.5) * dt;
+            const double height = in.camPos[2] + upward * distance;
+            const double ramp = std::fmin((distance - layer.start) / fog.maxDistance, 1.0);
+            const double curve = 1.0 + layer.strength * std::pow(ramp, layer.exponent);
+            const double heightFactor = std::exp(std::fmin((layer.upperHeight - height) * layer.upperFalloff, 0.0) +
+                                                 std::fmin((height - layer.lowerHeight) * layer.lowerFalloff, 0.0));
+            tau += layer.density * skyScale * dt * curve * heightFactor;
         }
     }
     return static_cast<float>(std::exp(-tau));
@@ -765,7 +766,7 @@ FrameInputs ContinentFrame(int map, Vec3 eye, float dayFraction, Vec3 toLight, b
     return in;
 }
 
-void CheckStormFogFollowsClientDirectLight(const FogData& data)
+void CheckAuthoredFogFollowsClientDirectLight(const FogData& data)
 {
     const Config cfg = {};
     const Vec3 goldshire = {-9456.8f, 54.7f, 59.6f};
@@ -801,9 +802,85 @@ void CheckStormFogFollowsClientDirectLight(const FogData& data)
     bool duskwoodResolved =
         data.Resolve(kEasternKingdoms, clearDuskwood.camPos, sixPm, clearDuskwood.lightParams, duskwoodFog);
     FogParams duskwood = BuildFogParams(clearDuskwood, cfg, &duskwoodFog);
-    std::printf("     Darkshire clear 18:00: direct light match %.2f\n", duskwood.directLightMatch);
-    Check(duskwoodResolved && duskwood.directLightMatch == 1.0f,
-          "clear weather keeps Classic's authored sun scattering where the client's light is darker");
+    std::printf("     Darkshire clear 18:00: direct light match %.5f, Classic RGB %.4f %.4f %.4f\n",
+                duskwood.directLightMatch, duskwoodFog.classicDirectLight[0], duskwoodFog.classicDirectLight[1],
+                duskwoodFog.classicDirectLight[2]);
+    Check(duskwoodResolved && std::fabs(duskwood.directLightMatch - 0.342745f) < 0.00001f,
+          "clear Darkshire fog follows the client's dimmer direct light in linear colour space");
+
+    AuthoredFog missingDirectLight = duskwoodFog;
+    missingDirectLight.hasClassicDirectLight = false;
+    const FogParams uncalibrated = BuildFogParams(clearDuskwood, cfg, &missingDirectLight);
+    bool diffuseMatched = true;
+    bool mediumPreserved = true;
+    for (int i = 0; i < kSceneLayers; ++i)
+    {
+        const FogLayer& actual = duskwood.layers[i];
+        const FogLayer& original = uncalibrated.layers[i];
+        mediumPreserved &= actual.density == original.density && actual.g == original.g &&
+                           actual.start == original.start && actual.endDistance == original.endDistance &&
+                           actual.strength == original.strength && actual.exponent == original.exponent &&
+                           actual.upperHeight == original.upperHeight && actual.upperFalloff == original.upperFalloff &&
+                           actual.lowerHeight == original.lowerHeight && actual.lowerFalloff == original.lowerFalloff &&
+                           actual.shadowDensity == original.shadowDensity && actual.shadowed == original.shadowed;
+        for (int channel = 0; channel < 3; ++channel)
+        {
+            diffuseMatched &= Near(actual.diffuse[channel], original.diffuse[channel] * duskwood.directLightMatch);
+            mediumPreserved &= actual.emissive[channel] == original.emissive[channel] &&
+                               actual.shadowEmissive[channel] == original.shadowEmissive[channel];
+        }
+    }
+    Check(diffuseMatched, "direct-light calibration scales every authored diffuse channel without shifting its hue");
+    Check(mediumPreserved &&
+              Near(SunlitLevelRayOpacity(duskwood, clearDuskwood.camPos[2], 1000.0f),
+                   SunlitLevelRayOpacity(uncalibrated, clearDuskwood.camPos[2], 1000.0f)),
+          "clear-light calibration preserves fog density, height, phase, opacity and ambient emission");
+    Check(std::memcmp(duskwood.rayColor, uncalibrated.rayColor, sizeof(duskwood.rayColor)) == 0 &&
+              std::memcmp(&duskwood.layers[kDistanceFogLayer], &uncalibrated.layers[kDistanceFogLayer],
+                          sizeof(FogLayer)) == 0,
+          "authored direct-light calibration preserves the halo hue and already client-lit distance fog");
+    Check(uncalibrated.directLightMatch == 1.0f,
+          "missing Classic direct-light data preserves the authored diffuse contribution");
+
+    Config gamma = cfg;
+    gamma.colorSpace = 0;
+    const FogParams gammaDuskwood = BuildFogParams(clearDuskwood, gamma, &duskwoodFog);
+    Check(std::fabs(gammaDuskwood.directLightMatch - 0.647823f) < 0.00001f,
+          "clear direct-light matching uses the selected gamma colour space consistently");
+
+    FrameInputs clearWhite = clearDuskwood;
+    clearWhite.directColor = kWhiteDirectLight;
+    Check(BuildFogParams(clearWhite, cfg, &duskwoodFog).directLightMatch == 1.0f,
+          "clear client lighting brighter than Classic never boosts authored scattering");
+    FrameInputs dark = clearDuskwood;
+    dark.directColor = 0xFF000000;
+    const FogParams noDirectLight = BuildFogParams(dark, cfg, &duskwoodFog);
+    Check(noDirectLight.directLightMatch == 0.0f && noDirectLight.layers[0].diffuse[2] == 0.0f &&
+              noDirectLight.layers[0].emissive[2] == duskwood.layers[0].emissive[2] &&
+              noDirectLight.layers[0].density == duskwood.layers[0].density,
+          "black client direct light removes direct scattering while retaining the medium and its ambient light");
+
+    AuthoredFog nearBlackReference = duskwoodFog;
+    for (float& channel : nearBlackReference.classicDirectLight)
+        channel = 0.0001f;
+    Check(BuildFogParams(clearDuskwood, cfg, &nearBlackReference).directLightMatch == 1.0f,
+          "an unusably dark Classic reference keeps the existing authored-light fallback");
+
+    FrameInputs mixedWeather = clearDuskwood;
+    mixedWeather.lightParams = Storm(0.5f);
+    const FogParams mixed = BuildFogParams(mixedWeather, cfg, &duskwoodFog);
+    FrameInputs selectedEffect = clearDuskwood;
+    selectedEffect.lightParams = ScreenEffectSlot(FogData::kDeathSlot, 1.0f);
+    AuthoredFog selectedFog = {};
+    const bool selectedResolved = data.Resolve(kEasternKingdoms, selectedEffect.camPos, sixPm,
+                                              selectedEffect.lightParams, selectedFog);
+    const FogParams selected = BuildFogParams(selectedEffect, cfg, &selectedFog);
+    FrameInputs selectedStorm = selectedEffect;
+    selectedStorm.lightParams = Storm(1.0f);
+    const FogParams selectedReference = BuildFogParams(selectedStorm, cfg, &selectedFog);
+    Check(Near(mixed.directLightMatch, duskwood.directLightMatch) && selectedResolved &&
+              Near(selected.directLightMatch, selectedReference.directLightMatch),
+          "resolved weather and screen-effect lighting receive one consistent direct-light calibration");
 }
 
 void CheckDenseClassicFogAtHarbourSunset(const FogData& data)
@@ -1400,6 +1477,47 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
     DrawOverlayFrames(1);
 }
 
+#include "fog_integration_checks.h"
+#include "local_lights_checks.h"
+#include "noise_variation_checks.h"
+#include "world_shadow_hardware_checks.h"
+#include "local_light_gpu_checks.h"
+#include "silhouette_quality_checks.h"
+#include "god_ray_quality_checks.h"
+#include "temporal_quality_checks.h"
+#include "runtime_quality_checks.h"
+#include "lighting_history_checks.h"
+
+void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3 at,
+                                   const float* proj, const D3DVIEWPORT9& world)
+{
+    Config stable = cfg;
+    stable.temporal = 0.0f;
+    stable.lightShafts = false;
+    stable.godRays = 0.0f;
+    stable.debugView = 2;
+    stable.dataMode = 0;
+    stable.quality = 1;
+    vf_test_set_config(&stable);
+    float view[16];
+    CameraRelativeLookAt(eye, at, view);
+    FrameInputs in = MakeInputs(view, proj, eye, at, world);
+    Image captures[2];
+    bool rendered = true;
+    for (int frame = 0; frame < 2; ++frame)
+    {
+        h.BeginFrame();
+        h.DrawScene(eye, view, proj, world);
+        const char* skip = "";
+        rendered = vf_test_render(&in, &skip) != 0 && rendered;
+        captures[frame] = Capture(h.dev);
+        h.dev->EndScene();
+    }
+    Check(rendered && captures[0].bgra == captures[1].bgra,
+          "disabling temporal accumulation keeps stationary fog identical between frames");
+    vf_test_set_config(&cfg);
+}
+
 int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstring& iniPath)
 {
     FogData classic;
@@ -1408,7 +1526,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckStormBlendsLayersByClassicIndex(classic);
     CheckScreenEffectLightSlot(classic);
     CheckZoneLights(classic);
-    CheckStormFogFollowsClientDirectLight(classic);
+    CheckAuthoredFogFollowsClientDirectLight(classic);
     CheckDenseClassicFogAtHarbourSunset(classic);
     CheckThinClassicFogAtHyjalMidnight(classic);
     CheckFogThinsIntoFoglessClassicLight(classic);
@@ -1417,6 +1535,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     CheckOverlayKeyNames();
     CheckSettingsSaveKeepsTheIni(outDir, FullPath(iniPath));
+    CheckFogDataBounds(outDir, dataPath);
 
     WNDCLASSW wc = {};
     wc.lpfnWndProc = ClientWindowProc;
@@ -1460,6 +1579,12 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     D3DDEVICE_CREATION_PARAMETERS cp;
     h.dev->GetCreationParameters(&cp);
     Check((cp.BehaviorFlags & D3DCREATE_PUREDEVICE) == 0, "pure-device flag removed");
+    D3DADAPTER_IDENTIFIER9 adapter = {};
+    D3DCAPS9 caps = {};
+    h.d3d->GetAdapterIdentifier(0, 0, &adapter);
+    h.dev->GetDeviceCaps(&caps);
+    std::printf("     adapter %s, PS3 slots %lu, executed instructions %lu\n", adapter.Description,
+                caps.MaxPixelShader30InstructionSlots, caps.MaxPShaderInstructionsExecuted);
     Check(h.pp.EnableAutoDepthStencil == TRUE && h.pp.AutoDepthStencilFormat == D3DFMT_D24S8,
           "engine-visible depth parameters preserved");
     IDirect3DSurface9* depth = nullptr;
@@ -1477,6 +1602,16 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
         parent->Release();
 
     h.CreateEngineObjects();
+    CheckFogIntegration(h.dev);
+    CheckLocalLightInputs();
+    CheckInteriorFogInputs();
+    CheckNoiseVariation(h.dev);
+    CheckHardwareWorldShadowIntegration(h.dev);
+    local_light_gpu::CheckLocalLightIntegration(h.dev);
+    silhouette_quality::CheckSilhouettes(h.dev);
+    god_ray_quality::CheckGodRays(h.dev);
+    CheckTemporalQuality(h.dev);
+    CheckLightDisappearanceHistory(h);
     const float aspect = 1280.0f / 688.0f;
     const D3DVIEWPORT9 world = {0, 0, 1280, 688, 0.0f, 1.0f};
     float proj[16];
@@ -1486,6 +1621,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     float view[16];
 
     Config cfg = {};
+    cfg.noiseAmount = 0.0f;
     cfg.maxDistance = 5000.0f;
     Config withGodRays = cfg;
     withGodRays.godRays = 0.2f;
@@ -1567,6 +1703,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     SavePng(outDir + L"\\after.png", after.w, after.h, after.bgra);
 
     CheckLinearComposite(h, cfg, eye, at, proj, world);
+    CheckDisabledTemporalIsStable(h, cfg, eye, at, proj, world);
 
     auto renderDebugIn = [&](int mode, float maxDist, const D3DVIEWPORT9& vp, float wdlPatchRawDepth) {
         Config c = cfg;
@@ -1608,19 +1745,10 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
         bool match = true;
         for (const auto& s : samples)
         {
-            float lo = 1.0f;
-            float hi = 0.0f;
-            for (int j = 0; j < 16; ++j)
-            {
-                float r = ReferenceUnshadowedSkyTransmittance(in, c, nullptr, s[0] + 0.5f, s[1] + 0.5f, 24,
-                                                              (j + 0.5f) / 16.0f);
-                lo = std::fmin(lo, r);
-                hi = std::fmax(hi, r);
-            }
+            float reference = ReferenceUnshadowedSkyTransmittance(in, c, nullptr, s[0] + 0.5f, s[1] + 0.5f);
             float got = t.At(s[0], s[1])[2] / 255.0f;
-            std::printf("     sky transmittance at %u,%u: shader %.3f, reference %.3f..%.3f\n", s[0], s[1], got, lo,
-                        hi);
-            match = match && got > lo - 0.02f && got < hi + 0.02f;
+            std::printf("     sky transmittance at %u,%u: shader %.3f, reference %.3f\n", s[0], s[1], got, reference);
+            match = match && std::fabs(got - reference) < 0.02f;
         }
         Check(match, "sky transmittance matches the CPU reference (world-space reconstruction)");
 
@@ -1713,19 +1841,12 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
         const UINT samples[3][2] = {{101, 101}, {1181, 101}, {101, 201}};
         for (const auto& s : samples)
         {
-            float lo = 1.0f;
-            float hi = 0.0f;
-            for (int j = 0; j < 16; ++j)
-            {
-                float r = ReferenceUnshadowedSkyTransmittance(in, c, resolved ? &authored : nullptr, s[0] + 0.5f,
-                                                              s[1] + 0.5f, 24, (j + 0.5f) / 16.0f);
-                lo = std::fmin(lo, r);
-                hi = std::fmax(hi, r);
-            }
+            float reference = ReferenceUnshadowedSkyTransmittance(in, c, resolved ? &authored : nullptr,
+                                                                  s[0] + 0.5f, s[1] + 0.5f);
             float got = t.At(s[0], s[1])[2] / 255.0f;
-            std::printf("     Classic sky transmittance at %u,%u: shader %.3f, reference %.3f..%.3f\n", s[0], s[1], got,
-                        lo, hi);
-            match = match && got > lo - 0.02f && got < hi + 0.02f;
+            std::printf("     Classic sky transmittance at %u,%u: shader %.3f, reference %.3f\n", s[0], s[1], got,
+                        reference);
+            match = match && std::fabs(got - reference) < 0.02f;
         }
         Check(match, "Classic-layer sky transmittance matches the CPU reference");
         vf_test_set_config(&cfg);
@@ -1808,6 +1929,8 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
               "liquid-pass depth writes stay on while forced and the client's last request is restored");
     }
 
+    CheckDepthWriteStateBlockRestore(h.dev);
+    CheckWorldTextDepthIsolation(h);
     Config restored = cfg;
     vf_test_set_config(&restored);
 
@@ -1842,6 +1965,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     Check(OverlayProbeChange(beforeOverlay, Capture(h.dev)) > 0.05, "the overlay draws again after Reset");
     PressHotkey(h.window, kDefaultOverlayHotkey);
 
+    vf_test_set_config(&restored);
     h.ReleaseEngineObjects();
     ULONG devRefs = h.dev->Release();
     ULONG d3dRefs = h.d3d->Release();
@@ -2355,6 +2479,11 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
 }
 }
 
+namespace
+{
+#include "performance_scene.h"
+}
+
 int wmain(int argc, wchar_t** argv)
 {
     std::wstring out = L"harness-out";
@@ -2382,9 +2511,11 @@ int wmain(int argc, wchar_t** argv)
     }
     if (scene == L"harbour")
         return RunHarbour(out, data);
+    if (scene == L"performance")
+        return RunPerformance();
     if (!scene.empty())
     {
-        std::printf("unknown scene %ls (known: harbour)\n", scene.c_str());
+        std::printf("unknown scene %ls (known: harbour, performance)\n", scene.c_str());
         return 2;
     }
     return Run(out, data, ini);

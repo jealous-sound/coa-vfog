@@ -85,7 +85,11 @@ bool Toggle(const char* label, int& value, const char* help)
 void DrawStatus(const FogFrameStatus& status)
 {
     if (status.drawn)
+    {
         ImGui::TextColored(kDrawnColour, "Fog: Drawing");
+        if (status.reason && *status.reason)
+            ImGui::TextWrapped("%s", status.reason);
+    }
     else
         ImGui::TextColored(kSkippedColour, "Fog: Not drawing (%s)", status.reason);
 }
@@ -106,7 +110,8 @@ bool DrawDensity(Config& c)
     const Section section("Density", ImGuiTreeNodeFlags_DefaultOpen);
     if (!section)
         return false;
-    bool changed = Multiplier("Density", c.density, "Global density multiplier");
+    bool changed = Multiplier("Density", c.density,
+                              "Fog thickness affects visibility and scattered light. Use Sun scatter for the halo.");
     changed |= Multiplier("Haze", c.haze, "Distance haze where no Classic data exists");
     changed |= Multiplier("Ground fog", c.groundFog, "Low ground mist where no Classic data exists");
     changed |= Multiplier("Distance fog", c.farFog, "The distance fog that replaces the stock fog");
@@ -117,6 +122,12 @@ bool DrawDensity(Config& c)
                       "everywhere");
     changed |= Slider("Fog range", c.maxDistance, 200.0f, 5000.0f, "%.0f yd",
                       "How far sky rays are integrated and the scale of the Classic distance curves");
+    changed |= Slider("Density variation", c.noiseAmount, 0.0f, 1.0f, "%.2f",
+                      "Spatial variation in haze and ground fog; 0 keeps the authored density smooth");
+    changed |= Slider("Variation scale", c.noiseScale, 0.001f, 1.0f, "%.3f",
+                      "Larger values make smaller mist patches", ImGuiSliderFlags_Logarithmic);
+    changed |= Slider("Mist drift", c.noiseWindSpeed, 0.0f, 10.0f, "%.2f yd/s",
+                      "Speed of drifting mist; 0 keeps it stationary");
     return changed;
 }
 
@@ -128,12 +139,17 @@ bool DrawLight(Config& c)
     bool changed = Multiplier("Sun scatter", c.sunScatter, "In-scattered sun or moon light: the halo and the shafts");
     changed |= Multiplier("Ambient", c.ambient, "Ambient fog brightness");
     changed |= Multiplier("Exposure", c.exposure, "Brightness of the layers used where no Classic data exists");
-    changed |= Multiplier("Classic exposure", c.classicExposure, "Brightness of the Classic layers, 1 = as authored");
+    changed |= Multiplier("Classic exposure", c.classicExposure, "Brightness of the Classic layers, 1 = default");
     changed |= Toggle("Linear light", c.colorSpace,
                       "Scatter and blend in linear light like the modern client, with a soft highlight roll-off. "
                       "Off: gamma");
     changed |= Toggle("Light shafts", c.lightShafts,
                       "Shadowed in-scattering: light shafts through trees, buildings and terrain");
+    changed |= Toggle("World shadows", c.worldShadows,
+                      "Use the client's world shadow maps when available, including off-screen shadow casters");
+    changed |= Toggle("Local lights", c.localLights, "Scatter nearby point lights from the world into the fog");
+    changed |= Slider("Local light intensity", c.localLightIntensity, 0.0f, 8.0f, "%.2f",
+                      "Brightness of nearby point lights in the fog");
     changed |= Slider("God rays", c.godRays, 0.0f, 4.0f, "%.2f",
                       "Radial rays from the bright sky around the sun, 0 = off");
     changed |= Toggle("Glow compensation", c.glowCompensation,
@@ -166,6 +182,10 @@ bool DrawWorld(Config& c)
     bool changed = Toggle("Fog under water", c.underwater, "Keep the effect while the camera is under water");
     changed |= Toggle("Water writes depth", c.liquidDepth,
                       "Let water surfaces write depth so water is fogged by its own distance");
+    changed |= Toggle("Interior-aware fog", c.interiorAware,
+                      "Fade outdoor fog and direct sunlight as the camera enters a building or cave");
+    changed |= Slider("Interior density", c.interiorDensity, 0.0f, 1.0f, "%.2f",
+                      "Outdoor fog density retained indoors; the area's native distance fog still applies");
     changed |= DrawViewDistance(c);
     return changed;
 }
