@@ -462,7 +462,7 @@ the native client's systems.
 CoAVolFog is licensed under the GNU General Public License version 3 only (`GPL-3.0-only`); see [LICENSE](LICENSE).
 
 As an additional permission under GPLv3 section 7, you may link or combine CoAVolFog, including modified versions,
-with the World of Warcraft client, including Ascension/CoA, and distribute the resulting combination without
-providing the client's source code. GPLv3 continues to apply to CoAVolFog.
+with the World of Warcraft client, and distribute the resulting combination without providing the client's source
+code. GPLv3 continues to apply to CoAVolFog.
 
 `data/fogdata.bin` is converted from WoW Classic client data and is not covered by this license or exception.
