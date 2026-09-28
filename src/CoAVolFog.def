@@ -16,3 +16,6 @@ EXPORTS
     vf_test_water_tag
     vf_test_water_untag
     vf_test_water_end
+    vf_test_set_water_seconds
+    vf_test_disable_wave_simulation
+    vf_test_force_packed_water_depth
