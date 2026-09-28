@@ -1,6 +1,7 @@
 #include "engine.h"
 
 #include "log.h"
+#include "water_classify.h"
 
 #include <algorithm>
 #include <cmath>
@@ -54,6 +55,68 @@ constexpr uintptr_t kSunDayEnd = 0x00A41CA0;
 constexpr uintptr_t kSunDayStart = 0x00A41CA4;
 constexpr uintptr_t kDayNightScreenEffectLightSlot = 0x00D38B58;
 constexpr uintptr_t kDayNightStormBlend = 0x00D38B88;
+
+constexpr uintptr_t kLightSkyColors[kSkyColorCount] = {0x00D38BE0, 0x00D38BE4, 0x00D38BE8,
+                                                       0x00D38BEC, 0x00D38BF0, 0x00D38BF4};
+constexpr uintptr_t kLightRiverColors[kWaterColorPair] = {0x00D38C14, 0x00D38C18};
+constexpr uintptr_t kLightOceanColors[kWaterColorPair] = {0x00D38C0C, 0x00D38C10};
+
+constexpr uintptr_t kLiquidSettingsBankCount = 0x00D43B18;
+constexpr uintptr_t kLiquidSettingsBankEntries = 0x00D43B1C;
+constexpr uint32_t kMaxLiquidSettingsBankCount = 0x10000;
+constexpr uintptr_t kLiquidSettingsTexture0 = 0x000;
+constexpr size_t kLiquidSettingsTextureSlot = 0x80;
+constexpr uintptr_t kLiquidTypeMaxId = 0x00AD4070;
+constexpr uintptr_t kLiquidTypeMinId = 0x00AD4074;
+constexpr uintptr_t kLiquidTypeRows = 0x00AD4084;
+constexpr uintptr_t kLiquidTypeFlags = 0x08;
+constexpr uintptr_t kLiquidTypeSoundBank = 0x0C;
+constexpr uintptr_t kLiquidTypeMaterialId = 0x38;
+constexpr int kClassifiedSettingsCacheSize = 32;
+constexpr int kMaxLoggedLiquidTypes = 64;
+
+constexpr size_t kMaxCodeBytes = 12;
+
+struct CodeBytes
+{
+    const char* name;
+    uintptr_t address;
+    size_t size;
+    unsigned char bytes[kMaxCodeBytes];
+};
+
+const CodeBytes kLightRecordStores[] = {
+    {"light record copy destination", 0x007F3574, 5, {0xB9, 0xD4, 0x8B, 0xD3, 0x00}},
+    {"sky top colour store", 0x007EC03C, 3, {0x89, 0x56, 0x0C}},
+    {"sky middle colour store", 0x007EC051, 3, {0x89, 0x4E, 0x10}},
+    {"sky band 1 colour store", 0x007EC063, 3, {0x89, 0x46, 0x14}},
+    {"sky band 2 colour store", 0x007EC075, 3, {0x89, 0x56, 0x18}},
+    {"sky smog colour store", 0x007EC087, 3, {0x89, 0x4E, 0x1C}},
+    {"fog colour store", 0x007EC09C, 3, {0x89, 0x46, 0x20}},
+    {"ocean close colour store", 0x007EC11D, 3, {0x89, 0x56, 0x38}},
+    {"ocean far colour store", 0x007EC132, 3, {0x89, 0x4E, 0x3C}},
+    {"river close colour store", 0x007EC144, 3, {0x89, 0x46, 0x40}},
+    {"river far colour store", 0x007EC152, 3, {0x89, 0x56, 0x44}},
+};
+
+const CodeBytes kWaterClientLayout[] = {
+    {"settings bank count check", 0x008A28F8, 6, {0x3B, 0x3D, 0x18, 0x3B, 0xD4, 0x00}},
+    {"settings bank array load", 0x008A2900, 5, {0xA1, 0x1C, 0x3B, 0xD4, 0x00}},
+    {"settings bank entry load", 0x008A2952, 3, {0x8B, 0x04, 0xB8}},
+    {"settings texture copy destination", 0x008A2809, 3, {0x89, 0x5D, 0xFC}},
+    {"LiquidType texture source", 0x008A280C, 3, {0x8D, 0x47, 0x3C}},
+    {"settings texture slot stride", 0x008A282E, 7, {0x81, 0x45, 0xFC, 0x80, 0x00, 0x00, 0x00}},
+    {"LiquidType minimum id load", 0x00793DF7, 5, {0xA1, 0x74, 0x40, 0xAD, 0x00}},
+    {"LiquidType maximum id check", 0x00793E00, 6, {0x3B, 0x35, 0x70, 0x40, 0xAD, 0x00}},
+    {"LiquidType rows load", 0x00793E08, 6, {0x8B, 0x15, 0x84, 0x40, 0xAD, 0x00}},
+    {"LiquidType row load", 0x00793E12, 3, {0x8B, 0x04, 0x8A}},
+    {"LiquidType material id read", 0x008A1FE8, 3, {0x8B, 0x78, 0x38}},
+    {"material render call with the settings argument", 0x008A22C7, 11,
+     {0x8B, 0x46, 0x04, 0x8B, 0x0E, 0x8B, 0x11, 0x8B, 0x52, 0x08, 0x50}},
+    {"liquid render pass return", 0x008A2376, 3, {0xC2, 0x08, 0x00}},
+    {"water material render return", 0x008A58FB, 3, {0xC2, 0x1C, 0x00}},
+    {"water no-specular material render return", 0x008A5C6B, 3, {0xC2, 0x1C, 0x00}},
+};
 
 struct OpaqueState
 {
@@ -227,6 +290,239 @@ bool BuildFrameInputsUnsafe(FrameInputs& out, bool withPointLights)
     return Finite(out.camPos, 3) && Finite(out.toLight, 3) && std::isfinite(out.fogEnd) &&
            std::isfinite(out.fogStart);
 }
+
+bool CodeBytesMatch(const CodeBytes& code)
+{
+    __try
+    {
+        return std::memcmp(reinterpret_cast<const void*>(code.address), code.bytes, code.size) == 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+template <size_t N>
+bool AllCodeBytesMatch(const CodeBytes (&codes)[N], const char* what)
+{
+    for (const CodeBytes& code : codes)
+        if (!CodeBytesMatch(code))
+        {
+            VF_LOG_ERROR("%s: the client's %s at 0x%08X differs from the 12340 client", what, code.name,
+                         static_cast<unsigned>(code.address));
+            return false;
+        }
+    return true;
+}
+
+enum class LayoutCheck
+{
+    Unchecked,
+    Matches,
+    Differs,
+};
+
+LayoutCheck g_lightRecordLayout = LayoutCheck::Unchecked;
+
+bool LightRecordLayoutMatches()
+{
+    if (g_lightRecordLayout == LayoutCheck::Unchecked)
+        g_lightRecordLayout = AllCodeBytesMatch(kLightRecordStores, "water light colours") ? LayoutCheck::Matches
+                                                                                             : LayoutCheck::Differs;
+    return g_lightRecordLayout == LayoutCheck::Matches;
+}
+
+void ReadColors(const uintptr_t* addresses, uint32_t* out, int count)
+{
+    for (int i = 0; i < count; ++i)
+        out[i] = Read<uint32_t>(addresses[i]);
+}
+
+bool ReadWaterColors(WaterInputs& out)
+{
+    __try
+    {
+        ReadColors(kLightSkyColors, out.skyColors, kSkyColorCount);
+        ReadColors(kLightRiverColors, out.riverColors, kWaterColorPair);
+        ReadColors(kLightOceanColors, out.oceanColors, kWaterColorPair);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+struct SettingsBank
+{
+    uintptr_t entries;
+    uint32_t count;
+};
+
+struct LiquidDescription
+{
+    bool inBank;
+    bool hasRow;
+    uint32_t id;
+    uint32_t flags;
+    uint32_t soundBank;
+    uint32_t materialId;
+    char texture0[kLiquidSettingsTextureSlot];
+};
+
+struct ClassifiedSettings
+{
+    const void* settings;
+    WaterClass waterClass;
+};
+
+struct ClassifiedSettingsCache
+{
+    SettingsBank bank;
+    int count;
+    int next;
+    ClassifiedSettings entries[kClassifiedSettingsCacheSize];
+};
+
+ClassifiedSettingsCache g_classified = {};
+uint32_t g_loggedLiquidTypes[kMaxLoggedLiquidTypes] = {};
+int g_loggedLiquidTypeCount = 0;
+bool g_loggedUnreadableSettings = false;
+
+bool ReadSettingsBank(SettingsBank& bank)
+{
+    __try
+    {
+        bank.count = Read<uint32_t>(kLiquidSettingsBankCount);
+        bank.entries = Read<uintptr_t>(kLiquidSettingsBankEntries);
+        return bank.entries && bank.count <= kMaxLiquidSettingsBankCount;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+bool FindLiquidTypeId(const SettingsBank& bank, const void* settings, uint32_t& id)
+{
+    for (uint32_t i = 0; i < bank.count; ++i)
+        if (Read<uintptr_t>(bank.entries + i * sizeof(uintptr_t)) == reinterpret_cast<uintptr_t>(settings))
+        {
+            id = i;
+            return true;
+        }
+    return false;
+}
+
+uintptr_t LiquidTypeRow(uint32_t id)
+{
+    const int32_t minId = Read<int32_t>(kLiquidTypeMinId);
+    const int32_t maxId = Read<int32_t>(kLiquidTypeMaxId);
+    const uintptr_t rows = Read<uintptr_t>(kLiquidTypeRows);
+    const int64_t signedId = id;
+    if (!rows || signedId < minId || signedId > maxId)
+        return 0;
+    return Read<uintptr_t>(rows + static_cast<uintptr_t>(signedId - minId) * sizeof(uintptr_t));
+}
+
+void ReadTexture0(const void* settings, char* out)
+{
+    std::memcpy(out, static_cast<const char*>(settings) + kLiquidSettingsTexture0, kLiquidSettingsTextureSlot);
+    if (!std::memchr(out, 0, kLiquidSettingsTextureSlot))
+        out[0] = 0;
+}
+
+void DescribeLiquidUnsafe(const SettingsBank& bank, const void* settings, LiquidDescription& d)
+{
+    d.inBank = FindLiquidTypeId(bank, settings, d.id);
+    if (!d.inBank)
+        return;
+    const uintptr_t row = LiquidTypeRow(d.id);
+    d.hasRow = row != 0;
+    if (d.hasRow)
+    {
+        d.flags = Read<uint32_t>(row + kLiquidTypeFlags);
+        d.soundBank = Read<uint32_t>(row + kLiquidTypeSoundBank);
+        d.materialId = Read<uint32_t>(row + kLiquidTypeMaterialId);
+    }
+    ReadTexture0(settings, d.texture0);
+}
+
+bool DescribeLiquid(const SettingsBank& bank, const void* settings, LiquidDescription& d)
+{
+    __try
+    {
+        DescribeLiquidUnsafe(bank, settings, d);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+WaterClass ClassOf(const LiquidDescription& d)
+{
+    if (!d.inBank || !d.hasRow)
+        return WaterClass::None;
+    return ClassifyLiquid(d.id, d.soundBank, d.materialId, d.texture0);
+}
+
+bool SameBank(const SettingsBank& a, const SettingsBank& b)
+{
+    return a.entries == b.entries && a.count == b.count;
+}
+
+void ForgetClassifiedSettings(const SettingsBank& bank)
+{
+    g_classified = {};
+    g_classified.bank = bank;
+}
+
+const ClassifiedSettings* FindClassified(const void* settings)
+{
+    for (int i = 0; i < g_classified.count; ++i)
+        if (g_classified.entries[i].settings == settings)
+            return &g_classified.entries[i];
+    return nullptr;
+}
+
+void RememberClassified(const void* settings, WaterClass waterClass)
+{
+    const int slot = g_classified.count < kClassifiedSettingsCacheSize ? g_classified.count++ : g_classified.next;
+    g_classified.next = (slot + 1) % kClassifiedSettingsCacheSize;
+    g_classified.entries[slot] = {settings, waterClass};
+}
+
+bool MarkLiquidTypeLogged(uint32_t id)
+{
+    for (int i = 0; i < g_loggedLiquidTypeCount; ++i)
+        if (g_loggedLiquidTypes[i] == id)
+            return false;
+    if (g_loggedLiquidTypeCount < kMaxLoggedLiquidTypes)
+        g_loggedLiquidTypes[g_loggedLiquidTypeCount++] = id;
+    return true;
+}
+
+void LogNewLiquid(const void* settings, bool read, const LiquidDescription& d, WaterClass waterClass)
+{
+    if (!read || !d.inBank)
+    {
+        if (!g_loggedUnreadableSettings)
+            VF_LOG_INFO("water: liquid settings %p are %s; left to the client", settings,
+                        read ? "not in the client's settings bank" : "unreadable");
+        g_loggedUnreadableSettings = true;
+        return;
+    }
+    if (!MarkLiquidTypeLogged(d.id))
+        return;
+    if (!d.hasRow)
+        VF_LOG_INFO("water: liquid type %u -> %s (no LiquidType row)", d.id, WaterClassLabel(waterClass));
+    else
+        VF_LOG_INFO("water: liquid type %u -> %s (sound bank %u, material %u, flags 0x%X, texture %s)", d.id,
+                    WaterClassLabel(waterClass), d.soundBank, d.materialId, d.flags, d.texture0);
+}
 }
 
 bool IsSupportedClient()
@@ -318,11 +614,28 @@ bool BuildFrameInputs(FrameInputs& out, bool withPointLights)
 bool BuildWaterInputs(WaterInputs& out)
 {
     out = {};
-    return false;
+    return LightRecordLayoutMatches() && ReadWaterColors(out);
 }
 
-WaterClass ClassifyWaterSettings(const void*)
+bool WaterClientLayoutMatches()
 {
-    return WaterClass::None;
+    return AllCodeBytesMatch(kWaterClientLayout, "water hooks");
+}
+
+WaterClass ClassifyWaterSettings(const void* liquidSettings)
+{
+    SettingsBank bank = {};
+    if (!liquidSettings || !ReadSettingsBank(bank))
+        return WaterClass::None;
+    if (!SameBank(bank, g_classified.bank))
+        ForgetClassifiedSettings(bank);
+    if (const ClassifiedSettings* known = FindClassified(liquidSettings))
+        return known->waterClass;
+    LiquidDescription description = {};
+    const bool read = DescribeLiquid(bank, liquidSettings, description);
+    const WaterClass waterClass = read ? ClassOf(description) : WaterClass::None;
+    RememberClassified(liquidSettings, waterClass);
+    LogNewLiquid(liquidSettings, read, description, waterClass);
+    return waterClass;
 }
 }

@@ -96,5 +96,6 @@ void ClearOpaqueState();
 
 bool BuildFrameInputs(FrameInputs& out, bool withPointLights);
 bool BuildWaterInputs(WaterInputs& out);
+bool WaterClientLayoutMatches();
 WaterClass ClassifyWaterSettings(const void* liquidSettings);
 }

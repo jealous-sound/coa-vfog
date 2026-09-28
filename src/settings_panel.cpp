@@ -18,6 +18,9 @@ const char* const kQualityNames[] = {"Low: quarter resolution, 16 steps", "Mediu
                                      "High: half resolution, 32 steps"};
 const char* const kDebugViewNames[] = {"Off", "Fog radiance", "Transmittance", "Linear depth"};
 const char* const kLogLevelNames[] = {"Errors", "Info", "Debug"};
+const char* const kWaterQualityNames[] = {"Low: 128 waves, no reflections", "Medium: 256 waves, reflections",
+                                          "High: 256 waves, finer reflections"};
+const char* const kWaterDebugViewNames[] = {"Off", "Normals", "Foam", "Transmittance", "Reflection", "Liquid class"};
 
 template <int N>
 bool Choice(const char* label, int& value, int first, const char* const (&names)[N], const char* help)
@@ -92,6 +95,17 @@ void DrawStatus(const FogFrameStatus& status)
     }
     else
         ImGui::TextColored(kSkippedColour, "Fog: Not drawing (%s)", status.reason);
+}
+
+void DrawWaterStatus(const WaterFrameStatus& status)
+{
+    const bool named = status.reason && *status.reason;
+    if (status.drawn && named)
+        ImGui::TextColored(kDrawnColour, "Water: Drawing (%s)", status.reason);
+    else if (status.drawn)
+        ImGui::TextColored(kDrawnColour, "Water: Drawing");
+    else
+        ImGui::TextColored(kSkippedColour, "Water: Not drawing (%s)", named ? status.reason : "no reason given");
 }
 
 bool DrawQuality(Config& c)
@@ -177,12 +191,41 @@ bool DrawWorld(Config& c)
         return false;
     bool changed = Toggle("Fog under water", c.underwater, "Keep the effect while the camera is under water");
     changed |= Toggle("Water writes depth", c.liquidDepth,
-                      "Let water surfaces write depth so water is fogged by its own distance");
+                      "Let water surfaces write depth so water is fogged by its own distance; always on while Modern "
+                      "water is on");
     changed |= Toggle("Interior-aware fog", c.interiorAware,
                       "Fade outdoor fog and direct sunlight as the camera enters a building or cave");
     changed |= Slider("Interior density", c.interiorDensity, 0.0f, 1.0f, "%.2f",
                       "Outdoor fog density retained indoors; the area's native distance fog still applies");
     changed |= DrawViewDistance(c);
+    return changed;
+}
+
+bool DrawWater(Config& c)
+{
+    const Section section("Water");
+    if (!section)
+        return false;
+    bool changed = Toggle("Modern water", c.water,
+                          "Shade lakes, rivers, the sea and indoor pools like the modern client; water surfaces write "
+                          "depth while it is on. Off: the client's own water");
+    changed |= Choice("Water quality", c.waterQuality, 1, kWaterQualityNames,
+                      "Size of the wave simulation and detail of the reflections");
+    changed |= Slider("Waves", c.waterWaves, 0.0f, 2.0f, "%.2f", "Wave height, 0 = flat water");
+    changed |= Slider("Wind", c.waterWind, 0.5f, 10.0f, "%.2f",
+                      "Wind that drives the waves; stronger wind makes longer, rougher waves");
+    changed |= Slider("Foam", c.waterFoam, 0.0f, 2.0f, "%.2f", "Foam on wave crests and along shores, 0 = none");
+    changed |= Slider("Reflections", c.waterReflections, 0.0f, 2.0f, "%.2f",
+                      "Reflections of the sky and the scene, 0 = none");
+    changed |= Slider("Sun highlight", c.waterSpecular, 0.0f, 4.0f, "%.2f",
+                      "Highlight of the sun or moon on the water, 0 = none");
+    changed |= Slider("Clarity", c.waterClarity, 0.25f, 4.0f, "%.2f",
+                      "How far you see into the water; larger is clearer", ImGuiSliderFlags_Logarithmic);
+    changed |= Slider("Zone colours", c.waterZoneColors, 0.0f, 1.0f, "%.2f",
+                      "How much the zone's own water colours from the client's lights tint the water, 0 = the modern "
+                      "colours only");
+    changed |= Choice("Water view", c.waterDebugView, 0, kWaterDebugViewNames,
+                      "Show one input of the water shading instead of the scene");
     return changed;
 }
 
@@ -198,7 +241,8 @@ bool DrawDebug(Config& c)
 }
 }
 
-void SettingsPanel::Draw(ConfigStore& store, const FogFrameStatus& status, bool& open)
+void SettingsPanel::Draw(ConfigStore& store, const FogFrameStatus& fogStatus, const WaterFrameStatus& waterStatus,
+                         bool& open)
 {
     const float line = ImGui::GetFontSize();
     const float width = kPanelWidthInLines * line;
@@ -211,16 +255,18 @@ void SettingsPanel::Draw(ConfigStore& store, const FogFrameStatus& status, bool&
         ImGui::End();
         return;
     }
-    DrawStatus(status);
+    DrawStatus(fogStatus);
     Config edited = store.Get();
     bool changed = DrawQuality(edited);
     changed |= DrawDensity(edited);
     changed |= DrawLight(edited);
     changed |= DrawWorld(edited);
+    changed |= DrawWater(edited);
     changed |= DrawDebug(edited);
     if (changed)
         store.Apply(edited);
     ImGui::Separator();
+    DrawWaterStatus(waterStatus);
     DrawSaveRow(store);
     ImGui::End();
 }
