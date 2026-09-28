@@ -64,11 +64,9 @@ const FloatSetting kFloatSettings[] = {
 };
 
 const BoolSetting kBoolSettings[] = {
-    {"LightShafts", &Config::lightShafts}, {"GlowCompensation", &Config::glowCompensation},
-    {"WorldShadows", &Config::worldShadows},
-    {"LocalLights", &Config::localLights}, {"InteriorAware", &Config::interiorAware},
-    {"Underwater", &Config::underwater},   {"LiquidDepth", &Config::liquidDepth},
-    {"SunMarker", &Config::sunMarker},
+    {"GlowCompensation", &Config::glowCompensation}, {"LocalLights", &Config::localLights},
+    {"InteriorAware", &Config::interiorAware},       {"Underwater", &Config::underwater},
+    {"LiquidDepth", &Config::liquidDepth},           {"SunMarker", &Config::sunMarker},
 };
 
 struct NamedKey

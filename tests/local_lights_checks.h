@@ -76,13 +76,19 @@ void CheckLocalLightInputs()
     Check(!farSelected && !invalidSelected && forwards.pointLightCount == kMaxLocalPointLights,
           "point-light selection rejects invalid positions and centres outside the capture neighbourhood");
 
-    LocalLightInputs unsupported = forwards;
-    unsupported.cameraInterior = true;
-    unsupported.interiorBlend = 1.0f;
-    const bool captured = engine::CaptureLocalLightInputs(camera, unsupported);
-    Check(!captured && unsupported.pointLightCount == 0 && !unsupported.cameraInterior &&
-              unsupported.interiorBlend == 0.0f,
-          "native local-light acquisition rejects the harness image and clears stale inputs");
+    bool clearedBoth = true;
+    for (bool withPointLights : {true, false})
+    {
+        LocalLightInputs unsupported = forwards;
+        unsupported.cameraInterior = true;
+        unsupported.interiorBlend = 1.0f;
+        const bool captured = engine::CaptureLocalLightInputs(camera, withPointLights, unsupported);
+        clearedBoth = clearedBoth && !captured && unsupported.pointLightCount == 0 &&
+                      !unsupported.cameraInterior && unsupported.interiorBlend == 0.0f;
+    }
+    Check(clearedBoth,
+          "native local-light acquisition rejects the harness image and clears stale inputs whether or not the "
+          "point-light walk is requested (the walk skip itself needs the client image)");
 }
 
 FrameInputs InteriorFogFixture()

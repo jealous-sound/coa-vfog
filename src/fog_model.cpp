@@ -12,7 +12,6 @@ constexpr float kHazeIsotropic = 0.3f;
 constexpr float kHazeFalloff = 1.0f / 220.0f;
 constexpr float kHazeSun = 1.3f;
 constexpr float kHazeAmbient = 0.8f;
-constexpr float kHazeShadowDensity = 0.75f;
 
 constexpr float kGroundStart = 12.0f;
 constexpr float kGroundOpticalDepth = 1.1f;
@@ -21,7 +20,6 @@ constexpr float kGroundIsotropic = 0.5f;
 constexpr float kGroundFalloff = 1.0f / 18.0f;
 constexpr float kGroundSun = 0.8f;
 constexpr float kGroundAmbient = 0.75f;
-constexpr float kGroundShadowDensity = 0.85f;
 
 constexpr float kFarOpticalDepth = 3.0f;
 constexpr float kFarRamp = 60.0f;
@@ -82,6 +80,13 @@ float ReferenceZ(const FrameInputs& in)
     return std::min(in.camPos[2], in.camTarget[2]) - 1.0f;
 }
 
+void Unshadowed(FogLayer& l)
+{
+    std::memcpy(l.shadowEmissive, l.emissive, sizeof(l.emissive));
+    l.shadowDensity = 1.0f;
+    l.shadowed = 0.0f;
+}
+
 void Unbounded(FogLayer& l)
 {
     l.skyFalloff = 0.0f;
@@ -93,7 +98,6 @@ void DerivedLayers(const FrameInputs& in, const Config& cfg, const FogParams& p,
                    const float* fogColor, FogLayer* out)
 {
     float foggyZone = std::clamp(700.0f / fogDistance, 0.6f, 2.5f);
-    float shadowed = cfg.lightShafts ? 1.0f : 0.0f;
 
     FogLayer& haze = out[0];
     haze.start = 0.0f;
@@ -105,9 +109,7 @@ void DerivedLayers(const FrameInputs& in, const Config& cfg, const FogParams& p,
     haze.exponent = 1.0f;
     haze.upperHeight = p.referenceZ;
     haze.upperFalloff = kHazeFalloff;
-    std::memcpy(haze.shadowEmissive, haze.emissive, sizeof(haze.emissive));
-    haze.shadowDensity = kHazeShadowDensity;
-    haze.shadowed = shadowed;
+    Unshadowed(haze);
     Unbounded(haze);
     haze.endDistance = kDerivedLayerLimit;
 
@@ -121,9 +123,7 @@ void DerivedLayers(const FrameInputs& in, const Config& cfg, const FogParams& p,
     ground.exponent = 1.0f;
     ground.upperHeight = p.referenceZ;
     ground.upperFalloff = kGroundFalloff;
-    std::memcpy(ground.shadowEmissive, ground.emissive, sizeof(ground.emissive));
-    ground.shadowDensity = kGroundShadowDensity;
-    ground.shadowed = shadowed;
+    Unshadowed(ground);
     Unbounded(ground);
     ground.endDistance = kDerivedLayerLimit;
 
@@ -156,7 +156,7 @@ void AuthoredLayers(const AuthoredFog& fog, const Config& cfg, const FogParams& 
         l.lowerFalloff = a.lowerDensity > 0.0f ? a.lowerDensity * kClassicUnits : 0.0f;
         Scale(a.shadowEmissive, cfg.ambient, l.shadowEmissive);
         l.shadowDensity = a.shadowMultiplier;
-        l.shadowed = (a.flags & kFlagShadowed) && cfg.lightShafts ? 1.0f : 0.0f;
+        l.shadowed = a.flags & kFlagShadowed ? 1.0f : 0.0f;
         Encode(l.emissive, p.linear);
         Encode(l.diffuse, p.linear);
         Encode(l.shadowEmissive, p.linear);
@@ -184,12 +184,11 @@ void DistanceLayer(const FrameInputs& in, const Config& cfg, const FogParams& p,
     out.isotropic = kFarIsotropic;
     out.strength = kFarRamp;
     out.exponent = kFarExponent;
-    out.shadowDensity = 1.0f;
     out.skyFalloff = kFarSkyFalloff;
     out.endDistance = p.farLimit;
     Scale(fogColor, kFarAmbient * cfg.ambient, out.emissive);
     Scale(p.lightColor, kFarSun * sunScatter, out.diffuse);
-    std::memcpy(out.shadowEmissive, out.emissive, sizeof(out.emissive));
+    Unshadowed(out);
 }
 
 float RampedPathLength(const FogLayer& l, float range)
@@ -205,9 +204,14 @@ float HeightDensityFactor(const FogLayer& l, float z)
            std::min(std::exp((z - l.lowerHeight) * l.lowerFalloff), 1.0f);
 }
 
-float ShadowDensityFactor(const FogLayer& l, float shadowedLayerLightScale)
+float HorizonShadow(const FogLayer& l, float lightAboveHorizon)
 {
-    return l.shadowed > 0.0f ? l.shadowDensity + (1.0f - l.shadowDensity) * shadowedLayerLightScale : 1.0f;
+    return l.shadowed * (1.0f - lightAboveHorizon);
+}
+
+float ShadowDensityFactor(const FogLayer& l, float lightAboveHorizon)
+{
+    return 1.0f + (l.shadowDensity - 1.0f) * HorizonShadow(l, lightAboveHorizon);
 }
 
 float SceneLayersLevelRayOpticalDepth(const FogParams& p, float cameraZ)
@@ -217,7 +221,7 @@ float SceneLayersLevelRayOpticalDepth(const FogParams& p, float cameraZ)
     {
         const FogLayer& l = p.layers[i];
         const float heightFactor = HeightDensityFactor(l, cameraZ);
-        const float shadowFactor = ShadowDensityFactor(l, p.shadowedLayerLightScale);
+        const float shadowFactor = ShadowDensityFactor(l, p.lightAboveHorizon);
         opticalDepth += l.density * heightFactor * shadowFactor * RampedPathLength(l, p.maxDistance);
     }
     return opticalDepth;
@@ -308,7 +312,6 @@ FogParams BuildFogParams(const FrameInputs& in, const Config& cfg, const Authore
     float elevation = SmoothStep(-0.03f, 0.10f, in.toLight[2]);
     p.lightVisibility = elevation * (in.lightIsMoon ? kMoonLight : 1.0f);
     p.lightAboveHorizon = SmoothStep(-kLightSettingHalfWidth, kLightSettingHalfWidth, in.toLight[2]);
-    p.shadowedLayerLightScale = p.authored ? p.lightAboveHorizon : 1.0f;
     p.farClip = in.farClip;
     p.maxDistance = std::max(cfg.maxDistance, in.farClip);
     p.horizonStart = in.farClip * 0.85f;

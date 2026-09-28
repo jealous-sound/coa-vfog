@@ -2,6 +2,7 @@
 #include "engine.h"
 #include "fog_data.h"
 #include "fog_model.h"
+#include "gpu_timing.h"
 #include "noise_volume.h"
 
 #include <windows.h>
@@ -12,6 +13,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -733,8 +735,7 @@ float SunlitLevelRayOpacity(const FogParams& fog, float camZ, float distance)
                                              l.exponent);
             float heightF = std::fmin(std::exp((l.upperHeight - camZ) * l.upperFalloff), 1.0f) *
                             std::fmin(std::exp((camZ - l.lowerHeight) * l.lowerFalloff), 1.0f);
-            float shadow =
-                l.shadowed > 0.0f ? l.shadowDensity + (1.0f - l.shadowDensity) * fog.shadowedLayerLightScale : 1.0f;
+            float shadow = 1.0f + (l.shadowDensity - 1.0f) * l.shadowed * (1.0f - fog.lightAboveHorizon);
             tau += l.density * curve * heightF * shadow * dt;
         }
     }
@@ -1183,10 +1184,18 @@ void CheckSettingsSaveKeepsTheIni(const std::wstring& outDir, const std::wstring
 {
     const std::wstring savedIni = FullPath(outDir + L"\\saved.ini");
     Check(CopyFileW(shippedIni.c_str(), savedIni.c_str(), FALSE) != FALSE, "shipped CoAVolFog.ini copied");
+    for (const wchar_t* removedKey : {L"LightShafts", L"WorldShadows"})
+        WritePrivateProfileStringW(L"CoAVolFog", removedKey, L"0", savedIni.c_str());
     ConfigStore store;
     store.Load(NarrowPath(savedIni));
     const Config shipped = store.Get();
     Check(!store.HasUnsavedChanges(), "a freshly loaded INI has no unsaved changes");
+    ConfigStore shippedStore;
+    shippedStore.Load(NarrowPath(shippedIni));
+    const std::string shippedText = ReadText(shippedIni);
+    Check(SameLiveSettings(shipped, shippedStore.Get()) && shippedText.find("LightShafts") == std::string::npos &&
+              shippedText.find("WorldShadows") == std::string::npos,
+          "the removed LightShafts and WorldShadows keys are gone from the shipped INI and ignored in an old one");
 
     Config edited = shipped;
     edited.enable = false;
@@ -1194,7 +1203,7 @@ void CheckSettingsSaveKeepsTheIni(const std::wstring& outDir, const std::wstring
     edited.quality = 3;
     edited.density = 2.5f;
     edited.temporal = 0.5f;
-    edited.lightShafts = !shipped.lightShafts;
+    edited.localLights = !shipped.localLights;
     edited.farClipMax = 900.0f;
     edited.debugView = 2;
     edited.godRays = 99.0f;
@@ -1209,13 +1218,14 @@ void CheckSettingsSaveKeepsTheIni(const std::wstring& outDir, const std::wstring
     reloaded.Load(NarrowPath(savedIni));
     const Config& r = reloaded.Get();
     Check(SameLiveSettings(r, applied) && r.quality == 3 && r.density == 2.5f && r.farClipMax == 900.0f &&
-              r.lightShafts == edited.lightShafts && r.enable == shipped.enable && r.overlay == shipped.overlay,
+              r.localLights == edited.localLights && r.enable == shipped.enable && r.overlay == shipped.overlay,
           "saved settings reload unchanged and the restart-only keys stay as they were");
     const std::string text = ReadText(savedIni);
     Check(text.rfind("; CoAVolFog settings.", 0) == 0 && text.find("\nDensity=2.5") != std::string::npos &&
               text.find("\nHaze=1.0") != std::string::npos && text.find("\nEnable=1") != std::string::npos &&
-              text.find("; Global density multiplier") != std::string::npos,
-          "saving rewrites only the changed lines and keeps the comments");
+              text.find("; Global density multiplier") != std::string::npos &&
+              text.find("\nLightShafts=0") != std::string::npos && text.find("\nWorldShadows=0") != std::string::npos,
+          "saving rewrites only the changed lines and keeps the comments and unknown keys");
 
     Config scratch = store.Get();
     scratch.density = 0.1f;
@@ -1480,20 +1490,21 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "fog_integration_checks.h"
 #include "local_lights_checks.h"
 #include "noise_variation_checks.h"
-#include "world_shadow_hardware_checks.h"
+#include "march_layer_checks.h"
 #include "local_light_gpu_checks.h"
 #include "silhouette_quality_checks.h"
+#include "grazing_upsample_checks.h"
 #include "god_ray_quality_checks.h"
 #include "temporal_quality_checks.h"
 #include "runtime_quality_checks.h"
 #include "lighting_history_checks.h"
+#include "runtime_cost_checks.h"
 
 void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3 at,
                                    const float* proj, const D3DVIEWPORT9& world)
 {
     Config stable = cfg;
     stable.temporal = 0.0f;
-    stable.lightShafts = false;
     stable.godRays = 0.0f;
     stable.debugView = 2;
     stable.dataMode = 0;
@@ -1606,12 +1617,14 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckLocalLightInputs();
     CheckInteriorFogInputs();
     CheckNoiseVariation(h.dev);
-    CheckHardwareWorldShadowIntegration(h.dev);
+    march_layers::CheckUnrolledMarchMatchesLoopedMarch(h.dev);
     local_light_gpu::CheckLocalLightIntegration(h.dev);
     silhouette_quality::CheckSilhouettes(h.dev);
+    grazing_upsample::CheckGrazingGroundUpsample(h.dev);
     god_ray_quality::CheckGodRays(h.dev);
     CheckTemporalQuality(h.dev);
     CheckLightDisappearanceHistory(h);
+    CheckSunOccluderLeavesFogLit(h);
     const float aspect = 1280.0f / 688.0f;
     const D3DVIEWPORT9 world = {0, 0, 1280, 688, 0.0f, 1.0f};
     float proj[16];
@@ -1733,7 +1746,6 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
 
     {
         Config c = cfg;
-        c.lightShafts = false;
         vf_test_set_config(&c);
         Config saved = cfg;
         cfg = c;
@@ -1811,7 +1823,6 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
 
     {
         Config c = cfg;
-        c.lightShafts = false;
         c.godRays = 0.0f;
         c.temporal = 0.0f;
         c.dataMode = 1;
@@ -1964,6 +1975,12 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     DrawOverlayFrames(kOverlaySettleFrames);
     Check(OverlayProbeChange(beforeOverlay, Capture(h.dev)) > 0.05, "the overlay draws again after Reset");
     PressHotkey(h.window, kDefaultOverlayHotkey);
+
+    runtime_cost::CheckDisabledTemporalSkipsHistoryPasses(h, eye, at, proj, resized);
+    CheckRendererSwitchesLitShaders(h);
+    runtime_cost::CheckDepthProbeAndGpuTimeLog(h, eye, at);
+    runtime_cost::CheckGpuTimerRetriesTransientCreationFailures(h.dev);
+    runtime_cost::CheckGpuTimerReportsUnsupportedBeforeFirstSummary(h.dev);
 
     vf_test_set_config(&restored);
     h.ReleaseEngineObjects();

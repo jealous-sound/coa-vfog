@@ -26,5 +26,5 @@ namespace engine
 {
 float PointLightCutoff(const float color[3], const float attenuation[3]);
 bool SelectLocalPointLight(LocalLightInputs& out, const LocalPointLight& light, const float cameraPosition[3]);
-bool CaptureLocalLightInputs(const float cameraPosition[3], LocalLightInputs& out);
+bool CaptureLocalLightInputs(const float cameraPosition[3], bool withPointLights, LocalLightInputs& out);
 }

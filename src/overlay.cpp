@@ -50,6 +50,7 @@ struct OverlayState
     unsigned clientHeldButtons = 0;
     unsigned panelHeldButtons = 0;
     bool releaseFocusOnNextFrame = false;
+    IDirect3DStateBlock9* deviceStateWhileVisible = nullptr;
 };
 
 struct OverlayFrame
@@ -439,10 +440,21 @@ void BuildPanelFrame(const D3DSURFACE_DESC& backBuffer)
         SetVisible(false);
 }
 
+bool EnsureDeviceStateBlock(IDirect3DDevice9* device)
+{
+    if (g_overlay.deviceStateWhileVisible)
+        return true;
+    if (SUCCEEDED(device->CreateStateBlock(D3DSBT_ALL, &g_overlay.deviceStateWhileVisible)))
+        return true;
+    g_overlay.deviceStateWhileVisible = nullptr;
+    return false;
+}
+
 bool CaptureDeviceState(IDirect3DDevice9* device, OverlayFrame& frame)
 {
-    if (FAILED(device->CreateStateBlock(D3DSBT_ALL, &frame.state)) || FAILED(frame.state->Capture()))
+    if (!EnsureDeviceStateBlock(device) || FAILED(g_overlay.deviceStateWhileVisible->Capture()))
         return false;
+    frame.state = g_overlay.deviceStateWhileVisible;
     for (DWORD i = 0; i < kMaxRenderTargets; ++i)
         device->GetRenderTarget(i, &frame.targets[i]);
     device->GetDepthStencilSurface(&frame.depth);
@@ -488,7 +500,7 @@ void EndOverlayFrame(IDirect3DDevice9* device, OverlayFrame& frame)
     ReleaseReference(frame.depth);
     ReleaseReference(frame.stream);
     ReleaseReference(frame.indices);
-    ReleaseReference(frame.state);
+    frame.state = nullptr;
     ReleaseReference(frame.backBuffer);
 }
 
@@ -626,6 +638,7 @@ void DetachOverlay(IDirect3DDevice9* device)
     if (!device || device != g_overlay.device)
         return;
     SetVisible(false);
+    ReleaseReference(g_overlay.deviceStateWhileVisible);
     ShutDownImGui();
     const bool failed = g_overlay.failed;
     g_overlay = OverlayState();
@@ -636,14 +649,20 @@ void DetachOverlay(IDirect3DDevice9* device)
 
 void ReleaseOverlayDeviceObjects(IDirect3DDevice9* device)
 {
-    if (device && device == g_overlay.device)
-        ImGui_ImplDX9_InvalidateDeviceObjects();
+    if (!device || device != g_overlay.device)
+        return;
+    ReleaseReference(g_overlay.deviceStateWhileVisible);
+    ImGui_ImplDX9_InvalidateDeviceObjects();
 }
 
 void DrawOverlay(IDirect3DDevice9* device)
 {
-    if (g_overlay.visible && !g_overlay.failed && device && device == g_overlay.device)
+    if (!device || device != g_overlay.device)
+        return;
+    if (g_overlay.visible && !g_overlay.failed)
         DrawOverlayGuarded(device);
+    if (!g_overlay.visible || g_overlay.failed)
+        ReleaseReference(g_overlay.deviceStateWhileVisible);
 }
 
 bool OverlayVisible()

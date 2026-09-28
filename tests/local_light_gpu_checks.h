@@ -240,7 +240,12 @@ void CheckLocalLightIntegration(IDirect3DDevice9* device)
         {"two overlapping lights add radiance", {100, 200, 0.01},
             {{150, 0, 1000, {0.15, 0.35, 0.05}}, {150, 0, 1000, {0.15, 0.35, 0.05}}}, 2, false},
         {"eight overlapping lights add radiance", {100, 200, 0.01}, {}, 8, false},
+        {"a light filling the march and a lamp inside it add radiance", {100, 200, 0.01},
+            {{150, 0, 1000, {0.15, 0.35, 0.05}}, {150, 20, 40, {0.15, 0.35, 0.05}}}, 2, false},
+        {"lamps separated by unlit fog add radiance", {100, 400, 0.01},
+            {{140, 10, 25, {0.3, 0.7, 0.1}}, {300, 10, 40, {0.3, 0.7, 0.1}}}, 2, false},
     };
+    constexpr int kScenarioCount = sizeof(scenarios) / sizeof(scenarios[0]);
     for (Light& light : scenarios[12].lights)
         light = {150, 0, 1000, {0.0375, 0.0875, 0.0125}};
     FogIntegrationResources extended[2];
@@ -257,8 +262,8 @@ void CheckLocalLightIntegration(IDirect3DDevice9* device)
             std::printf("SKIP: %s local-light overflow regression requires its render target and readback\n",
                         extendedNames[format]);
     }
-    const BYTE* shaders[] = {g_ps_march_low, g_ps_march_mid, g_ps_march_high};
-    Result observed[13][3] = {};
+    const BYTE* shaders[] = {g_ps_lit_march_low, g_ps_lit_march_mid, g_ps_lit_march_high};
+    Result observed[kScenarioCount][3] = {};
     for (int quality = 0; quality < 3; ++quality)
     {
         IDirect3DPixelShader9* shader = nullptr;
@@ -268,7 +273,7 @@ void CheckLocalLightIntegration(IDirect3DDevice9* device)
         if (!shaderReady)
             continue;
         device->SetPixelShader(shader);
-        for (int scene = 0; scene < 13; ++scene)
+        for (int scene = 0; scene < kScenarioCount; ++scene)
         {
             const Scenario& scenario = scenarios[scene];
             const Result expected = Reference(scenario.medium, scenario.lights, scenario.count);
@@ -364,7 +369,7 @@ void CheckLocalLightIntegration(IDirect3DDevice9* device)
         }
         shader->Release();
     }
-    for (int scene = 0; scene < 13; ++scene)
+    for (int scene = 0; scene < kScenarioCount; ++scene)
     {
         bool stable = true;
         for (int quality = 1; quality < 3; ++quality)

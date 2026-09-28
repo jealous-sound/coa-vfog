@@ -1,20 +1,21 @@
 #include "vf_common.hlsli"
-#include "vf_world_shadows.hlsli"
 #include "vf_density_variation.hlsli"
 
 #ifndef STEPS
 #define STEPS 24
 #endif
 
-static const int kShadowSteps = 12;
+#ifndef LOCAL_LIGHTS
+#define LOCAL_LIGHTS 1
+#endif
+
 static const int kFogLayers = 4;
 static const int kRegistersPerLayer = 6;
-static const float kShadowMinViewZ = 0.3;
-static const float kShadowDepthBias = 0.3;
 static const float kGoldenRatioFraction = 0.618034;
+static const bool kMarchesLocalLights = LOCAL_LIGHTS;
+static const bool kUnrollsLayers = !kMarchesLocalLights;
 
 float4 cLight : register(c9);
-float4 cShadowMarch : register(c10);
 float4 cMarch : register(c11);
 float4 cLayers[kFogLayers * kRegistersPerLayer] : register(c12);
 
@@ -88,26 +89,6 @@ float LightAboveHorizon()
     return cLight.w;
 }
 
-float ShadowMinStep()
-{
-    return cShadowMarch.x;
-}
-
-float ShadowStepPerYard()
-{
-    return cShadowMarch.y;
-}
-
-bool ShadowsEnabled()
-{
-    return cShadowMarch.z > 0;
-}
-
-float ShadowThicknessInSteps()
-{
-    return cShadowMarch.w;
-}
-
 bool JitterEnabled()
 {
     return cMarch.x > 0;
@@ -134,45 +115,6 @@ float PhaseHG(float g, float cosAngle)
     return r * r * r;
 }
 
-bool SceneOccludes(float sceneDepth, float2 segmentViewZ, float occluderThickness)
-{
-    float sceneViewZ = LinearDepth(sceneDepth);
-    return sceneDepth < 1 && !BeyondFarClip(sceneDepth) &&
-           sceneViewZ < max(segmentViewZ.x, segmentViewZ.y) - kShadowDepthBias &&
-           sceneViewZ > min(segmentViewZ.x, segmentViewZ.y) - occluderThickness;
-}
-
-float ScreenSpaceSunVisibility(float3 viewPosition, float sampleDistance, float jitter, float surfaceMask)
-{
-    [branch] if (viewPosition.z < kShadowMinViewZ)
-        return 1;
-    float traceLength = min(FarClip(), (viewPosition.z - kShadowMinViewZ) /
-                                      max(-DirectionToLightView().z, 1e-6));
-    float3 endPosition = viewPosition + DirectionToLightView() * traceLength;
-    float2 startPixel = ViewToPixel(viewPosition);
-    float2 pixelDelta = ViewToPixel(endPosition) - startPixel;
-    float2 toEdge = min((ViewportOrigin() + ViewportSize() - startPixel) / max(pixelDelta, 1e-6),
-                       (ViewportOrigin() - startPixel) / min(pixelDelta, -1e-6));
-    float endFraction = saturate(min(toEdge.x, toEdge.y));
-    float2 inverseZ = float2(1 / viewPosition.z, 1 / endPosition.z);
-    inverseZ.y = lerp(inverseZ.x, inverseZ.y, endFraction);
-    float3 segmentStep = float3(pixelDelta * endFraction, inverseZ.y - inverseZ.x) / kShadowSteps;
-    float3 sample = float3(startPixel, inverseZ.x);
-    float occluderThickness = max(ShadowMinStep(), sampleDistance * ShadowStepPerYard()) * ShadowThicknessInSteps();
-    occluderThickness = max(occluderThickness,
-                            surfaceMask * step(1e-6, DirectionToLightView().z) * (MaxFogDistance() + FarClip()));
-    float visibility = 1;
-    [loop] for (int k = 0; k < kShadowSteps; k++)
-    {
-        float2 segmentViewZ = 1 / float2(sample.z, sample.z + segmentStep.z);
-        float2 pixel = sample.xy + segmentStep.xy * jitter;
-        visibility = min(visibility,
-                         SceneOccludes(SampleDepth(sDepth, pixel), segmentViewZ, occluderThickness) ? 0 : 1);
-        sample += segmentStep;
-    }
-    return visibility;
-}
-
 float DistanceCurve(FogLayer layer, float sampleDistance)
 {
     return 1 + layer.strength * pow(saturate(max(sampleDistance - layer.start, 0) / DistanceCurveRange()) + 1e-6,
@@ -185,35 +127,128 @@ float HeightProfile(FogLayer layer, float height)
            saturate(exp((height - layer.lowerHeight) * layer.lowerFalloff));
 }
 
+float HorizonShadow(FogLayer layer)
+{
+    return layer.shadowed * (1 - LightAboveHorizon());
+}
+
+float ShadowDensityScale(FogLayer layer)
+{
+    return lerp(1, layer.shadowDensity, HorizonShadow(layer));
+}
+
+float SkyDensityScale(FogLayer layer, float skyMask, float upward)
+{
+    return skyMask > 0 ? exp(-upward * layer.skyFalloff) : 1;
+}
+
+float LayerPhase(FogLayer layer, float cosAngle)
+{
+    return lerp(PhaseHG(layer.g, cosAngle), 1, layer.isotropic);
+}
+
+struct MarchRay
+{
+    float3 viewDirection;
+    float3 directionWorld;
+    float cameraHeight;
+    float heightPerYard;
+};
+
+float DensityVariationAlongRay(MarchRay ray, float distanceAlongRay)
+{
+    return DensityVariation(CameraPositionWorld() + ray.directionWorld * distanceAlongRay);
+}
+
+float DensityProfile(FogLayer layer, MarchRay ray, float distanceAlongRay, float variation)
+{
+    float density = DistanceCurve(layer, distanceAlongRay) *
+                    HeightProfile(layer, ray.cameraHeight + ray.heightPerYard * distanceAlongRay);
+    return layer.densityVariation > 0 ? density * variation : density;
+}
+
 #include "vf_local_lights.hlsli"
 
+struct StepVariation
+{
+    float distance;
+    float variation;
+};
+
+StepVariation StepVariationAt(MarchRay ray, float stepStart, float stepEnd, float jitter)
+{
+    StepVariation step;
+    step.distance = stepStart + (stepEnd - stepStart) * jitter;
+    step.variation = DensityVariationAlongRay(ray, step.distance);
+    return step;
+}
+
+float LayerVariation(StepVariation step, MarchRay ray, float sampleDistance)
+{
+    [branch] if (kUnrollsLayers && sampleDistance == step.distance)
+        return step.variation;
+    return DensityVariationAlongRay(ray, sampleDistance);
+}
+
 void AccumulateLayer(FogLayer layer, float cosToLight, float skyDensityScale, float stepStart, float stepEnd,
-                     float jitter, float cameraHeight, float heightPerYard, float sunVisibility, float3 viewDirection,
-                     inout float3 radiance, inout float opticalDepth)
+                     float jitter, MarchRay ray, StepVariation stepVariation, inout float3 radiance,
+                     inout float opticalDepth)
 {
     float layerStart = max(stepStart, layer.start);
     float layerLength = max(min(stepEnd, layer.limit) - layerStart, 0);
     [branch] if (layerLength <= 0 || layer.density <= 0)
         return;
-    float shadowDensityScale = lerp(1, lerp(layer.shadowDensity, 1, sunVisibility), layer.shadowed);
-    [branch] if (cLocalLightControl.x > 0 && (cLocalLightControl.y <= 0 || layerStart < cLocalLightControl.y))
-        radiance += LocalLightScattering(layer, viewDirection, stepStart, stepEnd,
-                                         cameraHeight, heightPerYard, skyDensityScale) * shadowDensityScale;
+    float shadow = HorizonShadow(layer);
+    float shadowDensityScale = ShadowDensityScale(layer);
     float sampleDistance = layerStart + layerLength * jitter;
-    float sampleHeight = cameraHeight + heightPerYard * sampleDistance;
+    float sampleHeight = ray.cameraHeight + ray.heightPerYard * sampleDistance;
     float distanceCurve = DistanceCurve(layer, sampleDistance);
     float heightProfile = HeightProfile(layer, sampleHeight);
     float variation = 1;
     [branch] if (layer.densityVariation > 0 && cDensityVariation.x > 0)
-        variation = DensityVariation(CameraPositionWorld() +
-                                      ViewToWorldDirection(viewDirection) * sampleDistance);
-    float directLight = lerp(1, sunVisibility, layer.shadowed);
+        variation = LayerVariation(stepVariation, ray, sampleDistance);
+    float directLight = 1 - shadow;
     float layerOpticalDepth = layer.density * skyDensityScale * layerLength * distanceCurve * heightProfile *
                               shadowDensityScale * variation;
-    float3 emissive = lerp(layer.emissive, lerp(layer.shadowEmissive, layer.emissive, sunVisibility), layer.shadowed);
-    float phase = lerp(PhaseHG(layer.g, cosToLight), 1, layer.isotropic);
+    float3 emissive = lerp(layer.emissive, layer.shadowEmissive, shadow);
+    float phase = LayerPhase(layer, cosToLight);
     radiance += (layer.diffuse * (directLight * phase) + emissive) * layerOpticalDepth;
     opticalDepth += layerOpticalDepth;
+}
+
+void AccumulateLayers(float cosToLight, float skyMask, float upward, float stepStart, float stepEnd, float jitter,
+                      MarchRay ray, inout float3 radiance, inout float opticalDepth)
+{
+    StepVariation stepVariation = StepVariationAt(ray, stepStart, stepEnd, jitter);
+    [branch] if (kUnrollsLayers)
+    {
+        [unroll] for (int j = 0; j < kFogLayers; j++)
+        {
+            FogLayer layer = LoadConstantFogLayer(j);
+            AccumulateLayer(layer, cosToLight, SkyDensityScale(layer, skyMask, upward), stepStart, stepEnd, jitter,
+                            ray, stepVariation, radiance, opticalDepth);
+        }
+    }
+    else
+    {
+        [loop] for (int j = 0; j < kFogLayers; j++)
+        {
+            FogLayer layer = LoadFogLayer(j);
+            AccumulateLayer(layer, cosToLight, SkyDensityScale(layer, skyMask, upward), stepStart, stepEnd, jitter,
+                            ray, stepVariation, radiance, opticalDepth);
+        }
+    }
+}
+
+float LayerMarchEnd(FogLayer layer)
+{
+    return layer.density > 0 ? layer.limit : 0;
+}
+
+float LayersMarchEnd()
+{
+    return max(max(LayerMarchEnd(LoadConstantFogLayer(0)), LayerMarchEnd(LoadConstantFogLayer(1))),
+               max(LayerMarchEnd(LoadConstantFogLayer(2)), LayerMarchEnd(LoadConstantFogLayer(3))));
 }
 
 float StepJitter(float2 lowResTexel)
@@ -238,7 +273,11 @@ float4 IntegrateFogAtPixel(float2 pixel, float jitter)
     float cosToLight = dot(DirectionToLightView(), viewDirection);
     float upward = max(directionWorld.z, 0);
     float riseLevelledAtHorizon = lerp(directionWorld.z, upward, horizonBlend);
+    MarchRay ray = {viewDirection, directionWorld, cameraWorld.z, riseLevelledAtHorizon};
+    ChordCoverage lightCoverage = {0, false, 0, LocalLightCount()};
+    LayerLightWeights lightWeights = LayerLightWeightsAlongRay(skyMask, upward);
 
+    float layersEnd = LayersMarchEnd();
     float3 inScatteredRadiance = 0;
     float transmittance = 1;
     const float stepFraction = 1.0 / STEPS;
@@ -247,26 +286,16 @@ float4 IntegrateFogAtPixel(float2 pixel, float jitter)
         float startFraction = s * stepFraction;
         float endFraction = startFraction + stepFraction;
         float stepStart = marchLength * startFraction * startFraction;
+        [branch] if (kUnrollsLayers && stepStart >= layersEnd)
+            break;
         float stepEnd = marchLength * endFraction * endFraction;
-        float sampleDistance = lerp(stepStart, stepEnd, jitter);
-        float sunVisibility = LightAboveHorizon();
-        [branch] if (ShadowsEnabled())
-        {
-            float3 sampleViewPosition = viewDirection * sampleDistance;
-            float visibility = ScreenSpaceSunVisibility(sampleViewPosition, sampleDistance, jitter, 1 - skyMask);
-            [branch] if (cWorldShadowControl.x > 0)
-                visibility = WorldSunVisibility(sampleViewPosition, visibility);
-            sunVisibility *= visibility;
-        }
         float3 stepRadiance = 0;
         float stepOpticalDepth = 0;
-        [loop] for (int j = 0; j < kFogLayers; j++)
-        {
-            FogLayer layer = LoadFogLayer(j);
-            float skyDensityScale = skyMask > 0 ? exp(-upward * layer.skyFalloff) : 1;
-            AccumulateLayer(layer, cosToLight, skyDensityScale, stepStart, stepEnd, jitter, cameraWorld.z,
-                            riseLevelledAtHorizon, sunVisibility, viewDirection, stepRadiance, stepOpticalDepth);
-        }
+        AccumulateLayers(cosToLight, skyMask, upward, stepStart, stepEnd, jitter, ray, stepRadiance, stepOpticalDepth);
+        [branch] if (kMarchesLocalLights && lightCoverage.nextEndpoint <= stepStart)
+            lightCoverage = ChordCoverageFrom(lightCoverage, viewDirection, stepStart, marchLength);
+        [branch] if (kMarchesLocalLights && StepMeetsLocalLights(lightCoverage, stepEnd))
+            stepRadiance += LocalLightScattering(lightCoverage, lightWeights, ray, stepStart, stepEnd);
         [branch] if (stepOpticalDepth > 0)
         {
             float stepOpacity = stepOpticalDepth < 1e-3

@@ -150,11 +150,11 @@ bool RenderCurrentWorldFog(FogDevice* device)
 
     ReloadConfigAfterInterval();
 
+    const Config& cfg = GlobalConfig().Get();
     FrameInputs in = {};
-    bool valid = engine::BuildFrameInputs(in);
+    bool valid = engine::BuildFrameInputs(in, cfg.localLights);
     if (g_stockFogPushed)
         UseClientFogRangeInsteadOfPushed(in);
-    const Config& cfg = GlobalConfig().Get();
     const char* skip = "invalid frame inputs";
     bool rendered = false;
     if (valid && (!in.inLiquid || cfg.underwater))

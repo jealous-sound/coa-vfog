@@ -136,17 +136,13 @@ bool DrawLight(Config& c)
     const Section section("Light", ImGuiTreeNodeFlags_DefaultOpen);
     if (!section)
         return false;
-    bool changed = Multiplier("Sun scatter", c.sunScatter, "In-scattered sun or moon light: the halo and the shafts");
+    bool changed = Multiplier("Sun scatter", c.sunScatter, "In-scattered sun or moon light: the halo around it");
     changed |= Multiplier("Ambient", c.ambient, "Ambient fog brightness");
     changed |= Multiplier("Exposure", c.exposure, "Brightness of the layers used where no Classic data exists");
     changed |= Multiplier("Classic exposure", c.classicExposure, "Brightness of the Classic layers, 1 = default");
     changed |= Toggle("Linear light", c.colorSpace,
                       "Scatter and blend in linear light like the modern client, with a soft highlight roll-off. "
                       "Off: gamma");
-    changed |= Toggle("Light shafts", c.lightShafts,
-                      "Shadowed in-scattering: light shafts through trees, buildings and terrain");
-    changed |= Toggle("World shadows", c.worldShadows,
-                      "Use the client's world shadow maps when available, including off-screen shadow casters");
     changed |= Toggle("Local lights", c.localLights, "Scatter nearby point lights from the world into the fog");
     changed |= Slider("Local light intensity", c.localLightIntensity, 0.0f, 8.0f, "%.2f",
                       "Brightness of nearby point lights in the fog");
