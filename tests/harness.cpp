@@ -5,6 +5,8 @@
 #include "gpu_timing.h"
 #include "noise_volume.h"
 #include "water_data.h"
+#include "water_fft.h"
+#include "water_spectrum.h"
 
 #include <windows.h>
 #include <d3d9.h>
