@@ -4,6 +4,7 @@
 #include "fog_model.h"
 #include "gpu_timing.h"
 #include "noise_volume.h"
+#include "water_data.h"
 
 #include <windows.h>
 #include <d3d9.h>
@@ -26,6 +27,13 @@ extern "C" __declspec(dllimport) void __cdecl vf_test_force_depth_write(int);
 extern "C" __declspec(dllimport) void __cdecl vf_test_suppress_depth_write(int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_overlay_visible();
 extern "C" __declspec(dllimport) void __cdecl vf_test_draw_overlay();
+extern "C" __declspec(dllimport) int __cdecl vf_test_assign_water_data(const WaterPreset*, int, const WaterFftTile*, int,
+                                                                       const WaterMaskView*, int);
+extern "C" __declspec(dllimport) int __cdecl vf_test_load_water_data(const char*);
+extern "C" __declspec(dllimport) int __cdecl vf_test_water_begin(const FrameInputs*, const WaterInputs*, const char**);
+extern "C" __declspec(dllimport) void __cdecl vf_test_water_tag(int);
+extern "C" __declspec(dllimport) void __cdecl vf_test_water_untag();
+extern "C" __declspec(dllimport) void __cdecl vf_test_water_end();
 
 namespace
 {
@@ -1499,6 +1507,10 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "runtime_quality_checks.h"
 #include "lighting_history_checks.h"
 #include "runtime_cost_checks.h"
+#include "water_data_checks.h"
+#include "water_settings_checks.h"
+#include "water_fft_checks.h"
+#include "water_checks.h"
 
 void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3 at,
                                    const float* proj, const D3DVIEWPORT9& world)
@@ -1529,7 +1541,8 @@ void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3
     vf_test_set_config(&cfg);
 }
 
-int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstring& iniPath)
+int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstring& iniPath,
+        const std::string& waterDataPath)
 {
     FogData classic;
     Check(classic.Load(dataPath), "Classic fog data loads");
@@ -1547,6 +1560,8 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckOverlayKeyNames();
     CheckSettingsSaveKeepsTheIni(outDir, FullPath(iniPath));
     CheckFogDataBounds(outDir, dataPath);
+    water_data_checks::CheckWaterData(outDir, waterDataPath);
+    water_settings_checks::CheckWaterSettings(outDir, FullPath(iniPath));
 
     WNDCLASSW wc = {};
     wc.lpfnWndProc = ClientWindowProc;
@@ -1625,6 +1640,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckTemporalQuality(h.dev);
     CheckLightDisappearanceHistory(h);
     CheckSunOccluderLeavesFogLit(h);
+    water_fft_checks::CheckWaterFft(h.dev);
     const float aspect = 1280.0f / 688.0f;
     const D3DVIEWPORT9 world = {0, 0, 1280, 688, 0.0f, 1.0f};
     float proj[16];
@@ -1943,6 +1959,8 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckDepthWriteStateBlockRestore(h.dev);
     CheckWorldTextDepthIsolation(h);
     Config restored = cfg;
+    vf_test_set_config(&restored);
+    water_checks::CheckWaterPass(h, outDir, waterDataPath);
     vf_test_set_config(&restored);
 
     CheckOverlayInput(h);
@@ -2505,6 +2523,7 @@ int wmain(int argc, wchar_t** argv)
 {
     std::wstring out = L"harness-out";
     std::string data = "fogdata.bin";
+    std::string waterData = "waterdata.bin";
     std::wstring ini = L"CoAVolFog.ini";
     std::wstring scene;
     for (int i = 1; i + 1 < argc; ++i)
@@ -2519,6 +2538,12 @@ int wmain(int argc, wchar_t** argv)
         }
         if (std::wcscmp(argv[i], L"--ini") == 0)
             ini = argv[i + 1];
+        if (std::wcscmp(argv[i], L"--water-data") == 0)
+        {
+            char path[MAX_PATH] = {};
+            WideCharToMultiByte(CP_ACP, 0, argv[i + 1], -1, path, MAX_PATH, nullptr, nullptr);
+            waterData = path;
+        }
         if (std::wcscmp(argv[i], L"--scene") == 0)
         {
             scene = argv[i + 1];
@@ -2535,5 +2560,5 @@ int wmain(int argc, wchar_t** argv)
         std::printf("unknown scene %ls (known: harbour, performance)\n", scene.c_str());
         return 2;
     }
-    return Run(out, data, ini);
+    return Run(out, data, ini, waterData);
 }

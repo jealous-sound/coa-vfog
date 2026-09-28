@@ -854,3 +854,26 @@ bool AdaptiveLightingHistory(FogDevice* device)
 {
     return device && device->AdaptiveLightingHistory();
 }
+
+bool BeginWaterPass(FogDevice*, const FrameInputs&, const WaterInputs&, const Config&, const char** skipReason)
+{
+    if (skipReason)
+        *skipReason = "water shading not implemented";
+    return false;
+}
+
+void TagWaterDraw(FogDevice*, WaterClass)
+{
+}
+
+void UntagWaterDraw(FogDevice*)
+{
+}
+
+void EndWaterPass(FogDevice*)
+{
+}
+
+void AbortWaterPass(FogDevice*)
+{
+}

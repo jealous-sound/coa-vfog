@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "engine.h"
+#include "water_types.h"
 
 #include <d3d9.h>
 
@@ -21,3 +22,9 @@ void ForceDepthWrite(FogDevice* device, bool force);
 void SuppressDepthWrite(FogDevice* device, bool suppress);
 bool RenderFog(FogDevice* device, const FrameInputs& in, const Config& cfg, const char** skipReason);
 bool AdaptiveLightingHistory(FogDevice* device);
+bool BeginWaterPass(FogDevice* device, const FrameInputs& in, const WaterInputs& water, const Config& cfg,
+                    const char** skipReason);
+void TagWaterDraw(FogDevice* device, WaterClass waterClass);
+void UntagWaterDraw(FogDevice* device);
+void EndWaterPass(FogDevice* device);
+void AbortWaterPass(FogDevice* device);

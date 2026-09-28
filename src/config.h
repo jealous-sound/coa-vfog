@@ -56,6 +56,16 @@ struct Config
     int debugView = 0;
     bool sunMarker = false;
     int logLevel = 1;
+    bool water = true;
+    int waterQuality = 2;
+    float waterWaves = 1.0f;
+    float waterWind = 2.0f;
+    float waterFoam = 1.0f;
+    float waterReflections = 1.0f;
+    float waterSpecular = 1.0f;
+    float waterClarity = 1.0f;
+    float waterZoneColors = 0.5f;
+    int waterDebugView = 0;
 };
 
 bool SameLiveSettings(const Config& a, const Config& b);

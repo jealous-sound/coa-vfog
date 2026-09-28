@@ -504,3 +504,13 @@ void InstallFarClipHooks()
     VF_LOG_INFO("far clip hooks installed at 0x%08X and 0x%08X (FarClipMax %.0f)", static_cast<unsigned>(sites[0]),
                 static_cast<unsigned>(sites[1]), GlobalConfig().Get().farClipMax);
 }
+
+void InstallWaterHooks()
+{
+    VF_LOG_INFO("water hooks not installed: not implemented");
+}
+
+WaterFrameStatus LastWaterFrameStatus()
+{
+    return {false, "not implemented"};
+}

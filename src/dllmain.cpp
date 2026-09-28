@@ -5,6 +5,7 @@
 #include "hooks.h"
 #include "log.h"
 #include "overlay.h"
+#include "water_data.h"
 
 #include <windows.h>
 
@@ -29,6 +30,7 @@ void Attach(HMODULE module)
     const Config& cfg = GlobalConfig().Get();
     VF_LOG_INFO("CoAVolFog loaded from %s", dir.c_str());
     GlobalFogData().Load(dir + "fogdata.bin");
+    GlobalWaterData().Load(dir + "waterdata.bin");
 
     if (!engine::IsSupportedClient())
     {
@@ -45,7 +47,10 @@ void Attach(HMODULE module)
         VF_LOG_INFO("EngineHooks=0; the client runs unmodified");
         return;
     }
-    AllowFogOnNewDevices(InstallEngineHooks());
+    const bool engineHooks = InstallEngineHooks();
+    AllowFogOnNewDevices(engineHooks);
+    if (engineHooks)
+        InstallWaterHooks();
     InstallFarClipHooks();
 }
 }
@@ -111,4 +116,35 @@ extern "C" int __cdecl vf_test_overlay_visible()
 extern "C" void __cdecl vf_test_draw_overlay()
 {
     DrawOverlay(RealDevice(LatestFogDevice()));
+}
+
+extern "C" int __cdecl vf_test_assign_water_data(const WaterPreset* presets, int presetCount, const WaterFftTile* tiles,
+                                                 int tileCount, const WaterMaskView* masks, int maskCount)
+{
+    return GlobalWaterData().Assign(presets, presetCount, tiles, tileCount, masks, maskCount) ? 1 : 0;
+}
+
+extern "C" int __cdecl vf_test_load_water_data(const char* path)
+{
+    return GlobalWaterData().Load(path) ? 1 : 0;
+}
+
+extern "C" int __cdecl vf_test_water_begin(const FrameInputs* in, const WaterInputs* water, const char** skipReason)
+{
+    return BeginWaterPass(LatestFogDevice(), *in, *water, GlobalConfig().Get(), skipReason) ? 1 : 0;
+}
+
+extern "C" void __cdecl vf_test_water_tag(int waterClass)
+{
+    TagWaterDraw(LatestFogDevice(), static_cast<WaterClass>(waterClass));
+}
+
+extern "C" void __cdecl vf_test_water_untag()
+{
+    UntagWaterDraw(LatestFogDevice());
+}
+
+extern "C" void __cdecl vf_test_water_end()
+{
+    EndWaterPass(LatestFogDevice());
 }

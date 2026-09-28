@@ -5,6 +5,7 @@
 
 #include "fog_data.h"
 #include "engine_lights.h"
+#include "water_types.h"
 
 #include <cstdint>
 
@@ -33,6 +34,17 @@ struct FrameInputs
     LocalLightInputs localLights;
 };
 
+constexpr int kSkyColorCount = 6;
+constexpr int kWaterColorPair = 2;
+
+struct WaterInputs
+{
+    uint32_t skyColors[kSkyColorCount];
+    uint32_t riverColors[kWaterColorPair];
+    uint32_t oceanColors[kWaterColorPair];
+    bool stockFogApplies;
+};
+
 namespace engine
 {
 constexpr uint32_t kClientTimestamp = 0x4C2452FE;
@@ -50,6 +62,13 @@ constexpr uintptr_t kWorldTextDrawSite = 0x007E5818;
 constexpr uintptr_t kWorldTextDrawTarget = 0x006BCE40;
 constexpr uintptr_t kScreenEffectsSite = 0x004F9281;
 constexpr uintptr_t kScreenEffectsTarget = 0x008C1010;
+
+constexpr uintptr_t kWaterPassSite = 0x00790AA2;
+constexpr uintptr_t kWaterPassTarget = 0x008A2240;
+constexpr uintptr_t kWaterMaterialRenderSlot = 0x00A5954C;
+constexpr uintptr_t kWaterMaterialRender = 0x008A5590;
+constexpr uintptr_t kWaterNoSpecMaterialRenderSlot = 0x00A59580;
+constexpr uintptr_t kWaterNoSpecMaterialRender = 0x008A5900;
 
 using FarClipClampFn = float(__cdecl*)(float farClipSetting, int mapId);
 constexpr uintptr_t kFarClipClamp = 0x00780770;
@@ -76,4 +95,6 @@ bool HasOpaqueState();
 void ClearOpaqueState();
 
 bool BuildFrameInputs(FrameInputs& out, bool withPointLights);
+bool BuildWaterInputs(WaterInputs& out);
+WaterClass ClassifyWaterSettings(const void* liquidSettings);
 }

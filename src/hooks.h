@@ -11,3 +11,13 @@ struct FogFrameStatus
 };
 
 FogFrameStatus LastFogFrameStatus();
+
+void InstallWaterHooks();
+
+struct WaterFrameStatus
+{
+    bool drawn;
+    const char* reason;
+};
+
+WaterFrameStatus LastWaterFrameStatus();

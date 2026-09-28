@@ -314,4 +314,15 @@ bool BuildFrameInputs(FrameInputs& out, bool withPointLights)
         return false;
     }
 }
+
+bool BuildWaterInputs(WaterInputs& out)
+{
+    out = {};
+    return false;
+}
+
+WaterClass ClassifyWaterSettings(const void*)
+{
+    return WaterClass::None;
+}
 }

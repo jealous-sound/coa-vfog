@@ -21,6 +21,8 @@ set(SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
 set(SHADER_OUT ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${SHADER_OUT})
 
+file(GLOB SHADER_INCLUDES CONFIGURE_DEPENDS ${SHADER_DIR}/*.hlsli)
+
 set(SHADER_HEADERS)
 function(vf_shader name source profile)
     set(out ${SHADER_OUT}/${name}.h)
@@ -28,8 +30,7 @@ function(vf_shader name source profile)
         OUTPUT ${out}
         COMMAND "${FXC}" /nologo /O3 /T ${profile} /E main /Vn g_${name} ${ARGN}
                 /Fh ${out} /Fc ${SHADER_OUT}/${name}.asm ${SHADER_DIR}/${source}
-        DEPENDS ${SHADER_DIR}/${source} ${SHADER_DIR}/vf_common.hlsli ${SHADER_DIR}/vf_integrate.hlsli
-                ${SHADER_DIR}/vf_local_lights.hlsli ${SHADER_DIR}/vf_density_variation.hlsli
+        DEPENDS ${SHADER_DIR}/${source} ${SHADER_INCLUDES}
         COMMENT "fxc ${name}"
         VERBATIM)
     set(SHADER_HEADERS ${SHADER_HEADERS} ${out} PARENT_SCOPE)
@@ -54,6 +55,8 @@ vf_shader(ps_lit_composite_high vf_composite.hlsl ps_3_0 /DSTEPS=32 /DLOCAL_LIGH
 vf_shader(ps_ray_mask vf_ray_mask.hlsl ps_3_0)
 vf_shader(ps_ray_blur vf_ray_blur.hlsl ps_3_0)
 vf_shader(ps_probe vf_probe.hlsl ps_3_0)
+include(cmake/WaterFftShaders.cmake)
+include(cmake/WaterShaders.cmake)
 add_custom_target(vf_shaders DEPENDS ${SHADER_HEADERS})
 
 include(FetchContent)
@@ -94,6 +97,10 @@ add_library(CoAVolFog SHARED
     src/overlay.cpp
     src/renderer.cpp
     src/settings_panel.cpp
+    src/water_data.cpp
+    src/water_fft.cpp
+    src/water_renderer.cpp
+    src/water_spectrum.cpp
     src/CoAVolFog.def)
 add_dependencies(CoAVolFog vf_shaders)
 target_include_directories(CoAVolFog PRIVATE src ${SHADER_OUT})
@@ -106,7 +113,8 @@ target_link_libraries(version PRIVATE CoAVolFog)
 target_compile_definitions(version PRIVATE WIN32_LEAN_AND_MEAN)
 
 add_executable(vfog_harness tests/harness.cpp src/config.cpp src/engine_lights.cpp
-               src/fog_data.cpp src/fog_model.cpp src/gpu_timing.cpp src/log.cpp src/noise_volume.cpp)
+               src/fog_data.cpp src/fog_model.cpp src/gpu_timing.cpp src/log.cpp src/noise_volume.cpp
+               src/water_data.cpp src/water_spectrum.cpp)
 target_include_directories(vfog_harness PRIVATE src ${SHADER_OUT})
 target_compile_definitions(vfog_harness PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(vfog_harness PRIVATE CoAVolFog user32 ole32 windowscodecs)
@@ -119,6 +127,7 @@ add_test(NAME vfog_harness
     COMMAND vfog_harness --out ${CMAKE_CURRENT_BINARY_DIR}/harness-out
             --data ${CMAKE_CURRENT_SOURCE_DIR}/data/fogdata.bin
             --ini ${CMAKE_CURRENT_SOURCE_DIR}/CoAVolFog.ini
+            --water-data ${CMAKE_CURRENT_SOURCE_DIR}/data/waterdata.bin
     WORKING_DIRECTORY $<TARGET_FILE_DIR:vfog_harness>)
 
 find_package(Python3 COMPONENTS Interpreter)

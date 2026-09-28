@@ -41,6 +41,7 @@ const IntSetting kIntSettings[] = {
     {"Quality", &Config::quality, 1, 3},     {"StockFog", &Config::stockFog, 0, 1},
     {"DataMode", &Config::dataMode, 0, 1},   {"ColorSpace", &Config::colorSpace, 0, 1},
     {"DebugView", &Config::debugView, 0, 3}, {"LogLevel", &Config::logLevel, 0, 2},
+    {"WaterQuality", &Config::waterQuality, 1, 3}, {"WaterDebugView", &Config::waterDebugView, 0, 5},
 };
 
 const FloatSetting kFloatSettings[] = {
@@ -61,12 +62,20 @@ const FloatSetting kFloatSettings[] = {
     {"FarClipMax", &Config::farClipMax, 0.0f, kEngineFarClipMax},
     {"MaxDistance", &Config::maxDistance, 200.0f, 5000.0f},
     {"Temporal", &Config::temporal, 0.0f, 0.97f},
+    {"WaterWaves", &Config::waterWaves, 0.0f, 2.0f},
+    {"WaterWind", &Config::waterWind, 0.5f, 10.0f},
+    {"WaterFoam", &Config::waterFoam, 0.0f, 2.0f},
+    {"WaterReflections", &Config::waterReflections, 0.0f, 2.0f},
+    {"WaterSpecular", &Config::waterSpecular, 0.0f, 4.0f},
+    {"WaterClarity", &Config::waterClarity, 0.25f, 4.0f},
+    {"WaterZoneColors", &Config::waterZoneColors, 0.0f, 1.0f},
 };
 
 const BoolSetting kBoolSettings[] = {
     {"GlowCompensation", &Config::glowCompensation}, {"LocalLights", &Config::localLights},
     {"InteriorAware", &Config::interiorAware},       {"Underwater", &Config::underwater},
     {"LiquidDepth", &Config::liquidDepth},           {"SunMarker", &Config::sunMarker},
+    {"Water", &Config::water},
 };
 
 struct NamedKey
