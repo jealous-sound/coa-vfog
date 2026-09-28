@@ -6,6 +6,7 @@
 #include "log.h"
 #include "overlay.h"
 #include "water_data.h"
+#include "water_renderer.h"
 
 #include <windows.h>
 
@@ -147,4 +148,19 @@ extern "C" void __cdecl vf_test_water_untag()
 extern "C" void __cdecl vf_test_water_end()
 {
     EndWaterPass(LatestFogDevice());
+}
+
+extern "C" void __cdecl vf_test_set_water_seconds(double seconds)
+{
+    OverrideWaterSeconds(seconds);
+}
+
+extern "C" void __cdecl vf_test_disable_wave_simulation(int disabled)
+{
+    DisableWaveSimulation(disabled != 0);
+}
+
+extern "C" void __cdecl vf_test_force_packed_water_depth(int forced)
+{
+    ForcePackedWaterDepth(forced != 0);
 }

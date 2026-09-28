@@ -3,6 +3,7 @@
 #include "log.h"
 #include "overlay.h"
 #include "renderer.h"
+#include "water_renderer.h"
 
 namespace
 {
@@ -55,27 +56,13 @@ public:
     bool CreateDepth();
     bool Render(const FrameInputs& in, const Config& cfg, const char** skip);
     bool AdaptiveLightingHistory() const { return m_renderer.AdaptiveLightingHistory(); }
-    void ForceDepthWrite(bool force)
-    {
-        if (force == m_forceDepthWrite)
-            return;
-        if (force && !m_suppressDepthWrite &&
-            FAILED(m_real->GetRenderState(D3DRS_ZWRITEENABLE, &m_clientRequestedDepthWrite)))
-            return;
-        m_forceDepthWrite = force;
-        m_real->SetRenderState(D3DRS_ZWRITEENABLE, DepthWriteToApply());
-    }
-
-    void SuppressDepthWrite(bool suppress)
-    {
-        if (suppress == m_suppressDepthWrite)
-            return;
-        if (suppress && !m_forceDepthWrite &&
-            FAILED(m_real->GetRenderState(D3DRS_ZWRITEENABLE, &m_clientRequestedDepthWrite)))
-            return;
-        m_suppressDepthWrite = suppress;
-        m_real->SetRenderState(D3DRS_ZWRITEENABLE, DepthWriteToApply());
-    }
+    void ForceDepthWrite(bool force) { OverrideDepthWrite(m_forceDepthWrite, force); }
+    void SuppressDepthWrite(bool suppress) { OverrideDepthWrite(m_suppressDepthWrite, suppress); }
+    bool BeginWater(const FrameInputs& in, const WaterInputs& water, const Config& cfg, const char** skip);
+    void TagWater(WaterClass waterClass) { m_water.Tag(m_real, waterClass); }
+    void UntagWater() { m_water.Untag(m_real); }
+    void EndWater();
+    void AbortWater();
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** out) override;
     ULONG STDMETHODCALLTYPE AddRef() override;
@@ -460,15 +447,29 @@ private:
     ~FogDevice();
     void ReleaseDepth();
     bool BindFallbackDepth();
+    bool DepthWriteOverridden() const { return m_suppressDepthWrite || m_forceDepthWrite || m_waterForcesDepthWrite; }
     DWORD DepthWriteToApply() const
     {
-        return m_suppressDepthWrite ? FALSE : (m_forceDepthWrite ? TRUE : m_clientRequestedDepthWrite);
+        if (m_suppressDepthWrite)
+            return FALSE;
+        return m_forceDepthWrite || m_waterForcesDepthWrite ? TRUE : m_clientRequestedDepthWrite;
+    }
+    void OverrideDepthWrite(bool& overrideActive, bool active)
+    {
+        if (active == overrideActive)
+            return;
+        if (active && !DepthWriteOverridden() &&
+            FAILED(m_real->GetRenderState(D3DRS_ZWRITEENABLE, &m_clientRequestedDepthWrite)))
+            return;
+        overrideActive = active;
+        m_real->SetRenderState(D3DRS_ZWRITEENABLE, DepthWriteToApply());
     }
 
     LONG m_ref = 1;
     DWORD m_clientRequestedDepthWrite = TRUE;
     bool m_forceDepthWrite = false;
     bool m_suppressDepthWrite = false;
+    bool m_waterForcesDepthWrite = false;
     WrappedD3D9* m_parent;
     IDirect3DDevice9* m_real;
     bool m_fog;
@@ -476,6 +477,7 @@ private:
     IDirect3DTexture9* m_depthTexture = nullptr;
     IDirect3DSurface9* m_depthSurface = nullptr;
     Renderer m_renderer;
+    WaterRenderer m_water;
 };
 
 namespace
@@ -660,6 +662,8 @@ FogDevice::~FogDevice()
 {
     DetachOverlay(m_real);
     Unregister(this);
+    AbortWater();
+    m_water.ReleaseAll();
     m_renderer.ReleaseAll();
     ReleaseDepth();
     m_real->Release();
@@ -762,6 +766,8 @@ HRESULT FogDevice::Reset(D3DPRESENT_PARAMETERS* pp)
     if (!pp)
         return D3DERR_INVALIDCALL;
     ReleaseOverlayDeviceObjects(m_real);
+    AbortWater();
+    m_water.ReleaseDefaultPool();
     if (!m_fog)
         return m_real->Reset(pp);
 
@@ -788,6 +794,29 @@ bool FogDevice::Render(const FrameInputs& in, const Config& cfg, const char** sk
     if (skip)
         *skip = FogActive() ? m_renderer.LastSkipReason() : "fog inactive";
     return ok;
+}
+
+bool FogDevice::BeginWater(const FrameInputs& in, const WaterInputs& water, const Config& cfg, const char** skip)
+{
+    AbortWater();
+    const bool armed = FogActive() && m_water.Begin(m_real, m_depthTexture, m_depthSurface, in, water, cfg);
+    if (armed)
+        OverrideDepthWrite(m_waterForcesDepthWrite, true);
+    if (skip)
+        *skip = armed ? "" : (FogActive() ? m_water.LastSkipReason() : "fog inactive");
+    return armed;
+}
+
+void FogDevice::EndWater()
+{
+    OverrideDepthWrite(m_waterForcesDepthWrite, false);
+    m_water.End(m_real, m_depthTexture, m_depthSurface);
+}
+
+void FogDevice::AbortWater()
+{
+    OverrideDepthWrite(m_waterForcesDepthWrite, false);
+    m_water.Abort(m_real);
 }
 
 void SetRealDirect3DCreate9(Direct3DCreate9Fn fn)
@@ -855,25 +884,36 @@ bool AdaptiveLightingHistory(FogDevice* device)
     return device && device->AdaptiveLightingHistory();
 }
 
-bool BeginWaterPass(FogDevice*, const FrameInputs&, const WaterInputs&, const Config&, const char** skipReason)
+bool BeginWaterPass(FogDevice* device, const FrameInputs& in, const WaterInputs& water, const Config& cfg,
+                    const char** skipReason)
 {
+    if (device)
+        return device->BeginWater(in, water, cfg, skipReason);
     if (skipReason)
-        *skipReason = "water shading not implemented";
+        *skipReason = "no fog device";
     return false;
 }
 
-void TagWaterDraw(FogDevice*, WaterClass)
+void TagWaterDraw(FogDevice* device, WaterClass waterClass)
 {
+    if (device)
+        device->TagWater(waterClass);
 }
 
-void UntagWaterDraw(FogDevice*)
+void UntagWaterDraw(FogDevice* device)
 {
+    if (device)
+        device->UntagWater();
 }
 
-void EndWaterPass(FogDevice*)
+void EndWaterPass(FogDevice* device)
 {
+    if (device)
+        device->EndWater();
 }
 
-void AbortWaterPass(FogDevice*)
+void AbortWaterPass(FogDevice* device)
 {
+    if (device)
+        device->AbortWater();
 }
