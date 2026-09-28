@@ -3,8 +3,11 @@
 #include "config.h"
 #include "engine.h"
 #include "fog_data.h"
+#include "gpu_timing.h"
 
 #include <d3d9.h>
+
+struct FogParams;
 
 class Renderer
 {
@@ -21,6 +24,16 @@ public:
     bool AdaptiveLightingHistory() const { return m_adaptiveLightingHistory; }
 
 private:
+    struct PendingDepthProbe
+    {
+        bool issued = false;
+        unsigned attempt = 0;
+        float dayFraction = 0.0f;
+        float viewportMinZ = 0.0f;
+        float viewportMaxZ = 0.0f;
+        float deepestWorldDepth = 0.0f;
+    };
+
     bool EnsureShaders(IDirect3DDevice9* dev);
     bool EnsureStateBlock(IDirect3DDevice9* dev);
     bool EnsureTargets(IDirect3DDevice9* dev, UINT lowW, UINT lowH, UINT rayW, UINT rayH);
@@ -29,8 +42,16 @@ private:
     bool Skip(const char* reason);
     void LogLightChange(const FrameInputs& in, const AuthoredFog& fog, bool authored);
     bool DepthProbeDue(long long now) const;
-    void LogDepthProbe(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DTexture9* fog,
-                       const D3DVIEWPORT9& vp, float deepestWorldDepth, float dayFraction);
+    bool EnsureDepthProbe(IDirect3DDevice9* dev);
+    void IssueDepthProbe(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DTexture9* fog,
+                         const D3DVIEWPORT9& vp, float deepestWorldDepth, float dayFraction);
+    void LogFinishedDepthProbe();
+    void DropPendingDepthProbe();
+    IDirect3DTexture9* FilterWithHistory(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture,
+                                         const float* viewToPreviousClip, bool historyValid, float historyWeight);
+    void LogFrameSummary(IDirect3DDevice9* dev, long long now, const FrameInputs& in, const Config& cfg,
+                         const FogParams& fog, const D3DSURFACE_DESC& depthDesc, const float* viewToWorld,
+                         const float* toLightInView, const float* sunPx, float rayStrength);
     void DrawFullscreen(IDirect3DDevice9* dev);
     void BindTexture(IDirect3DDevice9* dev, DWORD stage, IDirect3DBaseTexture9* tex, bool linear);
     bool RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* target,
@@ -39,9 +60,11 @@ private:
     IDirect3DVertexShader9* m_vs = nullptr;
     IDirect3DDevice9* m_unsupportedShaderDevice = nullptr;
     IDirect3DPixelShader9* m_march[3] = {};
+    IDirect3DPixelShader9* m_litMarch[3] = {};
     IDirect3DPixelShader9* m_temporal = nullptr;
     IDirect3DPixelShader9* m_historyDepthShader = nullptr;
     IDirect3DPixelShader9* m_composite[3] = {};
+    IDirect3DPixelShader9* m_litComposite[3] = {};
     IDirect3DPixelShader9* m_rayMask = nullptr;
     IDirect3DPixelShader9* m_rayBlur = nullptr;
     IDirect3DPixelShader9* m_probe = nullptr;
@@ -57,6 +80,9 @@ private:
     IDirect3DVolumeTexture9* m_densityNoise = nullptr;
     IDirect3DTexture9* m_probeTarget = nullptr;
     IDirect3DSurface9* m_probeReadback = nullptr;
+    IDirect3DQuery9* m_probeCopied = nullptr;
+    PendingDepthProbe m_pendingProbe;
+    FogGpuTimer m_gpuTimer;
     UINT m_lowW = 0;
     UINT m_lowH = 0;
     UINT m_rayW = 0;
@@ -73,7 +99,6 @@ private:
     Config m_prevConfig;
     int m_prevMap = -1;
     int m_prevLightSlot = -1;
-    int m_prevShadowMode = -1;
     float m_prevWorldToView[16] = {};
     float m_prevProj[16] = {};
     float m_prevCam[3] = {};

@@ -243,11 +243,11 @@ bool CaptureInteriorUnsafe(LocalLightInputs& out)
            Read<uintptr_t>(kCameraWmoGroupIds) == ids;
 }
 
-bool CaptureInputsGuarded(const float cameraPosition[3], LocalLightInputs& out)
+bool CaptureInputsGuarded(const float cameraPosition[3], bool withPointLights, LocalLightInputs& out)
 {
     __try
     {
-        return CapturePointLightsUnsafe(cameraPosition, out) && CaptureInteriorUnsafe(out);
+        return (!withPointLights || CapturePointLightsUnsafe(cameraPosition, out)) && CaptureInteriorUnsafe(out);
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
@@ -304,14 +304,14 @@ bool SelectLocalPointLight(LocalLightInputs& out, const LocalPointLight& light, 
     return true;
 }
 
-bool CaptureLocalLightInputs(const float cameraPosition[3], LocalLightInputs& out)
+bool CaptureLocalLightInputs(const float cameraPosition[3], bool withPointLights, LocalLightInputs& out)
 {
     out = {};
     static const bool supported = SupportedLayout();
     if (!supported || !ValidVector(cameraPosition, -kMaxWorldCoordinate, kMaxWorldCoordinate))
         return false;
     LocalLightInputs captured;
-    const bool valid = CaptureInputsGuarded(cameraPosition, captured);
+    const bool valid = CaptureInputsGuarded(cameraPosition, withPointLights, captured);
     if (valid)
         out = captured;
     return valid;

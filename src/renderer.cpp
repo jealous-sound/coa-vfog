@@ -2,13 +2,18 @@
 
 #include "fog_data.h"
 #include "fog_model.h"
-#include "engine_shadows.h"
 #include "noise_volume.h"
 #include "log.h"
 
 #include "ps_composite_low.h"
 #include "ps_composite_mid.h"
 #include "ps_composite_high.h"
+#include "ps_lit_composite_low.h"
+#include "ps_lit_composite_mid.h"
+#include "ps_lit_composite_high.h"
+#include "ps_lit_march_high.h"
+#include "ps_lit_march_low.h"
+#include "ps_lit_march_mid.h"
 #include "ps_march_high.h"
 #include "ps_march_low.h"
 #include "ps_march_mid.h"
@@ -37,7 +42,7 @@ constexpr float kSummarySeconds = 60.0f;
 constexpr float kProbeSeconds = 60.0f;
 constexpr float kProbeDebugSeconds = 30.0f;
 constexpr unsigned kProbeFirstFrame = 60;
-constexpr unsigned kInfoLevelGpuStallingProbeLimit = 5;
+constexpr unsigned kInfoLevelProbeLimit = 5;
 constexpr int kProbeGridSide = 5;
 constexpr UINT kProbePoints = kProbeGridSide * kProbeGridSide;
 constexpr float kRayFalloff = 8.0f;
@@ -48,9 +53,6 @@ constexpr int kRayTaps = 8;
 constexpr float kHistoryMaxSeconds = 0.25f;
 constexpr float kHistoryMaxMove = 30.0f;
 constexpr float kHistoryMinForwardDot = 0.70710678f;
-constexpr float kShadowMinStep = 1.5f;
-constexpr float kShadowStepPerYard = 0.035f;
-constexpr float kShadowThicknessSteps = 4.0f;
 constexpr float kLoggedStormBlendSteps = 10.0f;
 
 const D3DRENDERSTATETYPE kRenderStates[] = {
@@ -69,16 +71,6 @@ const D3DSAMPLERSTATETYPE kSamplerStates[] = {
 struct Float4
 {
     float x, y, z, w;
-};
-
-struct ScopedWorldShadows
-{
-    WorldShadowInputs inputs;
-
-    ~ScopedWorldShadows()
-    {
-        engine::ReleaseWorldShadows(inputs);
-    }
 };
 
 void LogShaderCaps(IDirect3DDevice9* device, LogLevel level)
@@ -227,8 +219,11 @@ void Renderer::ReleaseDefaultPool()
     SafeRelease(m_sceneCopy);
     SafeRelease(m_localLightData);
     SafeRelease(m_densityNoise);
+    DropPendingDepthProbe();
     SafeRelease(m_probeTarget);
     SafeRelease(m_probeReadback);
+    SafeRelease(m_probeCopied);
+    m_gpuTimer.Release();
     SafeRelease(m_state);
     m_lowW = m_lowH = m_rayW = m_rayH = 0;
     m_sceneCopyW = m_sceneCopyH = 0;
@@ -246,9 +241,13 @@ void Renderer::ReleaseAll()
     SafeRelease(m_vs);
     for (auto*& ps : m_march)
         SafeRelease(ps);
+    for (auto*& ps : m_litMarch)
+        SafeRelease(ps);
     SafeRelease(m_temporal);
     SafeRelease(m_historyDepthShader);
     for (auto*& ps : m_composite)
+        SafeRelease(ps);
+    for (auto*& ps : m_litComposite)
         SafeRelease(ps);
     SafeRelease(m_rayMask);
     SafeRelease(m_rayBlur);
@@ -309,11 +308,17 @@ bool Renderer::EnsureShaders(IDirect3DDevice9* dev)
         {"ps_march_low", g_ps_march_low, &m_march[0]},
         {"ps_march_mid", g_ps_march_mid, &m_march[1]},
         {"ps_march_high", g_ps_march_high, &m_march[2]},
+        {"ps_lit_march_low", g_ps_lit_march_low, &m_litMarch[0]},
+        {"ps_lit_march_mid", g_ps_lit_march_mid, &m_litMarch[1]},
+        {"ps_lit_march_high", g_ps_lit_march_high, &m_litMarch[2]},
         {"ps_temporal", g_ps_temporal, &m_temporal},
         {"ps_history_depth", g_ps_history_depth, &m_historyDepthShader},
         {"ps_composite_low", g_ps_composite_low, &m_composite[0]},
         {"ps_composite_mid", g_ps_composite_mid, &m_composite[1]},
         {"ps_composite_high", g_ps_composite_high, &m_composite[2]},
+        {"ps_lit_composite_low", g_ps_lit_composite_low, &m_litComposite[0]},
+        {"ps_lit_composite_mid", g_ps_lit_composite_mid, &m_litComposite[1]},
+        {"ps_lit_composite_high", g_ps_lit_composite_high, &m_litComposite[2]},
         {"ps_ray_mask", g_ps_ray_mask, &m_rayMask},
         {"ps_ray_blur", g_ps_ray_blur, &m_rayBlur},
     };
@@ -468,28 +473,37 @@ bool Renderer::DepthProbeDue(long long now) const
 {
     const bool debugLog = LogEnabled(LogLevel::Debug);
     const float probeIntervalSeconds = debugLog ? kProbeDebugSeconds : kProbeSeconds;
-    return LogEnabled(LogLevel::Info) && !m_probeFailed && m_frame >= kProbeFirstFrame &&
-           (debugLog || m_probeAttempts < kInfoLevelGpuStallingProbeLimit) &&
+    return LogEnabled(LogLevel::Info) && !m_probeFailed && !m_pendingProbe.issued && m_frame >= kProbeFirstFrame &&
+           (debugLog || m_probeAttempts < kInfoLevelProbeLimit) &&
            (m_probeAttempts == 0 || TickSeconds(now - m_probeTicks) > probeIntervalSeconds);
 }
 
-void Renderer::LogDepthProbe(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DTexture9* fog,
-                             const D3DVIEWPORT9& vp, float deepestWorldDepth, float dayFraction)
+bool Renderer::EnsureDepthProbe(IDirect3DDevice9* dev)
 {
     if (m_probeFailed)
+        return false;
+    const bool ready =
+        (m_probe || SUCCEEDED(dev->CreatePixelShader(reinterpret_cast<const DWORD*>(g_ps_probe), &m_probe))) &&
+        (m_probeTarget || CreateTarget(dev, kProbePoints, 1, D3DFMT_A32B32G32R32F, &m_probeTarget)) &&
+        (m_probeReadback || SUCCEEDED(dev->CreateOffscreenPlainSurface(kProbePoints, 1, D3DFMT_A32B32G32R32F,
+                                                                        D3DPOOL_SYSTEMMEM, &m_probeReadback,
+                                                                        nullptr))) &&
+        (m_probeCopied || SUCCEEDED(dev->CreateQuery(D3DQUERYTYPE_EVENT, &m_probeCopied)));
+    if (ready)
+        return true;
+    SafeRelease(m_probeTarget);
+    SafeRelease(m_probeReadback);
+    SafeRelease(m_probeCopied);
+    m_probeFailed = true;
+    VF_LOG_INFO("depth probe unavailable (no probe shader, float render target or event query)");
+    return false;
+}
+
+void Renderer::IssueDepthProbe(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DTexture9* fog,
+                               const D3DVIEWPORT9& vp, float deepestWorldDepth, float dayFraction)
+{
+    if (!EnsureDepthProbe(dev))
         return;
-    if ((!m_probe && FAILED(dev->CreatePixelShader(reinterpret_cast<const DWORD*>(g_ps_probe), &m_probe))) ||
-        (!m_probeTarget &&
-         (!CreateTarget(dev, kProbePoints, 1, D3DFMT_A32B32G32R32F, &m_probeTarget) ||
-          FAILED(dev->CreateOffscreenPlainSurface(kProbePoints, 1, D3DFMT_A32B32G32R32F, D3DPOOL_SYSTEMMEM,
-                                                  &m_probeReadback, nullptr)))))
-    {
-        SafeRelease(m_probeTarget);
-        SafeRelease(m_probeReadback);
-        m_probeFailed = true;
-        VF_LOG_INFO("depth probe unavailable (no probe shader or float render target)");
-        return;
-    }
     SetTarget(dev, m_probeTarget);
     D3DVIEWPORT9 probeVp = {0, 0, kProbePoints, 1, 0.0f, 1.0f};
     dev->SetViewport(&probeVp);
@@ -502,20 +516,44 @@ void Renderer::LogDepthProbe(IDirect3DDevice9* dev, IDirect3DTexture9* depthText
     DrawFullscreen(dev);
 
     IDirect3DSurface9* surface = nullptr;
-    D3DLOCKED_RECT locked = {};
-    bool read = SUCCEEDED(m_probeTarget->GetSurfaceLevel(0, &surface)) &&
-                SUCCEEDED(dev->GetRenderTargetData(surface, m_probeReadback)) &&
-                SUCCEEDED(m_probeReadback->LockRect(&locked, nullptr, D3DLOCK_READONLY));
+    const bool copying = SUCCEEDED(m_probeTarget->GetSurfaceLevel(0, &surface)) &&
+                         SUCCEEDED(dev->GetRenderTargetData(surface, m_probeReadback)) &&
+                         SUCCEEDED(m_probeCopied->Issue(D3DISSUE_END));
     SafeRelease(surface);
-    if (!read)
+    if (!copying)
     {
         VF_LOG_INFO("depth probe %u: readback failed", m_probeAttempts);
+        return;
+    }
+    m_pendingProbe = {true, m_probeAttempts, dayFraction, vp.MinZ, vp.MaxZ, deepestWorldDepth};
+}
+
+void Renderer::DropPendingDepthProbe()
+{
+    if (m_pendingProbe.issued)
+        VF_LOG_INFO("depth probe %u: readback dropped with the device resources", m_pendingProbe.attempt);
+    m_pendingProbe = {};
+}
+
+void Renderer::LogFinishedDepthProbe()
+{
+    if (!m_pendingProbe.issued)
+        return;
+    const HRESULT copied = m_probeCopied->GetData(nullptr, 0, 0);
+    if (copied == S_FALSE)
+        return;
+    const PendingDepthProbe probe = m_pendingProbe;
+    m_pendingProbe = {};
+    D3DLOCKED_RECT locked = {};
+    if (copied != S_OK || FAILED(m_probeReadback->LockRect(&locked, nullptr, D3DLOCK_READONLY)))
+    {
+        VF_LOG_INFO("depth probe %u: readback failed", probe.attempt);
         return;
     }
     const auto* samples = static_cast<const ProbeSample*>(locked.pBits);
     VF_LOG_INFO("depth probe %u: day %.4f, viewport depth %.4f..%.4f, world depth up to %.7f; per point raw depth / yd "
                 "/ fog opacity (w world, f beyond the far clip, s sky)",
-                m_probeAttempts, dayFraction, vp.MinZ, vp.MaxZ, deepestWorldDepth);
+                probe.attempt, probe.dayFraction, probe.viewportMinZ, probe.viewportMaxZ, probe.deepestWorldDepth);
     for (int row = 0; row < kProbeGridSide; ++row)
     {
         char line[256] = {};
@@ -552,12 +590,93 @@ void Renderer::BindTexture(IDirect3DDevice9* dev, DWORD stage, IDirect3DBaseText
     dev->SetSamplerState(stage, D3DSAMP_MAXMIPLEVEL, 0);
 }
 
+IDirect3DTexture9* Renderer::FilterWithHistory(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture,
+                                               const float* viewToPreviousClip, bool historyValid,
+                                               float historyWeight)
+{
+    const int write = m_historyIndex ^ 1;
+    SetTarget(dev, m_history[write]);
+    dev->SetPixelShader(m_temporal);
+    const Float4 temporal = {historyWeight, historyValid ? 1.0f : 0.0f, m_adaptiveLightingHistory ? 1.0f : 0.0f,
+                             0.0f};
+    dev->SetPixelShaderConstantF(9, viewToPreviousClip, 4);
+    dev->SetPixelShaderConstantF(13, &temporal.x, 1);
+    BindTexture(dev, 0, m_marchTarget, false);
+    BindTexture(dev, 1, m_history[m_historyIndex], false);
+    BindTexture(dev, 2, depthTexture, false);
+    BindTexture(dev, 3, m_historyDepth, false);
+    DrawFullscreen(dev);
+
+    BindTexture(dev, 3, nullptr, false);
+    SetTarget(dev, m_historyDepth);
+    dev->SetPixelShader(m_historyDepthShader);
+    BindTexture(dev, 0, depthTexture, false);
+    DrawFullscreen(dev);
+    m_historyIndex = write;
+    return m_history[write];
+}
+
+void Renderer::LogFrameSummary(IDirect3DDevice9* dev, long long now, const FrameInputs& in, const Config& cfg,
+                               const FogParams& fog, const D3DSURFACE_DESC& depthDesc, const float* viewToWorld,
+                               const float* toLightInView, const float* sunPx, float rayStrength)
+{
+    const D3DVIEWPORT9& vp = in.viewport;
+    const bool viewChanged = std::fabs(in.farClip - m_loggedFarClip) > 1.0f || vp.Width != m_loggedViewport.Width ||
+                             vp.Height != m_loggedViewport.Height || vp.MinZ != m_loggedViewport.MinZ ||
+                             vp.MaxZ != m_loggedViewport.MaxZ;
+    if (m_logged >= 1 && !viewChanged && TickSeconds(now - m_summaryTicks) <= kSummarySeconds &&
+        !(LogEnabled(LogLevel::Debug) && m_frame % 600u == 0))
+        return;
+    ++m_logged;
+    m_summaryTicks = now;
+    m_loggedFarClip = in.farClip;
+    m_loggedViewport = vp;
+    const float* proj = in.glProjection;
+    const float projectionNear = -proj[14] / (1.0f + proj[10]);
+    const float projectionFar = proj[14] / (1.0f - proj[10]);
+    char gpuTime[96] = {};
+    if (LogEnabled(LogLevel::Info))
+        DescribeFogGpuTime(m_gpuTimer, dev, gpuTime, sizeof(gpuTime));
+    VF_LOG_INFO("frame %u: viewport %lu,%lu %lux%lu of %ux%u depth %.4f..%.4f; near %.3f far %.1f (farclip %.1f) "
+                "maxdist %.0f%s",
+                m_frame, vp.X, vp.Y, vp.Width, vp.Height, depthDesc.Width, depthDesc.Height, vp.MinZ, vp.MaxZ,
+                projectionNear, projectionFar, in.farClip, fog.maxDistance, gpuTime);
+    VF_LOG_INFO("  camera (%.2f %.2f %.2f) inverse-view origin (%.2f %.2f %.2f) target (%.2f %.2f %.2f)",
+                in.camPos[0], in.camPos[1], in.camPos[2], viewToWorld[12], viewToWorld[13], viewToWorld[14],
+                in.camTarget[0], in.camTarget[1], in.camTarget[2]);
+    VF_LOG_INFO("  day %.4f %s toLight (%.3f %.3f %.3f) view (%.3f %.3f %.3f) vis %.2f above %.2f "
+                "sunPx (%.0f %.0f) rays %.2f",
+                in.dayFraction, in.lightIsMoon ? "moon" : "sun", in.toLight[0], in.toLight[1], in.toLight[2],
+                toLightInView[0], toLightInView[1], toLightInView[2], fog.lightVisibility, fog.lightAboveHorizon,
+                sunPx[0], sunPx[1], rayStrength);
+    VF_LOG_INFO("  map %d fog %08X start %.1f end %.1f zone %.1f sun %08X direct %08X ambient %08X refZ %.1f "
+                "glow %.2f, direct light vs Classic %.2f",
+                in.mapId, in.fogColor, in.fogStart, in.fogEnd, in.zoneFogDistance, in.sunColor, in.directColor,
+                in.ambientColor, fog.referenceZ, in.clientGlowAmount, fog.directLightMatch);
+    char localPoints[32] = "not captured";
+    if (cfg.localLights)
+        std::snprintf(localPoints, sizeof(localPoints), "%u", in.localLights.pointLightCount);
+    VF_LOG_INFO("  local points %s enabled %d; interior %d blend %.3f", localPoints, cfg.localLights,
+                in.localLights.cameraInterior, in.localLights.interiorBlend);
+    for (int i = 0; i < kFogLayers; ++i)
+    {
+        const FogLayer& l = fog.layers[i];
+        VF_LOG_INFO("  layer %d (%s): start %.0f density %.6f curve %.2f^%.2f g %.2f diffuse %.2f %.2f %.2f "
+                    "emissive %.2f %.2f %.2f upper %.1f/%.4f lower %.1f/%.4f shadowed %.0f limit %.0f",
+                    i, fog.authored && i < kSceneLayers ? "classic" : "derived", l.start, l.density, l.strength,
+                    l.exponent, l.g, l.diffuse[0], l.diffuse[1], l.diffuse[2], l.emissive[0], l.emissive[1],
+                    l.emissive[2], l.upperHeight, l.upperFalloff, l.lowerHeight, l.lowerFalloff, l.shadowed,
+                    std::min(l.endDistance, 99999.0f));
+    }
+}
+
 bool Renderer::Render(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* boundDepthStencil,
                       const FrameInputs& in, const Config& cfg)
 {
     m_skip = "";
     if (dev->TestCooperativeLevel() != D3D_OK)
         return Skip("device not ready");
+    LogFinishedDepthProbe();
     if (!EnsureShaders(dev) || !EnsureStateBlock(dev))
         return false;
 
@@ -639,14 +758,6 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     TransformDirection(in.toLight, in.cameraRelativeView, toLightInView);
     Normalize3(toLightInView);
 
-    ScopedWorldShadows worldShadows;
-    if (cfg.lightShafts && cfg.worldShadows)
-        engine::AcquireWorldShadows(dev, worldShadows.inputs);
-    float shadowLightInView[3];
-    TransformDirection(worldShadows.inputs.count > 0 ? worldShadows.inputs.toLight : in.toLight,
-                       in.cameraRelativeView, shadowLightInView);
-    Normalize3(shadowLightInView);
-
     float common[9][4] = {
         {static_cast<float>(vp.X), static_cast<float>(vp.Y), static_cast<float>(vp.Width),
          static_cast<float>(vp.Height)},
@@ -668,10 +779,8 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     const float dz = in.camPos[2] - m_prevCam[2];
     const float forwardDot = worldToView[2] * m_prevWorldToView[2] +
                              worldToView[6] * m_prevWorldToView[6] + worldToView[10] * m_prevWorldToView[10];
-    const int shadowMode = worldShadows.inputs.count | (worldShadows.inputs.hardwareComparison ? 8 : 0);
     const bool historyValid = m_historyValid && cfg.temporal > 0.0f && m_prevScale == scale &&
                               SameLiveSettings(cfg, m_prevConfig) && in.mapId == m_prevMap &&
-                              shadowMode == m_prevShadowMode &&
                               in.lightParams.screenEffectSlot == m_prevLightSlot &&
                               forwardDot > kHistoryMinForwardDot &&
                               std::memcmp(m_prevProj, proj, sizeof(m_prevProj)) == 0 &&
@@ -697,49 +806,10 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     const float rayStrength = cfg.godRays * fog.lightVisibility * sunScreenFade;
     const bool rays = rayStrength > 0.005f;
 
-    const bool viewChanged = std::fabs(in.farClip - m_loggedFarClip) > 1.0f || vp.Width != m_loggedViewport.Width ||
-                             vp.Height != m_loggedViewport.Height || vp.MinZ != m_loggedViewport.MinZ ||
-                             vp.MaxZ != m_loggedViewport.MaxZ;
-    if (m_logged < 1 || viewChanged || TickSeconds(now - m_summaryTicks) > kSummarySeconds ||
-        (LogEnabled(LogLevel::Debug) && m_frame % 600u == 0))
-    {
-        ++m_logged;
-        m_summaryTicks = now;
-        m_loggedFarClip = in.farClip;
-        m_loggedViewport = vp;
-        float projectionNear = -proj[14] / (1.0f + proj[10]);
-        float projectionFar = proj[14] / (1.0f - proj[10]);
-        VF_LOG_INFO("frame %u: viewport %lu,%lu %lux%lu of %ux%u depth %.4f..%.4f; near %.3f far %.1f (farclip %.1f) "
-                    "maxdist %.0f",
-                    m_frame, vp.X, vp.Y, vp.Width, vp.Height, depthDesc.Width, depthDesc.Height, vp.MinZ, vp.MaxZ,
-                    projectionNear, projectionFar, in.farClip, fog.maxDistance);
-        VF_LOG_INFO("  camera (%.2f %.2f %.2f) inverse-view origin (%.2f %.2f %.2f) target (%.2f %.2f %.2f)",
-                    in.camPos[0], in.camPos[1], in.camPos[2], viewToWorld[12], viewToWorld[13], viewToWorld[14],
-                    in.camTarget[0], in.camTarget[1], in.camTarget[2]);
-        VF_LOG_INFO("  day %.4f %s toLight (%.3f %.3f %.3f) view (%.3f %.3f %.3f) vis %.2f above %.2f "
-                    "sunPx (%.0f %.0f) rays %.2f",
-                    in.dayFraction, in.lightIsMoon ? "moon" : "sun", in.toLight[0], in.toLight[1], in.toLight[2],
-                    toLightInView[0], toLightInView[1], toLightInView[2], fog.lightVisibility, fog.lightAboveHorizon,
-                    sunPx[0], sunPx[1], rayStrength);
-        VF_LOG_INFO("  map %d fog %08X start %.1f end %.1f zone %.1f sun %08X direct %08X ambient %08X refZ %.1f "
-                    "glow %.2f, direct light vs Classic %.2f",
-                    in.mapId, in.fogColor, in.fogStart, in.fogEnd, in.zoneFogDistance, in.sunColor, in.directColor,
-                    in.ambientColor, fog.referenceZ, in.clientGlowAmount, fog.directLightMatch);
-        VF_LOG_INFO("  local points %u enabled %d; interior %d blend %.3f; world shadow maps %d; light shafts %d",
-                    in.localLights.pointLightCount, cfg.localLights, in.localLights.cameraInterior,
-                    in.localLights.interiorBlend, worldShadows.inputs.count, cfg.lightShafts);
-        for (int i = 0; i < kFogLayers; ++i)
-        {
-            const FogLayer& l = fog.layers[i];
-            VF_LOG_INFO("  layer %d (%s): start %.0f density %.6f curve %.2f^%.2f g %.2f diffuse %.2f %.2f %.2f "
-                        "emissive %.2f %.2f %.2f upper %.1f/%.4f lower %.1f/%.4f shadowed %.0f limit %.0f",
-                        i, fog.authored && i < kSceneLayers ? "classic" : "derived", l.start, l.density, l.strength,
-                        l.exponent, l.g, l.diffuse[0], l.diffuse[1], l.diffuse[2], l.emissive[0], l.emissive[1],
-                        l.emissive[2], l.upperHeight, l.upperFalloff, l.lowerHeight, l.lowerFalloff, l.shadowed,
-                        std::min(l.endDistance, 99999.0f));
-        }
-    }
+    LogFrameSummary(dev, now, in, cfg, fog, depthDesc, viewToWorld, toLightInView, sunPx, rayStrength);
 
+    if (LogEnabled(LogLevel::Info))
+        m_gpuTimer.Begin(dev);
     dev->SetDepthStencilSurface(nullptr);
     dev->SetVertexShader(m_vs);
     dev->SetVertexDeclaration(m_decl);
@@ -761,29 +831,12 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     dev->SetPixelShaderConstantF(0, &common[0][0], 9);
 
     SetTarget(dev, m_marchTarget);
-    dev->SetPixelShader(m_march[std::clamp(cfg.quality, 1, 3) - 1]);
-    const Float4 march[3] = {
-        {shadowLightInView[0], shadowLightInView[1], shadowLightInView[2], fog.shadowedLayerLightScale},
-        {kShadowMinStep, kShadowStepPerYard,
-         cfg.lightShafts && (fog.authored ? fog.lightAboveHorizon : fog.lightVisibility) > 0.001f ? 1.0f : 0.0f,
-         kShadowThicknessSteps},
-        {cfg.temporal > 0.0f ? 1.0f : 0.0f, fog.maxDistance, fog.horizonStart, fog.farClip},
-    };
-    dev->SetPixelShaderConstantF(9, &march[0].x, 3);
+    const Float4 celestialLight = {toLightInView[0], toLightInView[1], toLightInView[2], fog.lightAboveHorizon};
+    const Float4 march = {cfg.temporal > 0.0f ? 1.0f : 0.0f, fog.maxDistance, fog.horizonStart, fog.farClip};
+    dev->SetPixelShaderConstantF(9, &celestialLight.x, 1);
+    dev->SetPixelShaderConstantF(11, &march.x, 1);
     static_assert(sizeof(FogLayer) == 6 * sizeof(Float4), "FogLayer is six shader registers");
     dev->SetPixelShaderConstantF(12, &fog.layers[0].start, 6 * kFogLayers);
-    const WorldShadowInputs& shadows = worldShadows.inputs;
-    const Float4 shadowControl = {static_cast<float>(shadows.count), shadows.hardwareComparison ? 1.0f : 0.0f,
-                                  0.0f, 0.0f};
-    dev->SetPixelShaderConstantF(36, &shadowControl.x, 1);
-    dev->SetPixelShaderConstantF(37, &shadows.viewToShadow[0][0], 12);
-    Float4 shadowTexels[kWorldShadowMapCount] = {};
-    for (DWORD i = 0; i < kWorldShadowMapCount; ++i)
-    {
-        shadowTexels[i] = {shadows.texelSize[i][0], shadows.texelSize[i][1], 0.0f, 0.0f};
-        BindTexture(dev, 4 + i, shadows.textures[i], shadows.hardwareComparison);
-    }
-    dev->SetPixelShaderConstantF(49, &shadowTexels[0].x, kWorldShadowMapCount);
     uint32_t pointLightCount = cfg.localLights ? std::min(in.localLights.pointLightCount, kMaxLocalPointLights) : 0;
     Float4 localConstants[32] = {};
     for (uint32_t i = 0; i < pointLightCount; ++i)
@@ -825,6 +878,8 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
         marchLightLimit = std::max(marchLightLimit, std::nextafter(limit, std::numeric_limits<float>::infinity()));
     }
     const Float4 localControl = {static_cast<float>(pointLightCount), marchLightLimit, 0.0f, 0.0f};
+    const bool marchesLocalLights = pointLightCount > 0;
+    dev->SetPixelShader((marchesLocalLights ? m_litMarch : m_march)[std::clamp(cfg.quality, 1, 3) - 1]);
     dev->SetPixelShaderConstantF(53, &localControl.x, 1);
     BindTexture(dev, 8, m_localLightData, false);
     if (cfg.noiseAmount > 0.0f && !m_densityNoise)
@@ -840,26 +895,10 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     BindTexture(dev, 0, depthTexture, false);
     DrawFullscreen(dev);
 
-    const int write = m_historyIndex ^ 1;
-    SetTarget(dev, m_history[write]);
-    dev->SetPixelShader(m_temporal);
-    m_adaptiveLightingHistory = pointLightCount > 0 || m_prevLocalLightCount > 0 ||
-                                shadows.count > 0 || cfg.noiseAmount > 0.0f;
-    const Float4 temporal = {cfg.temporal, historyValid ? 1.0f : 0.0f,
-                             m_adaptiveLightingHistory ? 1.0f : 0.0f, 0.0f};
-    dev->SetPixelShaderConstantF(9, reproj, 4);
-    dev->SetPixelShaderConstantF(13, &temporal.x, 1);
-    BindTexture(dev, 0, m_marchTarget, false);
-    BindTexture(dev, 1, m_history[m_historyIndex], false);
-    BindTexture(dev, 2, depthTexture, false);
-    BindTexture(dev, 3, m_historyDepth, false);
-    DrawFullscreen(dev);
-
-    BindTexture(dev, 3, nullptr, false);
-    SetTarget(dev, m_historyDepth);
-    dev->SetPixelShader(m_historyDepthShader);
-    BindTexture(dev, 0, depthTexture, false);
-    DrawFullscreen(dev);
+    m_adaptiveLightingHistory = pointLightCount > 0 || m_prevLocalLightCount > 0 || cfg.noiseAmount > 0.0f;
+    const bool temporalFiltering = cfg.temporal > 0.0f;
+    IDirect3DTexture9* const fogResult =
+        temporalFiltering ? FilterWithHistory(dev, depthTexture, reproj, historyValid, cfg.temporal) : m_marchTarget;
 
     if (rays)
     {
@@ -925,8 +964,9 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     dev->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD);
     dev->SetRenderState(D3DRS_COLORWRITEENABLE,
                         D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
-    dev->SetPixelShader(m_composite[cfg.quality - 1]);
-    dev->SetPixelShaderConstantF(9, &march[0].x, 3);
+    dev->SetPixelShader((marchesLocalLights ? m_litComposite : m_composite)[cfg.quality - 1]);
+    dev->SetPixelShaderConstantF(9, &celestialLight.x, 1);
+    dev->SetPixelShaderConstantF(11, &march.x, 1);
     dev->SetPixelShaderConstantF(12, &fog.layers[0].start, 6 * kFogLayers);
     const Float4 composite[3] = {
         {fog.authored ? cfg.classicExposure : cfg.exposure, rays && sceneBlend ? rayStrength : 0.0f,
@@ -937,16 +977,18 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     };
     dev->SetPixelShaderConstantF(96, &composite[0].x, 3);
     BindTexture(dev, 0, depthTexture, false);
-    BindTexture(dev, 1, m_history[write], false);
+    BindTexture(dev, 1, fogResult, false);
     BindTexture(dev, 2, m_rays[1], true);
     BindTexture(dev, 3, sceneBlend ? m_sceneCopy : nullptr, false);
+    BindTexture(dev, 4, m_marchTarget, false);
     DrawFullscreen(dev);
+    m_gpuTimer.End();
 
     if (DepthProbeDue(now))
     {
         m_probeTicks = now;
         ++m_probeAttempts;
-        LogDepthProbe(dev, depthTexture, m_history[write], vp, worldDepth.deepest, in.dayFraction);
+        IssueDepthProbe(dev, depthTexture, fogResult, vp, worldDepth.deepest, in.dayFraction);
     }
 
     std::memcpy(m_prevWorldToView, worldToView, sizeof(m_prevWorldToView));
@@ -957,11 +999,9 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     m_prevConfig = cfg;
     m_prevMap = in.mapId;
     m_prevLightSlot = in.lightParams.screenEffectSlot;
-    m_prevShadowMode = shadowMode;
     m_prevLocalLightCount = pointLightCount;
     m_prevTicks = now;
-    m_historyIndex = write;
-    m_historyValid = true;
+    m_historyValid = temporalFiltering;
     ++m_frame;
     return true;
 }

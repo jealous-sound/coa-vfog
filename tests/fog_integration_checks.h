@@ -3,6 +3,9 @@
 #include "ps_march_low.h"
 #include "ps_march_mid.h"
 #include "ps_march_high.h"
+#include "ps_lit_march_low.h"
+#include "ps_lit_march_mid.h"
+#include "ps_lit_march_high.h"
 
 struct FogIntegrationResources
 {
@@ -82,116 +85,86 @@ void CheckShortRangeAuthoredFog()
           "a short fog range never moves an authored layer behind the camera");
 }
 
-void CheckWorldShadowIntegration(IDirect3DDevice9* device, const FogIntegrationResources& resources, int quality)
+constexpr float kHorizonShadowEmissive = 0.3f;
+constexpr float kHorizonShadowDensity = 0.5f;
+
+void CheckHorizonShadowIntegration(IDirect3DDevice9* device, const FogIntegrationResources& resources, int quality,
+                                   bool foregroundOccluder, const char* variant)
 {
-    IDirect3DTexture9* shadow = nullptr;
-    bool ready = SUCCEEDED(device->CreateTexture(4, 4, 1, 0, D3DFMT_R32F, D3DPOOL_MANAGED, &shadow, nullptr));
+    IDirect3DTexture9* depth = nullptr;
+    bool ready = SUCCEEDED(device->CreateTexture(64, 64, 1, 0, D3DFMT_R32F, D3DPOOL_MANAGED, &depth, nullptr));
     D3DLOCKED_RECT locked = {};
-    ready = ready && SUCCEEDED(shadow->LockRect(0, &locked, nullptr, 0));
+    ready = ready && SUCCEEDED(depth->LockRect(0, &locked, nullptr, 0));
     if (ready)
     {
-        for (int y = 0; y < 4; ++y)
+        for (int y = 0; y < 64; ++y)
         {
             float* row = reinterpret_cast<float*>(static_cast<unsigned char*>(locked.pBits) + y * locked.Pitch);
-            for (int x = 0; x < 4; ++x)
-                row[x] = x < 2 ? 0.25f : 0.75f;
+            for (int x = 0; x < 64; ++x)
+                row[x] = 0.940376f - 0.3761504f / (foregroundOccluder && x < 35 ? 2 : 120);
         }
-        shadow->UnlockRect(0);
+        depth->UnlockRect(0);
     }
-    Check(ready, "world shadow depth fixture created");
+    Check(ready, "horizon shadow integration depth fixture created");
     if (!ready)
     {
-        if (shadow)
-            shadow->Release();
+        if (depth)
+            depth->Release();
         return;
     }
-    for (DWORD stage = 4; stage < 8; ++stage)
-    {
-        device->SetTexture(stage, shadow);
-        device->SetSamplerState(stage, D3DSAMP_MINFILTER, D3DTEXF_POINT);
-        device->SetSamplerState(stage, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
-        device->SetSamplerState(stage, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
-        device->SetSamplerState(stage, D3DSAMP_SRGBTEXTURE, FALSE);
-        device->SetSamplerState(stage, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
-        device->SetSamplerState(stage, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
-    }
-    struct ShadowCase
-    {
-        const char* name;
-        float count;
-        float characterX;
-        float nearX;
-        float middleX;
-        float farX;
-        float receiverDepth;
-        float visibility;
-    };
-    const ShadowCase cases[] = {
-        {"disabled preserves the unobstructed screen-space fallback", 0, -0.5f, 2, 2, 2, 0.5f, 1},
-        {"off-screen character occluder blocks light", 1, -0.5f, 2, 2, 2, 0.5f, 0},
-        {"receiver before the caster remains lit", 1, -0.5f, 2, 2, 2, 0.1f, 1},
-        {"outside shadow depth range uses fallback", 1, -0.5f, 2, 2, 2, 1.1f, 1},
-        {"four depth comparisons filter a shadow edge", 1, 0, 2, 2, 2, 0.5f, 0.5f},
-        {"character map border fades without a seam", 1, -0.845f, 2, 2, 2, 0.5f, 0.5f},
-        {"off-screen environment caster blocks light", 4, 2, -0.5f, 2, 2, 0.5f, 0},
-        {"middle cascade covers missing near cascade", 4, 2, 2, -0.5f, 2, 0.5f, 0},
-        {"far cascade covers missing nearer cascades", 4, 2, 2, 2, -0.5f, 0.5f, 0},
-        {"near cascade takes precedence over coarse far depth", 4, 2, 0.5f, -0.5f, -0.5f, 0.5f, 1},
-        {"cascade border blends into the next map", 4, 2, -0.845f, 0.5f, 0.5f, 0.5f, 0.5f},
-    };
+    device->SetTexture(0, depth);
     const float quad[4][4] = {{-0.5f, -0.5f, 0, 1}, {7.5f, -0.5f, 0, 1},
                              {-0.5f, 7.5f, 0, 1}, {7.5f, 7.5f, 0, 1}};
-    for (const ShadowCase& sample : cases)
+    for (int aboveHorizon = 0; aboveHorizon < 2; ++aboveHorizon)
     {
-        float constants[99][4] = {};
-        constants[0][2] = constants[0][3] = 8;
-        constants[1][0] = constants[1][2] = constants[1][3] = 1;
-        constants[2][0] = constants[2][1] = 1;
-        constants[3][0] = 1.0004f;
-        constants[3][1] = -0.40016f;
-        constants[3][2] = 1000;
-        constants[3][3] = 0.94f;
-        for (int row = 0; row < 4; ++row)
-            constants[4 + row][row] = 1;
-        constants[8][0] = constants[8][1] = 8;
-        constants[8][2] = constants[8][3] = 0.125f;
-        constants[9][2] = constants[9][3] = 1;
-        constants[10][0] = 1.5f;
-        constants[10][1] = 0.035f;
-        constants[10][2] = 1;
-        constants[10][3] = 4;
-        constants[11][1] = constants[11][3] = 1000;
-        constants[11][2] = 850;
-        constants[12][1] = 0.001f;
-        constants[12][3] = 1;
-        constants[14][0] = constants[14][1] = constants[14][2] = constants[14][3] = 1;
-        constants[16][3] = 1;
-        constants[17][0] = 1;
-        constants[17][2] = 1000;
-        constants[36][0] = sample.count;
-        const float mapX[] = {sample.characterX, sample.nearX, sample.middleX, sample.farX};
-        for (int map = 0; map < 4; ++map)
+        for (int shadowed = 0; shadowed < 2; ++shadowed)
         {
-            constants[37 + map * 3][3] = mapX[map];
-            constants[39 + map * 3][3] = sample.receiverDepth;
-            constants[49 + map][0] = constants[49 + map][1] = 0.25f;
+            float constants[99][4] = {};
+            constants[0][2] = constants[0][3] = 64;
+            constants[1][0] = 8;
+            constants[1][2] = constants[1][3] = 1.0f / 64;
+            constants[2][0] = constants[2][1] = 1;
+            constants[3][0] = 0.940376f;
+            constants[3][1] = -0.3761504f;
+            constants[3][2] = 1000;
+            constants[3][3] = 0.94f;
+            for (int row = 0; row < 4; ++row)
+                constants[4 + row][row] = 1;
+            constants[8][0] = constants[8][1] = 8;
+            constants[8][2] = constants[8][3] = 0.125f;
+            constants[9][2] = 1;
+            constants[9][3] = static_cast<float>(aboveHorizon);
+            constants[11][1] = constants[11][3] = 1000;
+            constants[11][2] = 850;
+            constants[12][1] = 0.003f;
+            constants[12][3] = 1;
+            constants[13][0] = constants[13][1] = constants[13][2] = 0.1f;
+            constants[14][0] = constants[14][1] = constants[14][2] = 0.75f;
+            constants[14][3] = 1;
+            constants[16][0] = constants[16][1] = constants[16][2] = kHorizonShadowEmissive;
+            constants[16][3] = kHorizonShadowDensity;
+            constants[17][0] = static_cast<float>(shadowed);
+            constants[17][2] = 1000;
+            device->SetPixelShaderConstantF(0, &constants[0][0], 99);
+            device->BeginScene();
+            const HRESULT draw = device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(quad[0]));
+            device->EndScene();
+            const float actual = ReadFogIntegrationOpacity(device, resources);
+            const bool inHorizonShadow = shadowed && !aboveHorizon;
+            const float source = inHorizonShadow ? kHorizonShadowEmissive : 0.85f;
+            const float density = 0.003f * (inHorizonShadow ? kHorizonShadowDensity : 1.0f);
+            const float expected = source * (1 - std::exp(-density * 120 * std::sqrt(1 + 2 * 0.125f * 0.125f)));
+            char label[160];
+            std::snprintf(label, sizeof(label),
+                          "horizon shadow quality %d%s: foreground occluder %d light above horizon %d shadowed layer "
+                          "%d (error %.3f)",
+                          quality, variant, foregroundOccluder, aboveHorizon, shadowed, std::fabs(actual - expected));
+            Check(SUCCEEDED(draw) && std::fabs(actual - expected) <= 2.0f / 255, label);
         }
-        device->SetPixelShaderConstantF(0, &constants[0][0], 99);
-        device->BeginScene();
-        const HRESULT draw = device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(quad[0]));
-        device->EndScene();
-        const float actual = ReadFogIntegrationOpacity(device, resources);
-        const float expected = sample.visibility * (1.0f - std::exp(-1.0f));
-        char label[160];
-        std::snprintf(label, sizeof(label), "world shadow quality %d: %s", quality, sample.name);
-        Check(SUCCEEDED(draw) && std::fabs(actual - expected) <= 2.0f / 255.0f, label);
     }
-    for (DWORD stage = 4; stage < 8; ++stage)
-        device->SetTexture(stage, nullptr);
-    shadow->Release();
+    device->SetTexture(0, resources.depth);
+    depth->Release();
 }
-
-#include "screen_shadow_checks.h"
 
 void CheckFogIntegration(IDirect3DDevice9* device)
 {
@@ -222,10 +195,11 @@ void CheckFogIntegration(IDirect3DDevice9* device)
     device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
     device->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
     device->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
-    CheckScreenSpaceShadows(device, resources);
     const float quad[4][4] = {{-0.5f, -0.5f, 0, 1}, {7.5f, -0.5f, 0, 1},
                              {-0.5f, 7.5f, 0, 1}, {7.5f, 7.5f, 0, 1}};
-    const BYTE* shaders[] = {g_ps_march_low, g_ps_march_mid, g_ps_march_high};
+    const BYTE* shaders[2][3] = {{g_ps_march_low, g_ps_march_mid, g_ps_march_high},
+                                 {g_ps_lit_march_low, g_ps_lit_march_mid, g_ps_lit_march_high}};
+    const char* variants[] = {"", " with local lights compiled in"};
     struct Medium
     {
         const char* name;
@@ -237,11 +211,13 @@ void CheckFogIntegration(IDirect3DDevice9* device)
     const Medium media[] = {{"partial boundary cell", 780.0f, 1000.0f, 0.004f, 0.0f},
                             {"two-yard layer", 851.0f, 853.0f, 0.5f, 0.0f},
                             {"height-varying two-yard layer", 851.0f, 853.0f, 0.5f, 0.001f}};
-    for (int quality = 0; quality < 3; ++quality)
+    for (int shaderIndex = 0; shaderIndex < 6; ++shaderIndex)
     {
+        const int variant = shaderIndex / 3;
+        const int quality = shaderIndex % 3;
         IDirect3DPixelShader9* shader = nullptr;
-        const bool shaderReady = SUCCEEDED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(shaders[quality]),
-                                                                     &shader));
+        const bool shaderReady = SUCCEEDED(
+            device->CreatePixelShader(reinterpret_cast<const DWORD*>(shaders[variant][quality]), &shader));
         Check(shaderReady, "analytic fog integration march shader created");
         if (!shaderReady)
             continue;
@@ -291,13 +267,12 @@ void CheckFogIntegration(IDirect3DDevice9* device)
                 worst = std::fmax(worst, std::fabs(actual - expected));
             }
             char label[160];
-            std::snprintf(label, sizeof(label), "Beer-Lambert %s at quality %d, midpoint and jitter (error %.2f/255)",
-                          medium.name, quality + 1, worst * 255.0f);
+            std::snprintf(label, sizeof(label), "Beer-Lambert %s at quality %d%s, midpoint and jitter (error %.2f/255)",
+                          medium.name, quality + 1, variants[variant], worst * 255.0f);
             Check(worst <= 2.0f / 255.0f, label);
         }
-        CheckWorldShadowIntegration(device, resources, quality + 1);
-        CheckBlockedSunIntegration(device, resources, quality + 1);
-        CheckBlockedSunIntegration(device, resources, quality + 1, true);
+        CheckHorizonShadowIntegration(device, resources, quality + 1, false, variants[variant]);
+        CheckHorizonShadowIntegration(device, resources, quality + 1, true, variants[variant]);
         shader->Release();
     }
     device->SetRenderTarget(0, resources.previousTarget);

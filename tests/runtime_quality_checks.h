@@ -106,6 +106,73 @@ void CheckWorldTextDepthIsolation(Harness& h)
     state->Release();
 }
 
+float RawDepthAtViewDistance(const float* glProjection, float viewZ)
+{
+    return (1.0f + glProjection[10]) * 0.5f + glProjection[14] * 0.5f / viewZ;
+}
+
+void CheckSunOccluderLeavesFogLit(Harness& h)
+{
+    Config saved;
+    vf_test_get_config(&saved);
+    Config config;
+    config.temporal = 0.0f;
+    config.noiseAmount = 0.0f;
+    config.godRays = 0.0f;
+    config.debugView = 1;
+    vf_test_set_config(&config);
+    const D3DVIEWPORT9 world = {0, 0, 1280, 688, 0, 1};
+    const Vec3 eye = Add({0, 0, 9}, kGameLikeWorldOffset);
+    const Vec3 at = Add({100, 2, 4}, kGameLikeWorldOffset);
+    float view[16];
+    float projection[16];
+    CameraRelativeLookAt(eye, at, view);
+    EngineProjection(1280.0f / 688.0f, projection);
+    const FrameInputs input = MakeInputs(view, projection, eye, at, world);
+    const float sunViewX = input.toLight[0] * view[0] + input.toLight[1] * view[4] + input.toLight[2] * view[8];
+    const float sunViewY = input.toLight[0] * view[1] + input.toLight[1] * view[5] + input.toLight[2] * view[9];
+    const float sunViewZ = input.toLight[0] * view[2] + input.toLight[1] * view[6] + input.toLight[2] * view[10];
+    const float sunColumn = (sunViewX / sunViewZ * projection[0] * 0.5f + 0.5f) * world.Width;
+    const float sunRow = (0.5f - sunViewY / sunViewZ * projection[5] * 0.5f) * world.Height;
+    const float horizonRow = (0.5f + view[10] / view[9] * projection[5] * 0.5f) * world.Height;
+    const float occluderBottom = (sunRow + horizonRow) * 0.5f;
+    const float occluderDistance = 20.0f;
+    Image radiance[2];
+    bool rendered = true;
+    for (int occluded = 0; occluded < 2; ++occluded)
+    {
+        h.BeginFrame();
+        h.DrawScene(eye, view, projection, world);
+        if (occluded)
+            h.DrawPretransformedQuadAtRawDepth(0, 0, static_cast<float>(world.Width), occluderBottom,
+                                               RawDepthAtViewDistance(projection, occluderDistance));
+        const char* skip = "";
+        rendered = vf_test_render(&input, &skip) != 0 && rendered;
+        radiance[occluded] = Capture(h.dev);
+        h.dev->EndScene();
+        h.dev->Present(nullptr, nullptr, nullptr, nullptr);
+    }
+    int worstChange = 0;
+    int dimmestFog = 255;
+    for (float rowBelowHorizon : {30.0f, 60.0f})
+        for (float columnFromSun : {-200.0f, 0.0f, 200.0f})
+        {
+            const UINT x = static_cast<UINT>(std::clamp(sunColumn + columnFromSun, 20.0f, world.Width - 20.0f));
+            const UINT y = static_cast<UINT>(horizonRow + rowBelowHorizon);
+            const unsigned char* open = radiance[0].At(x, y);
+            const unsigned char* blocked = radiance[1].At(x, y);
+            dimmestFog = std::min(dimmestFog, static_cast<int>(std::max({open[0], open[1], open[2]})));
+            for (int channel = 0; channel < 3; ++channel)
+                worstChange = std::max(worstChange, std::abs(blocked[channel] - open[channel]));
+        }
+    std::printf("     sun occluder at %.0f yd above rows %.0f (sun row %.0f, horizon %.0f): fog radiance on the ground "
+                "changes by at most %d/255, dimmest sample %d/255\n",
+                occluderDistance, occluderBottom, sunRow, horizonRow, worstChange, dimmestFog);
+    Check(rendered && sunRow < occluderBottom && occluderBottom < horizonRow && dimmestFog > 8 && worstChange <= 1,
+          "a sun occluder leaves the in-scattered sunlight of the fog behind it unshadowed");
+    vf_test_set_config(&saved);
+}
+
 struct FogFixtureHeader
 {
     char magic[4];

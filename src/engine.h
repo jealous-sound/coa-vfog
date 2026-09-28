@@ -75,5 +75,5 @@ void CaptureOpaqueState(IDirect3DDevice9* device);
 bool HasOpaqueState();
 void ClearOpaqueState();
 
-bool BuildFrameInputs(FrameInputs& out);
+bool BuildFrameInputs(FrameInputs& out, bool withPointLights);
 }

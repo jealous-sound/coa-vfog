@@ -148,13 +148,6 @@ float3 ViewRayAtUnitDepth(float2 pixel)
                   (ndc.y - ViewToNdcOffset().y) / ViewToNdcScale().y, 1);
 }
 
-float2 ViewToPixel(float3 viewPosition)
-{
-    float2 ndc = float2(viewPosition.x / viewPosition.z * ViewToNdcScale().x + ViewToNdcOffset().x,
-                        viewPosition.y / viewPosition.z * ViewToNdcScale().y + ViewToNdcOffset().y);
-    return NdcToPixel(ndc);
-}
-
 float InterleavedGradientNoise(float2 pixel)
 {
     return frac(52.9829189 * frac(dot(pixel, float2(0.06711056, 0.00583715))));

@@ -5,6 +5,67 @@ namespace performance_scene
 constexpr int kWarmupFrames = 32;
 constexpr int kMeasuredFrames = 60;
 constexpr ULONGLONG kQueryTimeoutMs = 10000;
+constexpr ULONGLONG kGpuClockWarmupMs = 1500;
+constexpr int kHeaviestQuality = 3;
+constexpr Vec3 kEyeAboveStreet = {0, -20, 8};
+constexpr Vec3 kTargetAboveStreet = {200, 0, 8};
+constexpr int kFloodLights = 8;
+constexpr float kFloodLightColor[3] = {1.0f, 0.5f, 0.2f};
+constexpr float kFloodLightQuadraticAttenuation = 0.015f;
+constexpr float kLampHeight = 5.0f;
+constexpr float kLampColor[3] = {1.0f, 0.72f, 0.4f};
+constexpr float kLampPeakColor = std::max({kLampColor[0], kLampColor[1], kLampColor[2]});
+constexpr int kErrorLogLevel = 0;
+constexpr int kShippedLogLevel = 1;
+
+enum class FogSource
+{
+    Derived,
+    Classic,
+};
+
+enum class PointLights
+{
+    None,
+    Flood,
+    Lamps,
+};
+
+struct BenchmarkCase
+{
+    const char* name;
+    FogSource fog;
+    PointLights lights;
+    int logLevel;
+};
+
+constexpr BenchmarkCase kCases[] = {
+    {"derived-none", FogSource::Derived, PointLights::None, kErrorLogLevel},
+    {"derived-flood8", FogSource::Derived, PointLights::Flood, kErrorLogLevel},
+    {"derived-lamps8", FogSource::Derived, PointLights::Lamps, kErrorLogLevel},
+    {"classic-none", FogSource::Classic, PointLights::None, kErrorLogLevel},
+    {"classic-lamps8", FogSource::Classic, PointLights::Lamps, kErrorLogLevel},
+    {"derived-none-log1", FogSource::Derived, PointLights::None, kShippedLogLevel},
+};
+
+struct StreetLamp
+{
+    float ahead;
+    float side;
+    float reach;
+};
+
+constexpr StreetLamp kStreetLamps[] = {
+    {30.0f, -9.0f, 12.0f}, {45.0f, 9.0f, 16.0f}, {60.0f, -9.0f, 10.0f}, {75.0f, 9.0f, 20.0f},
+    {90.0f, -9.0f, 14.0f}, {105.0f, 9.0f, 18.0f}, {120.0f, -9.0f, 11.0f}, {140.0f, 9.0f, 15.0f},
+};
+
+struct Street
+{
+    Vec3 ground;
+    Vec3 eye;
+    Vec3 at;
+};
 
 class Timer
 {
@@ -97,6 +158,144 @@ private:
     bool m_gpu = false;
 };
 
+Vec3 Scaled(Vec3 v, float s)
+{
+    return {v.x * s, v.y * s, v.z * s};
+}
+
+Street StreetOn(Vec3 ground)
+{
+    return {ground, Add(kEyeAboveStreet, ground), Add(kTargetAboveStreet, ground)};
+}
+
+std::vector<SceneVertex> SceneAlong(const Street& street)
+{
+    std::vector<SceneVertex> scene = BuildScene();
+    const Vec3 shift = Sub(street.ground, kGameLikeWorldOffset);
+    for (SceneVertex& vertex : scene)
+    {
+        vertex.x += shift.x;
+        vertex.y += shift.y;
+        vertex.z += shift.z;
+    }
+    return scene;
+}
+
+void UseHarbourSunset(FrameInputs& inputs)
+{
+    const FrameInputs harbour =
+        ContinentFrame(kEasternKingdoms, kHarbourEye, kHarbourDayFraction, kHarbourToLight, false);
+    inputs.mapId = harbour.mapId;
+    inputs.dayFraction = harbour.dayFraction;
+    std::memcpy(inputs.toLight, harbour.toLight, sizeof(inputs.toLight));
+    inputs.lightIsMoon = harbour.lightIsMoon;
+    inputs.fogStart = harbour.fogStart;
+    inputs.fogEnd = harbour.fogEnd;
+    inputs.zoneFogDistance = harbour.zoneFogDistance;
+}
+
+FrameInputs StreetInputs(const Street& street, FogSource fog, const float* projection, const D3DVIEWPORT9& viewport)
+{
+    float view[16];
+    CameraRelativeLookAt(street.eye, street.at, view);
+    FrameInputs inputs = MakeInputs(view, projection, street.eye, street.at, viewport);
+    if (fog == FogSource::Classic)
+        UseHarbourSunset(inputs);
+    return inputs;
+}
+
+bool AddPointLight(FrameInputs& inputs, Vec3 position, const float* color, float quadraticAttenuation)
+{
+    LocalPointLight light = {};
+    light.position[0] = position.x;
+    light.position[1] = position.y;
+    light.position[2] = position.z;
+    std::memcpy(light.color, color, sizeof(light.color));
+    light.attenuation[0] = 1.0f;
+    light.attenuation[2] = quadraticAttenuation;
+    return engine::SelectLocalPointLight(inputs.localLights, light, inputs.camPos);
+}
+
+bool AddFloodLights(FrameInputs& inputs, const Street& street)
+{
+    for (int index = 0; index < kFloodLights; ++index)
+    {
+        const Vec3 position = {street.ground.x + 25.0f + 65.0f * (index / 4),
+                               street.ground.y - 45.0f + 30.0f * (index % 4), street.ground.z + 12.0f};
+        if (!AddPointLight(inputs, position, kFloodLightColor, kFloodLightQuadraticAttenuation))
+            return false;
+    }
+    return true;
+}
+
+float QuadraticAttenuationReaching(float reach)
+{
+    return (kLampPeakColor / kLocalPointLightContributionCutoff - 1.0f) / (reach * reach);
+}
+
+bool AddStreetLamps(FrameInputs& inputs, const Street& street)
+{
+    const Vec3 forward = Norm(Sub(street.at, street.eye));
+    const Vec3 right = Norm(Cross(forward, kWorldUp));
+    for (const StreetLamp& lamp : kStreetLamps)
+    {
+        const Vec3 alongStreet = Add(street.eye, Add(Scaled(forward, lamp.ahead), Scaled(right, lamp.side)));
+        const Vec3 position = {alongStreet.x, alongStreet.y, street.ground.z + kLampHeight};
+        if (!AddPointLight(inputs, position, kLampColor, QuadraticAttenuationReaching(lamp.reach)))
+            return false;
+    }
+    return true;
+}
+
+bool AddPointLights(FrameInputs& inputs, PointLights lights, const Street& street)
+{
+    if (lights == PointLights::Flood)
+        return AddFloodLights(inputs, street);
+    if (lights == PointLights::Lamps)
+        return AddStreetLamps(inputs, street);
+    return true;
+}
+
+void DescribeLights(const char* name, const FrameInputs& inputs)
+{
+    const LocalLightInputs& lights = inputs.localLights;
+    float nearest = std::numeric_limits<float>::infinity();
+    float farthest = 0.0f;
+    float shortestReach = kMaxLocalPointLightRadius;
+    float longestReach = 0.0f;
+    for (uint32_t i = 0; i < lights.pointLightCount; ++i)
+    {
+        const LocalPointLight& light = lights.pointLights[i];
+        const Vec3 offset = Sub({light.position[0], light.position[1], light.position[2]},
+                                {inputs.camPos[0], inputs.camPos[1], inputs.camPos[2]});
+        const float distance = std::sqrt(Dot(offset, offset));
+        nearest = std::fmin(nearest, distance);
+        farthest = std::fmax(farthest, distance);
+        shortestReach = std::fmin(shortestReach, light.cutoff);
+        longestReach = std::fmax(longestReach, light.cutoff);
+    }
+    std::printf("%s: %u point lights reaching %.1f-%.1f yd, %.0f-%.0f yd from the camera\n", name,
+                lights.pointLightCount, shortestReach, longestReach, nearest, farthest);
+}
+
+std::string FogDataBesideTheFogDll()
+{
+    char path[MAX_PATH] = {};
+    const DWORD length = GetModuleFileNameA(GetModuleHandleA("CoAVolFog.dll"), path, MAX_PATH);
+    const std::string module(path, length);
+    return module.substr(0, module.find_last_of("\\/") + 1) + "fogdata.bin";
+}
+
+bool ClassicFogResolves(const FrameInputs& inputs, int& layers)
+{
+    FogData data;
+    AuthoredFog fog = {};
+    const bool resolved = data.Load(FogDataBesideTheFogDll()) &&
+                          data.Resolve(inputs.mapId, inputs.camPos, inputs.dayFraction, inputs.lightParams, fog);
+    layers = fog.layerCount;
+    return resolved;
+}
+
 bool Measure(Harness& h, Timer& timer, const Config& config, const FrameInputs& inputs, Vec3 eye,
              std::vector<double>& samples)
 {
@@ -124,6 +323,31 @@ bool Measure(Harness& h, Timer& timer, const Config& config, const FrameInputs& 
     return true;
 }
 
+bool WarmUpGpuClocks(Harness& h, Timer& timer, const Street& street, const float* projection,
+                     const D3DVIEWPORT9& viewport)
+{
+    Config config;
+    config.quality = kHeaviestQuality;
+    config.logLevel = kErrorLogLevel;
+    config.overlay = false;
+    config.dataMode = 0;
+    FrameInputs inputs = StreetInputs(street, FogSource::Derived, projection, viewport);
+    if (!AddFloodLights(inputs, street))
+        return false;
+    h.scene = SceneAlong(street);
+    const ULONGLONG started = GetTickCount64();
+    int frames = 0;
+    do
+    {
+        std::vector<double> untimed;
+        if (!Measure(h, timer, config, inputs, street.eye, untimed))
+            return false;
+        frames += kWarmupFrames + kMeasuredFrames;
+    } while (GetTickCount64() - started < kGpuClockWarmupMs);
+    std::printf("GPU clock warm-up: %d untimed frames of quality %d with flood8\n", frames, kHeaviestQuality);
+    return true;
+}
+
 bool MeasureCases(Harness& h)
 {
     Timer timer;
@@ -137,50 +361,57 @@ bool MeasureCases(Harness& h)
     std::printf("pixel shader slots %lu, executed instructions %lu; %d warmup and %d measured frames\n",
                 caps.MaxPixelShader30InstructionSlots, caps.MaxPShaderInstructionsExecuted,
                 kWarmupFrames, kMeasuredFrames);
-    const Vec3 eye = Add({0, -20, 8}, kGameLikeWorldOffset);
-    const Vec3 at = Add({200, 0, 8}, kGameLikeWorldOffset);
-    float view[16];
     float projection[16];
-    CameraRelativeLookAt(eye, at, view);
     EngineGlDepthProjection(1.0f / std::tan(kFovY * 0.5f), 1920.0f / 1080.0f, kNear, kFar, projection);
     const D3DVIEWPORT9 viewport = {0, 0, 1920, 1080, 0, kClientWorldMaxZ};
-    const FrameInputs original = MakeInputs(view, projection, eye, at, viewport);
-    std::printf("quality,point_lights,median_ms,p95_ms\n");
+    const Street derivedStreet = StreetOn(kGameLikeWorldOffset);
+    const Street harbourStreet = StreetOn(Sub(kHarbourEye, kEyeAboveStreet));
+
+    FrameInputs described = StreetInputs(derivedStreet, FogSource::Derived, projection, viewport);
+    if (!AddFloodLights(described, derivedStreet))
+        return false;
+    DescribeLights("flood8", described);
+    described = StreetInputs(derivedStreet, FogSource::Derived, projection, viewport);
+    if (!AddStreetLamps(described, derivedStreet))
+        return false;
+    DescribeLights("lamps8", described);
+    int classicLayers = 0;
+    const bool classic =
+        ClassicFogResolves(StreetInputs(harbourStreet, FogSource::Classic, projection, viewport), classicLayers);
+    if (classic)
+        std::printf("classic: the street moved to the Stormwind harbour at 18:43, %d Classic fog layers\n",
+                    classicLayers);
+    else
+        std::printf("classic cases skipped: fogdata.bin beside CoAVolFog.dll does not resolve the harbour\n");
+
+    if (!WarmUpGpuClocks(h, timer, derivedStreet, projection, viewport))
+        return false;
+    std::printf("quality,case,point_lights,median_ms,p95_ms\n");
     for (int quality = 1; quality <= 3; ++quality)
     {
-        for (int variant = 0; variant < 2; ++variant)
+        for (const BenchmarkCase& benchmark : kCases)
         {
+            const bool classicCase = benchmark.fog == FogSource::Classic;
+            if (classicCase && !classic)
+                continue;
+            const Street& street = classicCase ? harbourStreet : derivedStreet;
             Config config;
             config.quality = quality;
-            config.worldShadows = false;
-            config.logLevel = 0;
+            config.logLevel = benchmark.logLevel;
             config.overlay = false;
-            config.dataMode = 0;
-            FrameInputs inputs = original;
-            if (variant > 0)
-            {
-                for (int index = 0; index < 8; ++index)
-                {
-                    LocalPointLight light = {};
-                    light.position[0] = kGameLikeWorldOffset.x + 25.0f + 65.0f * (index / 4);
-                    light.position[1] = kGameLikeWorldOffset.y - 45.0f + 30.0f * (index % 4);
-                    light.position[2] = kGameLikeWorldOffset.z + 12.0f;
-                    light.color[0] = 1.0f;
-                    light.color[1] = 0.5f;
-                    light.color[2] = 0.2f;
-                    light.attenuation[0] = 1.0f;
-                    light.attenuation[2] = 0.015f;
-                    if (!engine::SelectLocalPointLight(inputs.localLights, light, inputs.camPos))
-                        return false;
-                }
-            }
+            config.dataMode = classicCase ? 1 : 0;
+            FrameInputs inputs = StreetInputs(street, benchmark.fog, projection, viewport);
+            if (!AddPointLights(inputs, benchmark.lights, street))
+                return false;
+            h.scene = SceneAlong(street);
             std::vector<double> samples;
-            if (!Measure(h, timer, config, inputs, eye, samples))
+            if (!Measure(h, timer, config, inputs, street.eye, samples))
                 return false;
             std::sort(samples.begin(), samples.end());
             const double median = (samples[kMeasuredFrames / 2 - 1] + samples[kMeasuredFrames / 2]) * 0.5;
             const double p95 = samples[(kMeasuredFrames * 95 + 99) / 100 - 1];
-            std::printf("%d,%u,%.3f,%.3f\n", quality, inputs.localLights.pointLightCount, median, p95);
+            std::printf("%d,%s,%u,%.3f,%.3f\n", quality, benchmark.name, inputs.localLights.pointLightCount, median,
+                        p95);
             std::fflush(stdout);
         }
     }
@@ -203,7 +434,7 @@ int RunPerformance()
         reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(GetProcAddress(module, "Direct3DCreate9")) : nullptr;
     Config initial;
     initial.overlay = false;
-    initial.logLevel = 0;
+    initial.logLevel = performance_scene::kErrorLogLevel;
     vf_test_set_config(&initial);
     if (h.window && create)
         h.d3d = vf_test_wrap_direct3d9(create, D3D_SDK_VERSION);

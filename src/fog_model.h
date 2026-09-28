@@ -40,7 +40,6 @@ struct FogParams
     float rayColor[3];
     float lightVisibility;
     float lightAboveHorizon;
-    float shadowedLayerLightScale;
     float directLightMatch;
     float maxDistance;
     float horizonStart;
