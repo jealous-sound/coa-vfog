@@ -120,7 +120,8 @@ target_compile_definitions(vfog_harness PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CR
 target_link_libraries(vfog_harness PRIVATE CoAVolFog user32 ole32 windowscodecs)
 add_custom_command(TARGET CoAVolFog POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/CoAVolFog.ini
-            ${CMAKE_CURRENT_SOURCE_DIR}/data/fogdata.bin $<TARGET_FILE_DIR:CoAVolFog>)
+            ${CMAKE_CURRENT_SOURCE_DIR}/data/fogdata.bin ${CMAKE_CURRENT_SOURCE_DIR}/data/waterdata.bin
+            $<TARGET_FILE_DIR:CoAVolFog>)
 
 enable_testing()
 add_test(NAME vfog_harness
