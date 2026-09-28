@@ -149,7 +149,10 @@ density variation once at its jittered distance, and every layer whose clipped s
 it; a layer clipped by its start or limit inside the step samples its own point. The march stops at the first step
 that begins beyond the end of every layer with density (Classic layers are unbounded, so this ends only derived and
 distance-limited rays early). The result matches the per-layer loop exactly. The lit shaders keep the loop; they
-already use 30 and 32 of the 32 temporary registers.
+already use 30 and 32 of the 32 temporary registers. In the performance scene on the owner's RTX 2060 laptop, runs
+started at the same temperature (63–66 °C) put the fog without lights 16%, 22–26% and 25–27% faster at Quality 1, 2
+and 3, on derived and Classic layers alike; the light cases, which use the unchanged lit shaders, stayed within 1%.
+The laptop did not cool below 63 °C between runs, so later runs at 84–86 °C were throttled and are not compared.
 
 Fog renders once after the world, including its late geometry and native sun/moon glare, and before screen
 effects. The opaque M2 hook captures camera inputs only. Native material shaders and glare draws are untouched;
