@@ -26,7 +26,16 @@ bool BeginWaterPass(FogDevice* device, const FrameInputs& in, const WaterInputs&
                     const char** skipReason);
 void TagWaterDraw(FogDevice* device, WaterClass waterClass);
 void UntagWaterDraw(FogDevice* device);
-bool EndWaterPass(FogDevice* device, const char** skipReason, bool* flatWaves);
+
+struct WaterPassEnd
+{
+    bool shaded = false;
+    const char* skipReason = "no fog device";
+    bool flatWaves = false;
+    unsigned shadedClasses = 0;
+};
+
+WaterPassEnd EndWaterPass(FogDevice* device);
 void AbortWaterPass(FogDevice* device);
 void ReleaseWaterResources(FogDevice* device);
 unsigned HeldWaterResources(FogDevice* device);

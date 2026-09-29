@@ -389,16 +389,14 @@ void OnWaterPassEnd()
 {
     if (!g_waterPassDevice)
         return;
-    const char* skip = "";
-    bool flatWaves = false;
-    const bool shaded = EndWaterPass(g_waterPassDevice, &skip, &flatWaves);
+    const WaterPassEnd end = EndWaterPass(g_waterPassDevice);
     g_waterPassDevice = nullptr;
-    if (shaded)
-        RecordWaterDrawn(g_waterClassesThisPass, flatWaves);
+    if (end.shaded)
+        RecordWaterDrawn(end.shadedClasses, end.flatWaves);
     else if (!g_waterClassesThisPass)
         RecordWaterIdle("no water in view");
     else
-        RecordWaterSkip(skip && *skip ? skip : "the water pass shaded nothing");
+        RecordWaterSkip(end.skipReason && *end.skipReason ? end.skipReason : "the water pass shaded nothing");
 }
 
 void TagWaterDrawUnsafe(const void* liquidSettings)

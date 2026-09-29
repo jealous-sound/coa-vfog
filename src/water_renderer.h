@@ -52,6 +52,7 @@ public:
 
     bool Armed() const { return m_armed; }
     bool WavesSimulated() const { return m_wavesSimulated; }
+    unsigned ShadedClasses() const { return m_shadedClassMask; }
     unsigned HeldResources() const;
     int FoamMaskPool() const;
     const char* LastSkipReason() const { return m_skip; }

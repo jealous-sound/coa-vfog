@@ -56,6 +56,7 @@ extern "C" __declspec(dllimport) void __cdecl vf_test_hook_water_draw_untag();
 extern "C" __declspec(dllimport) void __cdecl vf_test_hook_water_pass_end();
 extern "C" __declspec(dllimport) void __cdecl vf_test_hook_frame_end();
 extern "C" __declspec(dllimport) int __cdecl vf_test_water_armed();
+extern "C" __declspec(dllimport) int __cdecl vf_test_water_status(const char**);
 
 namespace
 {

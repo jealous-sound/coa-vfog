@@ -146,7 +146,10 @@ extern "C" void __cdecl vf_test_water_untag()
 
 extern "C" int __cdecl vf_test_water_end(const char** skipReason)
 {
-    return EndWaterPass(LatestFogDevice(), skipReason, nullptr) ? 1 : 0;
+    const WaterPassEnd end = EndWaterPass(LatestFogDevice());
+    if (skipReason)
+        *skipReason = end.skipReason;
+    return end.shaded ? 1 : 0;
 }
 
 extern "C" void __cdecl vf_test_set_water_seconds(double seconds)
@@ -232,4 +235,11 @@ extern "C" void __cdecl vf_test_hook_frame_end()
 extern "C" int __cdecl vf_test_water_armed()
 {
     return WaterPassArmed(LatestFogDevice()) ? 1 : 0;
+}
+
+extern "C" int __cdecl vf_test_water_status(const char** reason)
+{
+    const WaterFrameStatus status = LastWaterFrameStatus();
+    *reason = status.reason;
+    return status.drawn ? 1 : 0;
 }

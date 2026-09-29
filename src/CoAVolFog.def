@@ -33,3 +33,4 @@ EXPORTS
     vf_test_hook_water_pass_end
     vf_test_hook_frame_end
     vf_test_water_armed
+    vf_test_water_status

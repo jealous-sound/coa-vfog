@@ -61,7 +61,7 @@ public:
     bool BeginWater(const FrameInputs& in, const WaterInputs& water, const Config& cfg, const char** skip);
     void TagWater(WaterClass waterClass) { m_water.Tag(m_real, waterClass); }
     void UntagWater() { m_water.Untag(m_real); }
-    bool EndWater(const char** skip, bool* flatWaves);
+    WaterPassEnd EndWater();
     void AbortWater();
     void ReleaseWater()
     {
@@ -813,15 +813,15 @@ bool FogDevice::BeginWater(const FrameInputs& in, const WaterInputs& water, cons
     return armed;
 }
 
-bool FogDevice::EndWater(const char** skip, bool* flatWaves)
+WaterPassEnd FogDevice::EndWater()
 {
     OverrideDepthWrite(m_waterForcesDepthWrite, false);
-    const bool shaded = m_water.End(m_real, m_depthTexture, m_depthSurface);
-    if (skip)
-        *skip = shaded ? "" : m_water.LastSkipReason();
-    if (flatWaves)
-        *flatWaves = shaded && !m_water.WavesSimulated();
-    return shaded;
+    WaterPassEnd end;
+    end.shaded = m_water.End(m_real, m_depthTexture, m_depthSurface);
+    end.skipReason = end.shaded ? "" : m_water.LastSkipReason();
+    end.flatWaves = end.shaded && !m_water.WavesSimulated();
+    end.shadedClasses = end.shaded ? m_water.ShadedClasses() : 0u;
+    return end;
 }
 
 void FogDevice::AbortWater()
@@ -917,13 +917,9 @@ void UntagWaterDraw(FogDevice* device)
         device->UntagWater();
 }
 
-bool EndWaterPass(FogDevice* device, const char** skipReason, bool* flatWaves)
+WaterPassEnd EndWaterPass(FogDevice* device)
 {
-    if (device)
-        return device->EndWater(skipReason, flatWaves);
-    if (skipReason)
-        *skipReason = "no fog device";
-    return false;
+    return device ? device->EndWater() : WaterPassEnd();
 }
 
 void AbortWaterPass(FogDevice* device)

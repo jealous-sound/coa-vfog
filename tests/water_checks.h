@@ -1433,6 +1433,22 @@ void CheckWaterOffReleasesResources(BasinClient& client, const Config& base)
           "foam masks live in the default pool, without a managed system-memory copy beside the CPU one");
 }
 
+void CheckWaterStatusListsTheShadedClasses(BasinClient& client, const Config& base)
+{
+    const Config on = WaterConfig(base);
+    vf_test_set_config(&on);
+    WaterFrame classes;
+    classes.calls = WaterCalls::Hooks;
+    classes.strips = kClassStrips;
+    classes.stripCount = 3;
+    const WaterFrameResult result = client.Render(classes);
+    const char* status = "";
+    const bool drawn = vf_test_water_status(&status) != 0;
+    std::printf("     settings window water status after lake, ocean and river draws: %s\n", status);
+    Check(result.began && drawn && std::strcmp(status, "lake, ocean") == 0,
+          "the settings window lists the water classes End shaded, not a drawn class without a preset");
+}
+
 void CheckFaultedFirstBeginReleasesItsResources(BasinClient& client, const Config& base)
 {
     const Config on = WaterConfig(base);
@@ -2240,6 +2256,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     CheckEndReportsWhatItShaded(h, client, base);
     CheckWaterGpuTimeSummary(client, base);
     CheckFaultInsideThePassRestoresTheDevice(h, client, base);
+    CheckWaterStatusListsTheShadedClasses(client, base);
     CheckWaterOffReleasesResources(client, base);
     CheckFaultedFirstBeginReleasesItsResources(client, base);
     CheckFlatWaterHasNoCrestFoam(client, base);
