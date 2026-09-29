@@ -109,6 +109,15 @@ void DrawWaterStatus(const WaterFrameStatus& status)
         ImGui::TextColored(kSkippedColour, "Water: Not drawing (%s)", named ? status.reason : "no reason given");
 }
 
+void DrawMultisamplingStatus(const MultisamplingStatus& status)
+{
+    if (status.method && *status.method)
+        ImGui::TextColored(kDrawnColour, "Antialiasing: multisampling %dx kept (depth copied by %s)", status.samples,
+                           status.method);
+    else
+        ImGui::TextDisabled("Antialiasing: multisampling off (%s)", status.off);
+}
+
 bool DrawQuality(Config& c)
 {
     const Section section("Quality", ImGuiTreeNodeFlags_DefaultOpen);
@@ -202,6 +211,18 @@ bool DrawWorld(Config& c)
     return changed;
 }
 
+bool DrawAntialiasing(Config& c)
+{
+    const Section section("Antialiasing");
+    if (!section)
+        return false;
+    return Toggle("Keep the game's multisampling", c.multisampling,
+                  "Keep the game's Multisampling video option (smooth edges) when the graphics driver can copy its "
+                  "depth for the fog and water: NVIDIA through NVAPI, AMD and Intel through RESZ. Off: multisampling "
+                  "stays off. Applies the next time the game resets its display, for example after changing "
+                  "Multisampling in its Video options");
+}
+
 bool DrawWater(Config& c)
 {
     const Section section("Water");
@@ -243,7 +264,7 @@ bool DrawDebug(Config& c)
 }
 
 void SettingsPanel::Draw(ConfigStore& store, const FogFrameStatus& fogStatus, const WaterFrameStatus& waterStatus,
-                         bool& open)
+                         const MultisamplingStatus& multisampling, bool& open)
 {
     const float line = ImGui::GetFontSize();
     const float width = kPanelWidthInLines * line;
@@ -262,6 +283,7 @@ void SettingsPanel::Draw(ConfigStore& store, const FogFrameStatus& fogStatus, co
     changed |= DrawDensity(edited);
     changed |= DrawLight(edited);
     changed |= DrawWorld(edited);
+    changed |= DrawAntialiasing(edited);
     changed |= DrawWater(edited);
     changed |= DrawDebug(edited);
     if (changed)
@@ -270,6 +292,7 @@ void SettingsPanel::Draw(ConfigStore& store, const FogFrameStatus& fogStatus, co
         store.LogSettledEdits();
     ImGui::Separator();
     DrawWaterStatus(waterStatus);
+    DrawMultisamplingStatus(multisampling);
     DrawSaveRow(store);
     ImGui::End();
 }

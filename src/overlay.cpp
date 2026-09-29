@@ -1,6 +1,7 @@
 #include "overlay.h"
 
 #include "config.h"
+#include "d3d9_wrap.h"
 #include "hooks.h"
 #include "log.h"
 #include "settings_panel.h"
@@ -434,7 +435,8 @@ void BuildPanelFrame(const D3DSURFACE_DESC& backBuffer)
         ImGui::SetWindowFocus(nullptr);
     }
     bool open = true;
-    g_overlay.panel.Draw(GlobalConfig(), LastFogFrameStatus(), LastWaterFrameStatus(), open);
+    g_overlay.panel.Draw(GlobalConfig(), LastFogFrameStatus(), LastWaterFrameStatus(), CurrentMultisamplingStatus(),
+                         open);
     ImGui::Render();
     if (!open)
         SetVisible(false);
