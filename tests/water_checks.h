@@ -49,6 +49,10 @@ constexpr int kShoreColourTolerance = 3;
 constexpr float kMaxShoreReflectionFraction = 0.02f;
 constexpr float kRoughTileAmplitude = 30000.0f;
 constexpr float kRoughTileWindMultiplier = 3.0f;
+constexpr float kFoamEverywhereRange = 10000.0f;
+constexpr float kDimFoamTint = 0.25f;
+constexpr float kFoamTintTolerance = 0.03f;
+constexpr float kMinDecodedFoam = 1e-3f;
 constexpr DWORD kClientStencilRef = 7;
 constexpr DWORD kClientStencilMask = 0x3C;
 constexpr DWORD kClientStencilWriteMask = 0x5A;
@@ -1219,6 +1223,57 @@ void CheckGrazingReflectionsMissTheShore(Harness& h, const Config& base, const s
     AssignWaterData(MakeSyntheticWaterData());
 }
 
+SyntheticWaterData FoamCoveredLake(float tint)
+{
+    SyntheticWaterData data = MakeSyntheticWaterData();
+    WaterPreset& lake = data.presets[0];
+    Set4(lake.scatteringIntensities, 0.0f, 0.0f, 0.0f, 0.0f);
+    Set4(lake.depthFadeFoam, 1.0f, 24.0f, kFoamEverywhereRange, 0.0f);
+    Set4(lake.shoreFoam, 0.0f, 0.0f, 0.0f, 0.0f);
+    Set4(lake.waveFoam, 0.0f, 0.0f, 0.0f, 0.0f);
+    for (WaterMask& info : data.maskInfo)
+        for (int c = 0; c < 3; ++c)
+            info.tintLow[c] = info.tintHigh[c] = tint;
+    return data;
+}
+
+void CheckFoamTintsAreLinear(BasinClient& client, const Config& base)
+{
+    Config foamOnly = WaterConfig(base);
+    foamOnly.waterWaves = 0.0f;
+    foamOnly.waterReflections = 0.0f;
+    foamOnly.waterSpecular = 0.0f;
+    foamOnly.waterFoam = 1.0f;
+    vf_test_set_config(&foamOnly);
+    vf_test_disable_wave_simulation(1);
+    WaterFrame frame;
+    const bool whiteAssigned = AssignWaterData(FoamCoveredLake(1.0f));
+    const WaterFrameResult white = client.Render(frame);
+    const bool dimAssigned = AssignWaterData(FoamCoveredLake(kDimFoamTint));
+    const WaterFrameResult dim = client.Render(frame);
+    vf_test_disable_wave_simulation(0);
+    const std::vector<AbsorptionSample> samples = FlatFloorSamples(client.View());
+    float lowest = 1.0f;
+    float highest = 0.0f;
+    for (const AbsorptionSample& s : samples)
+        for (int channel = 0; channel < 3; ++channel)
+        {
+            const float ratio = Decode(dim.image.At(s.x, s.y)[channel]) /
+                                std::fmax(Decode(white.image.At(s.x, s.y)[channel]), kMinDecodedFoam);
+            lowest = std::fmin(lowest, ratio);
+            highest = std::fmax(highest, ratio);
+        }
+    std::printf("     foam tinted %.2f against white: linear ratio %.3f..%.3f over %zu samples\n", kDimFoamTint, lowest,
+                highest, samples.size());
+    Check(whiteAssigned && dimAssigned && white.began && dim.began && !samples.empty() &&
+              std::fabs(lowest - kDimFoamTint) <= kFoamTintTolerance &&
+              std::fabs(highest - kDimFoamTint) <= kFoamTintTolerance,
+          "foam mask tints are applied as the linear colours the water data stores");
+    const Config on = WaterConfig(base);
+    vf_test_set_config(&on);
+    AssignWaterData(MakeSyntheticWaterData());
+}
+
 void SaveRealDataViews(Harness& h, const Config& base, const std::string& waterDataPath, const std::wstring& outDir)
 {
     const DWORD attributes = GetFileAttributesA(waterDataPath.c_str());
@@ -1314,6 +1369,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     CheckStockFogOnWater(h, base);
     CheckInteriorIgnoresSun(h, base);
     CheckGrazingReflectionsMissTheShore(h, base, outDir);
+    CheckFoamTintsAreLinear(client, base);
     CheckResetKeepsWater(h, client, base);
     SaveRealDataViews(h, base, waterDataPath, outDir);
 

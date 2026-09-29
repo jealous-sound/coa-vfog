@@ -229,10 +229,10 @@ void LinearColour(uint32_t argb, float* rgb)
         rgb[c] = std::pow(rgb[c], kDisplayGamma);
 }
 
-void LinearTint(const float* tint, float* rgb)
+void ClampedTint(const float* linearTint, float* rgb)
 {
     for (int c = 0; c < 3; ++c)
-        rgb[c] = std::pow(Saturate(tint[c]), kDisplayGamma);
+        rgb[c] = Saturate(linearTint[c]);
 }
 
 float ScrollOffset(double seconds, int axis, float multiplier)
@@ -890,8 +890,8 @@ void WaterRenderer::FillClassConstants(ShadingConstants& c, const WaterPreset& p
         const WaterMask& info = data.Masks()[mask].info;
         float low[3];
         float high[3];
-        LinearTint(info.tintLow, low);
-        LinearTint(info.tintHigh, high);
+        ClampedTint(info.tintLow, low);
+        ClampedTint(info.tintHigh, high);
         c.maskTints[slot * 2] = {low[0], low[1], low[2], 1.0f};
         c.maskTints[slot * 2 + 1] = {high[0], high[1], high[2], 0.0f};
     }
