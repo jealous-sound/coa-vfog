@@ -320,8 +320,12 @@ std::string SettingChanges(const Config& before, const Config& after)
             add(s.key, std::to_string(before.*s.value), std::to_string(after.*s.value));
     });
     ForEachFloatSetting([&](const FloatSetting& s) {
-        if (before.*s.value != after.*s.value)
-            add(s.key, SettingText(before.*s.value), SettingText(after.*s.value));
+        if (before.*s.value == after.*s.value)
+            return;
+        const std::string from = SettingText(before.*s.value);
+        const std::string to = SettingText(after.*s.value);
+        if (from != to)
+            add(s.key, from, to);
     });
     for (const BoolSetting& s : kBoolSettings)
         if (before.*s.value != after.*s.value)

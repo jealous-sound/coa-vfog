@@ -38,6 +38,7 @@ const LiquidRow kClientLiquidRows[] = {
 };
 
 constexpr int kLoggedDives = 60;
+constexpr float kTypedDensity = 3.3712f;
 
 const char* const kEditedWaterKeys[] = {"Water", "WaterQuality", "WaterWaves", "WaterFoam", "WaterDebugView"};
 
@@ -301,6 +302,30 @@ void CheckSettingChangesLogged(const std::wstring& outDir, const std::wstring& s
           "reverting logs the keys it changes");
 }
 
+std::string LoggedByTheHarnessSince(size_t start)
+{
+    const std::string text = ReadText(g_harnessLog);
+    return text.size() > start ? text.substr(start) : std::string();
+}
+
+void CheckSaveLogsNoRoundingChange(const std::wstring& outDir, const std::wstring& shippedIni)
+{
+    const std::wstring iniPath = FullPath(outDir + L"\\settings-save-log.ini");
+    Check(CopyFileW(shippedIni.c_str(), iniPath.c_str(), FALSE) != FALSE, "shipped CoAVolFog.ini copied for saving");
+    ConfigStore store;
+    store.Load(NarrowPath(iniPath));
+    LogSetLevel(static_cast<int>(LogLevel::Info));
+    const size_t start = ReadText(g_harnessLog).size();
+    Config edited = store.Get();
+    edited.density = kTypedDensity;
+    store.Apply(edited);
+    const bool saved = store.Save();
+    const std::string text = LoggedByTheHarnessSince(start);
+    std::printf("%s", text.c_str());
+    Check(saved && CountOf(text, "settings: Density 1 -> 3.371") == 1 && CountOf(text, "Density 3.371 -> 3.371") == 0,
+          "saving a value typed with more decimals than the INI keeps logs its edit once and no rounding change");
+}
+
 void CheckWaterLogPolicy()
 {
     StatusLog log;
@@ -381,6 +406,7 @@ void CheckWaterSettings(const std::wstring& outDir, const std::wstring& shippedI
     CheckFogDivesLeaveTheSkipBudget();
     CheckSettingChangesListed();
     CheckSettingChangesLogged(outDir, shippedIni);
+    CheckSaveLogsNoRoundingChange(outDir, shippedIni);
     CheckWaterOnlyEditsKeepFogHistory();
     CheckShippedWaterDefaults(shippedIni);
     CheckWaterSettingsSave(outDir, shippedIni);
