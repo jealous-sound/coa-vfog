@@ -1433,6 +1433,27 @@ void CheckWaterOffReleasesResources(BasinClient& client, const Config& base)
           "foam masks live in the default pool, without a managed system-memory copy beside the CPU one");
 }
 
+void CheckFaultedFirstBeginReleasesItsResources(BasinClient& client, const Config& base)
+{
+    const Config on = WaterConfig(base);
+    Config off = on;
+    off.water = false;
+    WaterFrame hooked;
+    hooked.calls = WaterCalls::Hooks;
+    vf_test_set_config(&off);
+    client.Render(hooked);
+    const unsigned released = vf_test_water_resources_held();
+    vf_test_set_config(&on);
+    WaterFrame faulted = hooked;
+    faulted.fault = kFaultInBegin;
+    const WaterFrameResult result = client.Render(faulted);
+    const unsigned held = vf_test_water_resources_held();
+    std::printf("     water resources held: 0x%X after the release, 0x%X after a faulted first Begin\n", released, held);
+    Check(released == 0 && !result.began && result.stateKept && held == 0,
+          "an exception in the first water Begin after a release stops the water and releases what that Begin "
+          "created at the frame end");
+}
+
 SyntheticWaterData WaveFoamOnlyLake()
 {
     SyntheticWaterData data = MakeSyntheticWaterData();
@@ -2220,6 +2241,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     CheckWaterGpuTimeSummary(client, base);
     CheckFaultInsideThePassRestoresTheDevice(h, client, base);
     CheckWaterOffReleasesResources(client, base);
+    CheckFaultedFirstBeginReleasesItsResources(client, base);
     CheckFlatWaterHasNoCrestFoam(client, base);
     CheckShoreFoamWidthFollowsTheSlope(h, base);
     CheckOccluderEdgesKeepWaveDetail(h, base);

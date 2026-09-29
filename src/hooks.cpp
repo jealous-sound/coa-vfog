@@ -374,8 +374,8 @@ void OnWaterPassBegin(const void* liquidRenderer)
     }
     const char* reason = "the water pass could not start";
     g_waterPassDevice = device;
-    const WaterArming arming = ArmWaterPass(device, cfg, &reason);
     g_waterResourcesDevice = device;
+    const WaterArming arming = ArmWaterPass(device, cfg, &reason);
     if (arming == WaterArming::Armed)
         return;
     g_waterPassDevice = nullptr;
