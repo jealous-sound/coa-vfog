@@ -1011,31 +1011,25 @@ void WaterRenderer::ShadeClasses(IDirect3DDevice9* dev, IDirect3DSurface9* targe
     }
 }
 
-void WaterRenderer::End(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* depthSurface)
+bool WaterRenderer::End(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* depthSurface)
 {
-    if (!m_armed)
-        return;
-    RestoreClientStencil(dev);
-    m_armed = false;
     m_shadedClasses = 0;
     m_wavesSimulated = false;
+    if (!m_armed)
+        return Skip("water pass not armed");
+    RestoreClientStencil(dev);
+    m_armed = false;
     if (!AnyClassDrawn())
-    {
-        Skip("no water drawn");
-        return;
-    }
+        return Skip("no water drawn");
     if (!dev || !depthTexture || !depthSurface || dev->TestCooperativeLevel() != D3D_OK || !m_state ||
         !m_sceneColour)
-    {
-        Skip("device not ready");
-        return;
-    }
+        return Skip("device not ready");
     SaveTargets(dev);
     D3DSURFACE_DESC depthDesc = {};
     if (!UsableTargets(depthSurface, m_in.viewport, depthDesc))
     {
         ReleaseTargets();
-        return;
+        return false;
     }
     const double seconds = WaterSeconds();
     const bool wavesPrepared = PrepareWaves(dev);
@@ -1053,11 +1047,14 @@ void WaterRenderer::End(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, 
     RestoreTargets(dev);
     m_lastSeconds = seconds;
     LogWaveState();
-    if (!m_loggedFirstShade && m_shadedClasses > 0)
+    if (m_shadedClasses == 0)
+        return Skip("no water preset for the drawn classes");
+    if (!m_loggedFirstShade)
     {
         m_loggedFirstShade = true;
         VF_LOG_INFO("water shaded: %d class%s, waves %s, quality %d", m_shadedClasses,
                     m_shadedClasses == 1 ? "" : "es", m_wavesSimulated ? "simulated" : "flat",
                     QualityIndex(m_cfg) + 1);
     }
+    return true;
 }

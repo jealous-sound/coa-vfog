@@ -41,10 +41,11 @@ public:
                const FrameInputs& in, const WaterInputs& water, const Config& cfg);
     void Tag(IDirect3DDevice9* dev, WaterClass waterClass);
     void Untag(IDirect3DDevice9* dev);
-    void End(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* depthSurface);
+    bool End(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* depthSurface);
     void Abort(IDirect3DDevice9* dev);
 
     bool Armed() const { return m_armed; }
+    bool WavesSimulated() const { return m_wavesSimulated; }
     const char* LastSkipReason() const { return m_skip; }
 
 private:

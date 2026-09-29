@@ -145,9 +145,9 @@ extern "C" void __cdecl vf_test_water_untag()
     UntagWaterDraw(LatestFogDevice());
 }
 
-extern "C" void __cdecl vf_test_water_end()
+extern "C" int __cdecl vf_test_water_end(const char** skipReason)
 {
-    EndWaterPass(LatestFogDevice());
+    return EndWaterPass(LatestFogDevice(), skipReason, nullptr) ? 1 : 0;
 }
 
 extern "C" void __cdecl vf_test_set_water_seconds(double seconds)

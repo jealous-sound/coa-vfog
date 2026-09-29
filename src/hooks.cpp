@@ -29,7 +29,8 @@ constexpr int kEasternKingdomsMap = 0;
 constexpr int kKalimdorMap = 1;
 constexpr int kOutlandMap = 530;
 constexpr int kNorthrendMap = 571;
-constexpr size_t kDrawnWaterClassesTextSize = 48;
+constexpr size_t kDrawnWaterClassesTextSize = 64;
+constexpr unsigned kFlatWavesBit = 1u << 31;
 
 uintptr_t g_worldRenderTarget = engine::kWorldRenderTarget;
 uintptr_t g_opaqueM2PassTarget = engine::kOpaqueM2PassTarget;
@@ -227,11 +228,12 @@ unsigned WaterClassBit(WaterClass waterClass)
     return 1u << static_cast<unsigned>(waterClass);
 }
 
-const char* DrawnWaterClassesText(unsigned classMask)
+const char* DrawnWaterClassesText(unsigned classMask, bool flatWaves)
 {
-    if (classMask == g_drawnWaterClassesTextMask)
+    const unsigned key = classMask | (flatWaves ? kFlatWavesBit : 0u);
+    if (key == g_drawnWaterClassesTextMask)
         return g_drawnWaterClassesText;
-    g_drawnWaterClassesTextMask = classMask;
+    g_drawnWaterClassesTextMask = key;
     g_drawnWaterClassesText[0] = 0;
     for (WaterClass waterClass : {WaterClass::Lake, WaterClass::River, WaterClass::Ocean, WaterClass::Interior})
     {
@@ -241,17 +243,17 @@ const char* DrawnWaterClassesText(unsigned classMask)
         std::snprintf(g_drawnWaterClassesText + used, sizeof(g_drawnWaterClassesText) - used, "%s%s",
                       used ? ", " : "", WaterClassLabel(waterClass));
     }
+    if (flatWaves)
+    {
+        const size_t used = std::strlen(g_drawnWaterClassesText);
+        std::snprintf(g_drawnWaterClassesText + used, sizeof(g_drawnWaterClassesText) - used, "; flat waves");
+    }
     return g_drawnWaterClassesText;
 }
 
-void RecordWaterDrawn(unsigned classMask)
+void RecordWaterDrawn(unsigned classMask, bool flatWaves)
 {
-    if (!classMask)
-    {
-        RecordWaterSkip("no water in view");
-        return;
-    }
-    g_waterStatus = {true, DrawnWaterClassesText(classMask)};
+    g_waterStatus = {true, DrawnWaterClassesText(classMask, flatWaves)};
     g_lastWaterSkip = "";
 }
 
@@ -317,9 +319,16 @@ void OnWaterPassEnd()
 {
     if (!g_waterPassDevice)
         return;
-    EndWaterPass(g_waterPassDevice);
+    const char* skip = "";
+    bool flatWaves = false;
+    const bool shaded = EndWaterPass(g_waterPassDevice, &skip, &flatWaves);
     g_waterPassDevice = nullptr;
-    RecordWaterDrawn(g_waterClassesThisPass);
+    if (shaded)
+        RecordWaterDrawn(g_waterClassesThisPass, flatWaves);
+    else if (!g_waterClassesThisPass)
+        RecordWaterSkip("no water in view");
+    else
+        RecordWaterSkip(skip && *skip ? skip : "the water pass shaded nothing");
 }
 
 void TagWaterDrawUnsafe(const void* liquidSettings)

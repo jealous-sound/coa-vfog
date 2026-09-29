@@ -26,5 +26,5 @@ bool BeginWaterPass(FogDevice* device, const FrameInputs& in, const WaterInputs&
                     const char** skipReason);
 void TagWaterDraw(FogDevice* device, WaterClass waterClass);
 void UntagWaterDraw(FogDevice* device);
-void EndWaterPass(FogDevice* device);
+bool EndWaterPass(FogDevice* device, const char** skipReason, bool* flatWaves);
 void AbortWaterPass(FogDevice* device);

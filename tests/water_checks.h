@@ -408,6 +408,7 @@ struct WaterFrame
     bool opaqueMask = false;
     bool fogDepthView = false;
     int fault = kNoWaterFault;
+    IDirect3DSurface9* depthAtEnd = nullptr;
 };
 
 struct WaterFrameResult
@@ -421,6 +422,8 @@ struct WaterFrameResult
     bool untagRestores = true;
     bool faulted = false;
     bool fogRendered = false;
+    bool shaded = false;
+    const char* endSkip = "";
 };
 
 bool BeginWaterFaulted(const FrameInputs* in, const WaterInputs* water, const char** skip, bool* began)
@@ -437,11 +440,11 @@ bool BeginWaterFaulted(const FrameInputs* in, const WaterInputs* water, const ch
     }
 }
 
-bool EndWaterFaulted()
+bool EndWaterFaulted(const char** skip, bool* shaded)
 {
     __try
     {
-        vf_test_water_end();
+        *shaded = vf_test_water_end(skip) != 0;
         return false;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -488,8 +491,19 @@ public:
         m_h.DrawPretransformedQuadAtRawDepth(kOtherPassLeft, kOtherPassTop, kOtherPassRight, kOtherPassBottom,
                                              kOtherPassRawDepth, kOtherPassColour);
         ApplyClientDrawState();
+        IDirect3DSurface9* clientDepth = nullptr;
+        if (frame.depthAtEnd)
+        {
+            dev->GetDepthStencilSurface(&clientDepth);
+            dev->SetDepthStencilSurface(frame.depthAtEnd);
+        }
         if (frame.calls != WaterCalls::None)
-            result.faulted = EndWaterFaulted() || result.faulted;
+            result.faulted = EndWaterFaulted(&result.endSkip, &result.shaded) || result.faulted;
+        if (frame.depthAtEnd)
+        {
+            dev->SetDepthStencilSurface(clientDepth);
+            clientDepth->Release();
+        }
         vf_test_fail_water_in_window(kNoWaterFault);
         WaterSentinel after;
         ReadWaterSentinel(dev, after);
@@ -1000,7 +1014,7 @@ void CheckDepthWriteNesting(Harness& h, BasinClient& client)
     dev->GetRenderState(D3DRS_ZWRITEENABLE, &forcedAtBegin);
     dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
     dev->GetRenderState(D3DRS_ZWRITEENABLE, &duringWater);
-    vf_test_water_end();
+    vf_test_water_end(nullptr);
     dev->GetRenderState(D3DRS_ZWRITEENABLE, &afterWater);
     vf_test_force_depth_write(0);
     dev->GetRenderState(D3DRS_ZWRITEENABLE, &restored);
@@ -1017,7 +1031,7 @@ void CheckDepthWriteNesting(Harness& h, BasinClient& client)
     dev->GetRenderState(D3DRS_ZWRITEENABLE, &suppressed);
     vf_test_suppress_depth_write(0);
     dev->GetRenderState(D3DRS_ZWRITEENABLE, &unsuppressed);
-    vf_test_water_end();
+    vf_test_water_end(nullptr);
     dev->GetRenderState(D3DRS_ZWRITEENABLE, &ended);
     Check(again && suppressed == FALSE && unsuppressed == TRUE && ended == FALSE,
           "text depth suppression overrides the water depth forcing and the client's request returns after it");
@@ -1197,6 +1211,35 @@ void CheckFlatFallback(BasinClient& client, const Config& base, const Image& sto
     SaveImage(outDir, L"water-flat-fallback", withWaves.image);
     Check(withWaves.began && SameImage(withWaves.image, withoutWaves.image) && !SameImage(withWaves.image, stock),
           "without the wave simulation the water is shaded flat (1x1 zero maps) instead of skipped");
+}
+
+void CheckEndReportsWhatItShaded(Harness& h, BasinClient& client, const Config& base)
+{
+    const Config on = WaterConfig(base);
+    vf_test_set_config(&on);
+    WaterFrame lake;
+    const WaterFrameResult drawn = client.Render(lake);
+    IDirect3DSurface9* otherDepth = nullptr;
+    const bool created = SUCCEEDED(h.dev->CreateDepthStencilSurface(h.pp.BackBufferWidth, h.pp.BackBufferHeight,
+                                                                     D3DFMT_D24S8, D3DMULTISAMPLE_NONE, 0, FALSE,
+                                                                     &otherDepth, nullptr));
+    WaterFrame rebound = lake;
+    rebound.depthAtEnd = otherDepth;
+    const WaterFrameResult unshaded = created ? client.Render(rebound) : WaterFrameResult();
+    if (otherDepth)
+        otherDepth->Release();
+    const WaterStrip riverOnly[] = {{-kBasinHalfWidth, kBasinHalfWidth, kRiverClass, kStockWaterColour}};
+    WaterFrame river;
+    river.strips = riverOnly;
+    const WaterFrameResult presetless = client.Render(river);
+    std::printf("     End: lake %d, rebound depth %d (%s), river without a preset %d (%s)\n", drawn.shaded,
+                unshaded.shaded, unshaded.endSkip, presetless.shaded, presetless.endSkip);
+    Check(drawn.began && drawn.shaded && created && unshaded.began && !unshaded.shaded &&
+              std::strcmp(unshaded.endSkip, "fog depth surface not bound") == 0 && unshaded.stateKept,
+          "End reports that it shaded nothing, and why, when the fog depth is no longer bound");
+    Check(presetless.began && !presetless.shaded &&
+              std::strcmp(presetless.endSkip, "no water preset for the drawn classes") == 0,
+          "End reports that it shaded nothing when no drawn class has a preset");
 }
 
 void CheckFaultInsideThePassRestoresTheDevice(Harness& h, BasinClient& client, const Config& base)
@@ -1519,6 +1562,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     CheckInteriorIgnoresSun(h, base);
     CheckGrazingReflectionsMissTheShore(h, base, outDir);
     CheckFoamTintsAreLinear(client, base);
+    CheckEndReportsWhatItShaded(h, client, base);
     CheckFaultInsideThePassRestoresTheDevice(h, client, base);
     CheckResetKeepsWater(h, client, base);
     SaveRealDataViews(h, base, waterDataPath, outDir);
