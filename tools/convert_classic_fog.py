@@ -8,13 +8,16 @@ import struct
 import sys
 import zipfile
 
-DESCRIPTION = ("Convert the Forever fog and lighting kit's volumetric fog tables into data/fogdata.bin, placed by the "
-               "Light and ZoneLight records of a previous fogdata.bin or of the Classic client's CSV exports.")
+DESCRIPTION = ("Convert the Forever fog and lighting kit's volumetric fog, glow and colour-grading data into "
+               "data/fogdata.bin, placed by the Light and ZoneLight records of a previous fogdata.bin or of the "
+               "Classic client's CSV exports.")
 KIT_ROOT = "coa-forever-fog-lighting-kit/"
 KIT_CHECKSUMS = "SHA256SUMS"
 LIGHT_DATA_TABLE = "data/decoded/LightData.json"
+LIGHT_PARAMS_TABLE = "data/decoded/LightParams.json"
 FOG_TABLE = "data/decoded/LightDataGlobalVolumeFog.json"
 ZONE_POINT_TABLE = "data/decoded/ZoneLightPoint.json"
+GRADING_ASSET = "assets/%d.blp"
 FOG_TABLE_LAYOUT = "24290E20"
 PLACEMENT_TABLE_NAMES = ("Light.csv", "ZoneLight.csv")
 
@@ -24,22 +27,37 @@ LIGHT_PARAMS_SLOTS = 8
 MINIMUM_OUTLINE_POINTS = 3
 
 FILE_MAGIC = b"VFD1"
-FORMAT_VERSION = 3
-HEADER_FORMAT = "<4s7I"
+FORMAT_VERSION = 4
+HEADER_FORMAT = "<4s8I"
 LIGHT_FORMAT = "<Ii5f8I"
-PARAMS_FORMAT = "<3I"
-KEY_FORMAT = "<2H2I"
-LAYER_FORMAT = "<4I11f"
+PARAMS_FORMAT = "<3If"
+KEY_FORMAT = "<2H3I"
+LAYER_FORMAT = "<4I11fI11f"
 ZONE_LIGHT_FORMAT = "<IiI2f2I"
 ZONE_POINT_FORMAT = "<2f"
+GRADING_CURVE_FORMAT = "<I32B"
+NO_GRADING_CURVE = 0
 U16_MASK = 0xFFFF
 U32_MASK = 0xFFFFFFFF
 RGB_MASK = 0xFFFFFF
 
 PLACEMENT_RECORD_SIZES = {
     3: {"params": 12, "key": 12, "layer": 60},
+    4: {"params": 16, "key": 16, "layer": 108},
 }
-PLACEMENT_HEADER_FORMATS = {3: "<4s7I"}
+PLACEMENT_HEADER_FORMATS = {3: "<4s7I", 4: "<4s8I"}
+
+BLP_MAGIC = b"BLP2"
+BLP_TYPE = 1
+BLP_RAW_BGRA = 3
+BLP_HEADER_FORMAT = "<4sI4B2I16I16I"
+BLP_FIRST_OFFSET_FIELD = 8
+BLP_FIRST_SIZE_FIELD = 24
+BGRA_BYTES = 4
+BLUE, GREEN, RED = range(3)
+LUT_SIDE = 32
+LUT_STRIP_WIDTH = LUT_SIDE * LUT_SIDE
+GRADING_CURVE_TOLERANCE = 1
 
 DIFFUSE_COLUMN = 1
 EMISSIVE_COLUMN = 2
@@ -57,6 +75,11 @@ FLAGS_COLUMN = 22
 LAYER_INDEX_COLUMN = 23
 STRENGTH_COLUMN = 25
 EXPONENT_COLUMN = 26
+NOISE_FADE_COLUMN = 4
+NOISE_DIRECTION_COLUMNS = (16, 17, 18, 19, 20, 21)
+NOISE_PAIR_COLUMNS = (27, 28)
+UNMAPPED_TOGGLE_COLUMN = 24
+NOISE_OCTAVES = 2
 
 
 class Kit:
@@ -247,22 +270,26 @@ def read_placements(source):
     return placements_from_csv(source)
 
 
-def pack_header(light_count, params_count, key_count, layer_count, zone_light_count, zone_point_count):
+def pack_header(light_count, params_count, key_count, layer_count, zone_light_count, zone_point_count, curve_count):
     return struct.pack(HEADER_FORMAT, FILE_MAGIC, FORMAT_VERSION, light_count, params_count, key_count, layer_count,
-                       zone_light_count, zone_point_count)
+                       zone_light_count, zone_point_count, curve_count)
 
 
-def pack_params(params_id, first_key, key_count):
-    return struct.pack(PARAMS_FORMAT, params_id, first_key, key_count)
+def pack_params(params_id, first_key, key_count, glow):
+    return struct.pack(PARAMS_FORMAT, params_id, first_key, key_count, glow)
 
 
-def pack_key(half_minute_of_day, layer_count, first_layer, direct_rgb):
-    return struct.pack(KEY_FORMAT, half_minute_of_day, layer_count, first_layer, direct_rgb)
+def pack_key(half_minute_of_day, layer_count, first_layer, direct_rgb, grading_curve):
+    return struct.pack(KEY_FORMAT, half_minute_of_day, layer_count, first_layer, direct_rgb, grading_curve)
+
+
+def noise_pairs(row):
+    return [value for column in NOISE_PAIR_COLUMNS for value in fog_column(row, column)[:NOISE_OCTAVES]]
 
 
 def pack_layer(row):
     if row is None:
-        return struct.pack(LAYER_FORMAT, *([0] * 4 + [0.0] * 11))
+        return struct.pack(LAYER_FORMAT, *([0] * 4 + [0.0] * 11 + [0] + [0.0] * 11))
     return struct.pack(
         LAYER_FORMAT,
         rgb(fog_column(row, DIFFUSE_COLUMN)),
@@ -280,7 +307,44 @@ def pack_layer(row):
         fog_column(row, G_COLUMN),
         fog_column(row, STRENGTH_COLUMN),
         fog_column(row, EXPONENT_COLUMN),
+        rgb(fog_column(row, NOISE_FADE_COLUMN)),
+        *[fog_column(row, column) for column in NOISE_DIRECTION_COLUMNS],
+        *noise_pairs(row),
+        fog_column(row, UNMAPPED_TOGGLE_COLUMN),
     )
+
+
+def blp_strip(file_data_id, data):
+    header = struct.unpack_from(BLP_HEADER_FORMAT, data)
+    magic, kind, encoding, _, _, _, width, height = header[:8]
+    offset, size = header[BLP_FIRST_OFFSET_FIELD], header[BLP_FIRST_SIZE_FIELD]
+    if (magic != BLP_MAGIC or kind != BLP_TYPE or encoding != BLP_RAW_BGRA
+            or (width, height) != (LUT_STRIP_WIDTH, LUT_SIDE) or size != width * height * BGRA_BYTES
+            or offset + size > len(data)):
+        raise SystemExit("grading LUT %d is not a %dx%d BGRA8 BLP2 strip" % (file_data_id, LUT_STRIP_WIDTH, LUT_SIDE))
+    return data[offset:offset + size]
+
+
+def lut_outputs_by_input(strip):
+    outputs = [[] for _ in range(LUT_SIDE)]
+    for green in range(LUT_SIDE):
+        for blue in range(LUT_SIDE):
+            for red in range(LUT_SIDE):
+                texel = (green * LUT_STRIP_WIDTH + blue * LUT_SIDE + red) * BGRA_BYTES
+                outputs[red].append(strip[texel + RED])
+                outputs[green].append(strip[texel + GREEN])
+                outputs[blue].append(strip[texel + BLUE])
+    return outputs
+
+
+def grading_curve(kit, file_data_id):
+    outputs = lut_outputs_by_input(blp_strip(file_data_id, kit.read(GRADING_ASSET % file_data_id)))
+    curve = [round(sum(values) / len(values)) for values in outputs]
+    deviation = max(abs(value - entry) for values, entry in zip(outputs, curve) for value in values)
+    if deviation > GRADING_CURVE_TOLERANCE:
+        raise SystemExit("grading LUT %d is not one curve shared by R, G and B (deviation %d)"
+                         % (file_data_id, deviation))
+    return struct.pack(GRADING_CURVE_FORMAT, file_data_id, *curve), deviation
 
 
 def kit_outlines(kit):
@@ -306,23 +370,34 @@ def fog_keys_by_params(kit):
     for row in kit.table(LIGHT_DATA_TABLE)["rows"]:
         layers = layers_by_index(fog_by_data.get(row["ID"], []))
         if layers:
-            key = (row["Time"] & U16_MASK, layers, rgb(row["DirectColor"]))
+            key = (row["Time"] & U16_MASK, layers, rgb(row["DirectColor"]), row["ColorGradingFileDataID"],
+                   row["DarkerColorGradingFileDataID"])
             keys_by_params.setdefault(row["LightParamID"], []).append(key)
     return keys_by_params
 
 
+def glow_by_params(kit):
+    return {row["ID"]: row["Glow"] for row in kit.table(LIGHT_PARAMS_TABLE)["rows"]}
+
+
 def convert(kit, placements):
     keys_by_params = fog_keys_by_params(kit)
+    glows = glow_by_params(kit)
+    placed_params = sorted(placements.params_ids() & set(glows))
+    grading_ids = sorted({key[3] for p in placed_params for key in keys_by_params.get(p, []) if key[3]})
+    curves = [grading_curve(kit, file_data_id) for file_data_id in grading_ids]
     params_blob, keys_blob, layers_blob = [], [], []
-    key_count = layer_count = 0
-    for params_id in sorted(placements.params_ids() & set(keys_by_params)):
-        keys = sorted(keys_by_params[params_id], key=lambda k: k[0])
-        params_blob.append(pack_params(params_id, key_count, len(keys)))
-        for half_minute_of_day, layers, direct_rgb in keys:
-            keys_blob.append(pack_key(half_minute_of_day, len(layers), layer_count, direct_rgb))
+    key_count = layer_count = darker_keys = 0
+    for params_id in placed_params:
+        keys = sorted(keys_by_params.get(params_id, []), key=lambda k: k[0])
+        params_blob.append(pack_params(params_id, key_count, len(keys), glows[params_id]))
+        for half_minute_of_day, layers, direct_rgb, grading_id, darker_grading_id in keys:
+            curve = grading_ids.index(grading_id) + 1 if grading_id else NO_GRADING_CURVE
+            keys_blob.append(pack_key(half_minute_of_day, len(layers), layer_count, direct_rgb, curve))
             layers_blob.extend(pack_layer(r) for r in layers)
             layer_count += len(layers)
             key_count += 1
+            darker_keys += 1 if darker_grading_id else 0
 
     outlines = kit_outlines(kit)
     light_ids = placements.light_ids()
@@ -341,10 +416,14 @@ def convert(kit, placements):
         kept_zones.append(zone_id)
 
     header = pack_header(len(placements.lights), len(params_blob), key_count, layer_count, len(zones_blob),
-                         zone_point_count)
-    blob = header + b"".join(placements.lights + params_blob + keys_blob + layers_blob + zones_blob + points_blob)
+                         zone_point_count, len(curves))
+    blob = header + b"".join(placements.lights + params_blob + keys_blob + layers_blob + zones_blob + points_blob +
+                             [curve for curve, _ in curves])
     changed_outlines = [z for z in kept_zones if z in placements.outlines and placements.outlines[z] != outlines[z]]
-    return blob, key_count, layer_count, kept_zones, changed_outlines
+    summary = {"keys": key_count, "layers": layer_count, "zones": kept_zones, "changed_outlines": changed_outlines,
+               "unplaced_params": len(placements.params_ids()) - len(placed_params), "grading_ids": grading_ids,
+               "curve_deviation": max((deviation for _, deviation in curves), default=0), "darker_keys": darker_keys}
+    return blob, summary
 
 
 def check_placements_carried(blob, placements, kept_zones):
@@ -366,15 +445,17 @@ def main():
     args = parser.parse_args()
     placements = read_placements(args.placements)
     with Kit(args.kit) as kit:
-        blob, keys, layers, kept_zones, changed_outlines = convert(kit, placements)
-    check_placements_carried(blob, placements, kept_zones)
+        blob, summary = convert(kit, placements)
+    check_placements_carried(blob, placements, summary["zones"])
     with open(args.output, "wb") as handle:
         handle.write(blob)
     params = struct.unpack_from(HEADER_FORMAT, blob)[3]
-    print("%s: %d lights and %d zone lights placed from %s, %d light params, %d keys, %d layers, %d zone outlines "
-          "changed by the kit, %d bytes"
-          % (args.output, len(placements.lights), len(kept_zones), placements.origin, params, keys, layers,
-             len(changed_outlines), len(blob)))
+    print("%s: %d lights and %d zone lights placed from %s (%d zone outlines changed by the kit), %d light params "
+          "(%d referenced params missing from LightParams), %d keys, %d layers, grading curves %s (largest deviation "
+          "from one shared curve %d/255; %d keys with a darker grading LUT left out), %d bytes"
+          % (args.output, len(placements.lights), len(summary["zones"]), placements.origin,
+             len(summary["changed_outlines"]), params, summary["unplaced_params"], summary["keys"], summary["layers"],
+             summary["grading_ids"], summary["curve_deviation"], summary["darker_keys"], len(blob)))
     return 0
 
 

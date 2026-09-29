@@ -201,6 +201,28 @@ char DepthClassLetter(float depthClass)
 {
     return depthClass > 1.5f ? 's' : (depthClass > 0.5f ? 'f' : 'w');
 }
+
+constexpr int kLoggedGradingInputs[] = {8, 16, 24};
+
+void LogAuthoredExtras(const AuthoredFog& fog)
+{
+    const float* curve = fog.gradingCurve;
+    VF_LOG_INFO("  Classic glow %.2f%s, grading curve at inputs %d/31 %d/31 %d/31: %.3f %.3f %.3f (not rendered)",
+                fog.glow, fog.hasGlow ? "" : " (no glow data)", kLoggedGradingInputs[0], kLoggedGradingInputs[1],
+                kLoggedGradingInputs[2], curve[kLoggedGradingInputs[0]], curve[kLoggedGradingInputs[1]],
+                curve[kLoggedGradingInputs[2]]);
+    for (int i = 0; i < fog.layerCount; ++i)
+    {
+        const AuthoredNoise& n = fog.layers[i].noise;
+        if (n.presence <= 0.0f)
+            continue;
+        VF_LOG_INFO("  classic layer %d noise %.2f: octave shares %.2f/%.2f, tiles %.0f/%.0f yd, drift "
+                    "(%.1f %.1f %.1f)/(%.1f %.1f %.1f) yd/s, fade %.2f %.2f %.2f",
+                    i, n.presence, n.octaveShare[0], n.octaveShare[1], n.tileYards[0], n.tileYards[1],
+                    n.velocity[0][0], n.velocity[0][1], n.velocity[0][2], n.velocity[1][0], n.velocity[1][1],
+                    n.velocity[1][2], n.fade[0], n.fade[1], n.fade[2]);
+    }
+}
 }
 
 Renderer::~Renderer()
@@ -617,8 +639,9 @@ IDirect3DTexture9* Renderer::FilterWithHistory(IDirect3DDevice9* dev, IDirect3DT
 }
 
 void Renderer::LogFrameSummary(IDirect3DDevice9* dev, long long now, const FrameInputs& in, const Config& cfg,
-                               const FogParams& fog, const D3DSURFACE_DESC& depthDesc, const float* viewToWorld,
-                               const float* toLightInView, const float* sunPx, float rayStrength)
+                               const FogParams& fog, const AuthoredFog* authored, const D3DSURFACE_DESC& depthDesc,
+                               const float* viewToWorld, const float* toLightInView, const float* sunPx,
+                               float rayStrength)
 {
     const D3DVIEWPORT9& vp = in.viewport;
     const bool viewChanged = std::fabs(in.farClip - m_loggedFarClip) > 1.0f || vp.Width != m_loggedViewport.Width ||
@@ -668,6 +691,8 @@ void Renderer::LogFrameSummary(IDirect3DDevice9* dev, long long now, const Frame
                     l.emissive[2], l.upperHeight, l.upperFalloff, l.lowerHeight, l.lowerFalloff, l.shadowed,
                     std::min(l.endDistance, 99999.0f));
     }
+    if (authored)
+        LogAuthoredExtras(*authored);
 }
 
 bool Renderer::Render(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* boundDepthStencil,
@@ -806,7 +831,8 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     const float rayStrength = cfg.godRays * fog.lightVisibility * sunScreenFade;
     const bool rays = rayStrength > 0.005f;
 
-    LogFrameSummary(dev, now, in, cfg, fog, depthDesc, viewToWorld, toLightInView, sunPx, rayStrength);
+    LogFrameSummary(dev, now, in, cfg, fog, hasAuthored ? &authored : nullptr, depthDesc, viewToWorld, toLightInView,
+                    sunPx, rayStrength);
 
     if (LogEnabled(LogLevel::Info))
         m_gpuTimer.Begin(dev);

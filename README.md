@@ -77,10 +77,10 @@ distance.
 ## Classic fog data
 
 `tools/convert_classic_fog.py` converts the WoW Forever fog and lighting kit (build 1.60.1.70009, a folder or its
-zip: the decoded `LightData`, `LightDataGlobalVolumeFog` and `ZoneLightPoint` tables, each checked against the kit's
-`SHA256SUMS`) into `data/fogdata.bin`. The kit could not decrypt the `Light` and `ZoneLight` tables, so the lights and
-zone lights are placed from a previous `fogdata.bin`, whose records are carried over byte for byte, or from the
-Classic client's `Light.csv` and `ZoneLight.csv` exports:
+zip: the decoded `LightData`, `LightDataGlobalVolumeFog`, `LightParams` and `ZoneLightPoint` tables and the
+colour-grading LUTs, each checked against the kit's `SHA256SUMS`) into `data/fogdata.bin`. The kit could not decrypt
+the `Light` and `ZoneLight` tables, so the lights and zone lights are placed from a previous `fogdata.bin`, whose
+records are carried over byte for byte, or from the Classic client's `Light.csv` and `ZoneLight.csv` exports:
 
 ```powershell
 python tools/convert_classic_fog.py <kit folder or zip> --placements data/fogdata.bin data/fogdata.bin
@@ -110,6 +110,32 @@ client's darker lighting; this is a compatibility calibration, not a reproductio
 Classic data applies on maps where any Classic light has fog, wherever Classic lights hold at least half of the
 blend weight. A light without fog in the active slot counts with zero density, so the fog thins smoothly into it
 and the distance fog hides the far clip there. Other maps use the derived layers.
+
+`fogdata.bin` format 4 holds, after a header of counts: the lights (id, map, position, falloff, eight light params
+slots); every light params a light references, with its `LightParams.Glow` and the range of its fog keys (none for
+params without fog); the fog keys (time, Classic direct light, layer range, grading curve index, 0 for none); the
+layers (the columns above plus the authored noise columns: fade colour c4, scroll directions c16–18 and c19–21, the
+pairs c27 and c28, and c24 carried raw); the zone lights and their outlines; and the grading curves. The loader
+rejects any other format and logs which one it found.
+
+Each light params also carries glow and colour grading, which the DLL resolves with the fog but does not render yet:
+
+- **Glow.** `LightParams.Glow`, blended like the fog by light weight, weather and screen-effect slot. Forever sets it
+  to 0 on 130 of 131 Kalimdor and 59 of 80 Eastern Kingdoms clear-weather lights, where CoA's own 3.3.5 data holds
+  0.3–1.0.
+- **Colour grading.** `LightData.ColorGradingFileDataID` names a 32³ BGRA LUT stored as a 1024×32 strip (R across each
+  32-texel tile, G down the rows, B by tile). Every LUT that lights on 3.3.5 maps reach (1140733, an identity, and
+  8248426, 8248427, 8286665–8286669) applies one curve alike to R, G and B, so the file keeps 32 codes per LUT; the
+  converter checks this exactly and fails otherwise. `DarkerColorGradingFileDataID` is left out: its LUT 1308655 is a
+  real colour grade that no single curve reproduces, and only params 6563, on the Classic-only map 2835, uses it. A
+  key sets a curve or none. The curve at a time of day is interpolated between the nearest earlier and later keys that
+  set one, wrapping past midnight, so the params that grade only at 12:00 (135 of the 147 graded) hold their curve all
+  day, and param 7605's explicit identity keys fade into its 18:00 grade. This rule is inferred (confidence about
+  0.6): 7605 would not need identity keys if a key without a LUT meant identity. Lights and weather blend curves by
+  their weights, and params without a graded key count as identity. The Eastern Kingdoms clear-weather light (params
+  7748) grades with 8286666 and Kalimdor's (7636) with the milder 8286665.
+
+The frame summary logs the resolved glow and three points of the grading curve.
 
 ## Forever water data
 
