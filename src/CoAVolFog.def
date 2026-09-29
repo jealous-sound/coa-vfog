@@ -10,3 +10,34 @@ EXPORTS
     vf_test_suppress_depth_write
     vf_test_overlay_visible
     vf_test_draw_overlay
+    vf_test_assign_water_data
+    vf_test_load_water_data
+    vf_test_water_begin
+    vf_test_water_tag
+    vf_test_water_untag
+    vf_test_water_end
+    vf_test_set_water_seconds
+    vf_test_disable_wave_simulation
+    vf_test_force_packed_water_depth
+    vf_test_transparent_liquids_queued
+    vf_test_fail_water_in_window
+    vf_test_water_abort
+    vf_test_force_water_summary
+    vf_test_water_data_loaded
+    vf_test_water_resources_held
+    vf_test_water_mask_pool
+    vf_test_use_water_hook_client
+    vf_test_hook_water_pass_begin
+    vf_test_hook_water_draw_tag
+    vf_test_hook_water_draw_untag
+    vf_test_hook_water_pass_end
+    vf_test_hook_frame_end
+    vf_test_water_armed
+    vf_test_water_status
+    vf_test_water_pass_thunk
+    vf_test_water_pass_begin_reuses_argument_slot
+    vf_test_record_fog_frame
+    vf_test_fail_water_mask_uploads
+    vf_test_water_masks_uploaded
+    vf_test_force_water_shading_variant
+    vf_test_water_shading_variant

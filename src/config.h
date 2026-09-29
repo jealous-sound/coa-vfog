@@ -56,17 +56,30 @@ struct Config
     int debugView = 0;
     bool sunMarker = false;
     int logLevel = 1;
+    bool water = true;
+    int waterQuality = 2;
+    float waterWaves = 1.0f;
+    float waterWind = 2.0f;
+    float waterFoam = 1.0f;
+    float waterReflections = 1.0f;
+    float waterSpecular = 1.0f;
+    float waterClarity = 1.0f;
+    float waterZoneColors = 0.5f;
+    int waterDebugView = 0;
 };
 
+bool SameFogSettings(const Config& a, const Config& b);
 bool SameLiveSettings(const Config& a, const Config& b);
+std::string SettingChanges(const Config& before, const Config& after);
 
 class ConfigStore
 {
 public:
     void Load(const std::string& path);
     bool ReloadIfChanged();
-    void Override(const Config& config) { m_config = config; }
+    void Override(const Config& config);
     void Apply(const Config& edited);
+    void LogSettledEdits();
     bool Save();
     void Revert();
     bool HasUnsavedChanges() const { return !SameLiveSettings(m_config, m_saved); }
@@ -77,11 +90,13 @@ private:
     void Read();
     Config ReadFile() const;
     void ReadKeepingStartupSwitches();
+    bool LogChanges(const char* origin);
 
     std::string m_path;
     unsigned long long m_stamp = 0;
     Config m_config;
     Config m_saved;
+    Config m_logged;
 };
 
 ConfigStore& GlobalConfig();

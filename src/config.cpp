@@ -43,6 +43,11 @@ const IntSetting kIntSettings[] = {
     {"DebugView", &Config::debugView, 0, 3}, {"LogLevel", &Config::logLevel, 0, 2},
 };
 
+const IntSetting kWaterIntSettings[] = {
+    {"WaterQuality", &Config::waterQuality, 1, 3},
+    {"WaterDebugView", &Config::waterDebugView, 0, 5},
+};
+
 const FloatSetting kFloatSettings[] = {
     {"Density", &Config::density, 0.0f, 10.0f},
     {"Haze", &Config::haze, 0.0f, 10.0f},
@@ -63,11 +68,49 @@ const FloatSetting kFloatSettings[] = {
     {"Temporal", &Config::temporal, 0.0f, 0.97f},
 };
 
+const FloatSetting kWaterFloatSettings[] = {
+    {"WaterWaves", &Config::waterWaves, 0.0f, 2.0f},
+    {"WaterWind", &Config::waterWind, 0.5f, 10.0f},
+    {"WaterFoam", &Config::waterFoam, 0.0f, 2.0f},
+    {"WaterReflections", &Config::waterReflections, 0.0f, 2.0f},
+    {"WaterSpecular", &Config::waterSpecular, 0.0f, 4.0f},
+    {"WaterClarity", &Config::waterClarity, 0.25f, 4.0f},
+    {"WaterZoneColors", &Config::waterZoneColors, 0.0f, 1.0f},
+};
+
 const BoolSetting kBoolSettings[] = {
     {"GlowCompensation", &Config::glowCompensation}, {"LocalLights", &Config::localLights},
     {"InteriorAware", &Config::interiorAware},       {"Underwater", &Config::underwater},
     {"LiquidDepth", &Config::liquidDepth},           {"SunMarker", &Config::sunMarker},
+    {"Water", &Config::water},
 };
+
+template <typename Visit>
+void ForEachIntSetting(Visit visit)
+{
+    for (const IntSetting& s : kIntSettings)
+        visit(s);
+    for (const IntSetting& s : kWaterIntSettings)
+        visit(s);
+}
+
+template <typename Visit>
+void ForEachFloatSetting(Visit visit)
+{
+    for (const FloatSetting& s : kFloatSettings)
+        visit(s);
+    for (const FloatSetting& s : kWaterFloatSettings)
+        visit(s);
+}
+
+template <typename Setting, size_t N>
+bool SameValues(const Setting (&settings)[N], const Config& a, const Config& b)
+{
+    for (const Setting& s : settings)
+        if (a.*s.value != b.*s.value)
+            return false;
+    return true;
+}
 
 struct NamedKey
 {
@@ -148,10 +191,8 @@ bool WriteSetting(const std::string& path, const char* key, const std::string& t
 
 void ClampLiveSettings(Config& c)
 {
-    for (const IntSetting& s : kIntSettings)
-        c.*s.value = std::clamp(c.*s.value, s.lo, s.hi);
-    for (const FloatSetting& s : kFloatSettings)
-        c.*s.value = ClampedSetting(c.*s.value, s.lo, s.hi);
+    ForEachIntSetting([&c](const IntSetting& s) { c.*s.value = std::clamp(c.*s.value, s.lo, s.hi); });
+    ForEachFloatSetting([&c](const FloatSetting& s) { c.*s.value = ClampedSetting(c.*s.value, s.lo, s.hi); });
     if (c.farClipMax < kEngineFarClipMin)
         c.farClipMax = kFarClipMaxKeepsClientCap;
 }
@@ -207,6 +248,11 @@ bool ParseKeyName(const std::string& name, unsigned& virtualKey)
     return false;
 }
 
+bool SameHotkey(const Hotkey& a, const Hotkey& b)
+{
+    return a.virtualKey == b.virtualKey && a.ctrl == b.ctrl && a.shift == b.shift && a.alt == b.alt;
+}
+
 std::string KeyName(unsigned virtualKey)
 {
     if (virtualKey >= VK_F1 && virtualKey < VK_F1 + kMaxFunctionKey)
@@ -258,18 +304,42 @@ std::string HotkeyName(const Hotkey& key)
     return name + KeyName(key.virtualKey);
 }
 
+bool SameFogSettings(const Config& a, const Config& b)
+{
+    return SameValues(kIntSettings, a, b) && SameValues(kFloatSettings, a, b) && SameValues(kBoolSettings, a, b);
+}
+
 bool SameLiveSettings(const Config& a, const Config& b)
 {
-    for (const IntSetting& s : kIntSettings)
-        if (a.*s.value != b.*s.value)
-            return false;
-    for (const FloatSetting& s : kFloatSettings)
-        if (a.*s.value != b.*s.value)
-            return false;
+    return SameFogSettings(a, b) && SameValues(kWaterIntSettings, a, b) && SameValues(kWaterFloatSettings, a, b);
+}
+
+std::string SettingChanges(const Config& before, const Config& after)
+{
+    std::string changes;
+    auto add = [&changes](const char* key, const std::string& from, const std::string& to) {
+        changes += (changes.empty() ? "" : ", ") + std::string(key) + " " + from + " -> " + to;
+    };
+    if (before.overlay != after.overlay)
+        add("Overlay", before.overlay ? "1" : "0", after.overlay ? "1" : "0");
+    if (!SameHotkey(before.overlayKey, after.overlayKey))
+        add("OverlayKey", HotkeyName(before.overlayKey), HotkeyName(after.overlayKey));
+    ForEachIntSetting([&](const IntSetting& s) {
+        if (before.*s.value != after.*s.value)
+            add(s.key, std::to_string(before.*s.value), std::to_string(after.*s.value));
+    });
+    ForEachFloatSetting([&](const FloatSetting& s) {
+        if (before.*s.value == after.*s.value)
+            return;
+        const std::string from = SettingText(before.*s.value);
+        const std::string to = SettingText(after.*s.value);
+        if (from != to)
+            add(s.key, from, to);
+    });
     for (const BoolSetting& s : kBoolSettings)
-        if (a.*s.value != b.*s.value)
-            return false;
-    return true;
+        if (before.*s.value != after.*s.value)
+            add(s.key, before.*s.value ? "1" : "0", after.*s.value ? "1" : "0");
+    return changes;
 }
 
 void ConfigStore::Load(const std::string& path)
@@ -277,6 +347,27 @@ void ConfigStore::Load(const std::string& path)
     m_path = path;
     m_stamp = FileStamp(path);
     Read();
+    m_logged = m_config;
+}
+
+void ConfigStore::Override(const Config& config)
+{
+    m_config = config;
+    m_logged = config;
+}
+
+bool ConfigStore::LogChanges(const char* origin)
+{
+    const std::string changes = SettingChanges(m_logged, m_config);
+    m_logged = m_config;
+    if (!changes.empty())
+        VF_LOG_INFO("%s: %s", origin, changes.c_str());
+    return !changes.empty();
+}
+
+void ConfigStore::LogSettledEdits()
+{
+    LogChanges("settings");
 }
 
 bool ConfigStore::ReloadIfChanged()
@@ -285,12 +376,10 @@ bool ConfigStore::ReloadIfChanged()
     if (stamp == m_stamp)
         return false;
     m_stamp = stamp;
+    LogSettledEdits();
     ReadKeepingStartupSwitches();
-    VF_LOG_INFO("config reloaded: density=%.2f haze=%.2f ground=%.2f far=%.2f stockfog=%d sun=%.2f rays=%.2f "
-                "glow=%d farclipmax=%.0f quality=%d debug=%d",
-                m_config.density, m_config.haze, m_config.groundFog, m_config.farFog, m_config.stockFog,
-                m_config.sunScatter, m_config.godRays, m_config.glowCompensation ? 1 : 0, m_config.farClipMax,
-                m_config.quality, m_config.debugView);
+    if (!LogChanges("settings from CoAVolFog.ini"))
+        VF_LOG_INFO("CoAVolFog.ini reloaded; no live setting changed");
     return true;
 }
 
@@ -308,28 +397,27 @@ void ConfigStore::Apply(const Config& edited)
 
 bool ConfigStore::Save()
 {
+    LogSettledEdits();
     const Config onDisk = ReadFile();
     Config merged = m_config;
     bool written = true;
-    for (const IntSetting& s : kIntSettings)
-    {
+    ForEachIntSetting([&](const IntSetting& s) {
         if (m_config.*s.value == m_saved.*s.value)
             merged.*s.value = onDisk.*s.value;
         else if (m_config.*s.value != onDisk.*s.value)
             written = WriteSetting(m_path, s.key, std::to_string(m_config.*s.value)) && written;
-    }
-    for (const FloatSetting& s : kFloatSettings)
-    {
+    });
+    ForEachFloatSetting([&](const FloatSetting& s) {
         if (m_config.*s.value == m_saved.*s.value)
         {
             merged.*s.value = onDisk.*s.value;
-            continue;
+            return;
         }
         const std::string text = SettingText(m_config.*s.value);
         merged.*s.value = std::strtof(text.c_str(), nullptr);
         if (merged.*s.value != onDisk.*s.value)
             written = WriteSetting(m_path, s.key, text) && written;
-    }
+    });
     for (const BoolSetting& s : kBoolSettings)
     {
         if (m_config.*s.value == m_saved.*s.value)
@@ -347,13 +435,16 @@ bool ConfigStore::Save()
     m_saved = merged;
     LogSetLevel(merged.logLevel);
     VF_LOG_INFO("settings saved to %s", m_path.c_str());
+    LogChanges("settings from CoAVolFog.ini");
     return true;
 }
 
 void ConfigStore::Revert()
 {
+    LogSettledEdits();
     m_stamp = FileStamp(m_path);
     ReadKeepingStartupSwitches();
+    LogChanges("settings reverted to CoAVolFog.ini");
 }
 
 void ConfigStore::ReadKeepingStartupSwitches()
@@ -381,10 +472,8 @@ Config ConfigStore::ReadFile() const
     c.hooks = ReadInt(p, "EngineHooks", 1, 0, 1) != 0;
     c.overlay = ReadInt(p, "Overlay", 1, 0, 1) != 0;
     c.overlayKey = ReadHotkey(p, "OverlayKey", c.overlayKey);
-    for (const IntSetting& s : kIntSettings)
-        c.*s.value = ReadInt(p, s.key, c.*s.value, s.lo, s.hi);
-    for (const FloatSetting& s : kFloatSettings)
-        c.*s.value = ReadFloat(p, s.key, c.*s.value, s.lo, s.hi);
+    ForEachIntSetting([&](const IntSetting& s) { c.*s.value = ReadInt(p, s.key, c.*s.value, s.lo, s.hi); });
+    ForEachFloatSetting([&](const FloatSetting& s) { c.*s.value = ReadFloat(p, s.key, c.*s.value, s.lo, s.hi); });
     for (const BoolSetting& s : kBoolSettings)
         c.*s.value = ReadInt(p, s.key, c.*s.value ? 1 : 0, 0, 1) != 0;
     ClampLiveSettings(c);

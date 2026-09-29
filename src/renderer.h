@@ -82,7 +82,7 @@ private:
     IDirect3DSurface9* m_probeReadback = nullptr;
     IDirect3DQuery9* m_probeCopied = nullptr;
     PendingDepthProbe m_pendingProbe;
-    FogGpuTimer m_gpuTimer;
+    GpuTimer m_gpuTimer{"fog"};
     UINT m_lowW = 0;
     UINT m_lowH = 0;
     UINT m_rayW = 0;

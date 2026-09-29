@@ -636,11 +636,11 @@ void Renderer::LogFrameSummary(IDirect3DDevice9* dev, long long now, const Frame
     const float projectionFar = proj[14] / (1.0f - proj[10]);
     char gpuTime[96] = {};
     if (LogEnabled(LogLevel::Info))
-        DescribeFogGpuTime(m_gpuTimer, dev, gpuTime, sizeof(gpuTime));
+        DescribeGpuTime(m_gpuTimer, dev, gpuTime, sizeof(gpuTime));
     VF_LOG_INFO("frame %u: viewport %lu,%lu %lux%lu of %ux%u depth %.4f..%.4f; near %.3f far %.1f (farclip %.1f) "
-                "maxdist %.0f%s",
+                "maxdist %.0f%s%s",
                 m_frame, vp.X, vp.Y, vp.Width, vp.Height, depthDesc.Width, depthDesc.Height, vp.MinZ, vp.MaxZ,
-                projectionNear, projectionFar, in.farClip, fog.maxDistance, gpuTime);
+                projectionNear, projectionFar, in.farClip, fog.maxDistance, gpuTime[0] ? ", " : "", gpuTime);
     VF_LOG_INFO("  camera (%.2f %.2f %.2f) inverse-view origin (%.2f %.2f %.2f) target (%.2f %.2f %.2f)",
                 in.camPos[0], in.camPos[1], in.camPos[2], viewToWorld[12], viewToWorld[13], viewToWorld[14],
                 in.camTarget[0], in.camTarget[1], in.camTarget[2]);
@@ -780,7 +780,7 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     const float forwardDot = worldToView[2] * m_prevWorldToView[2] +
                              worldToView[6] * m_prevWorldToView[6] + worldToView[10] * m_prevWorldToView[10];
     const bool historyValid = m_historyValid && cfg.temporal > 0.0f && m_prevScale == scale &&
-                              SameLiveSettings(cfg, m_prevConfig) && in.mapId == m_prevMap &&
+                              SameFogSettings(cfg, m_prevConfig) && in.mapId == m_prevMap &&
                               in.lightParams.screenEffectSlot == m_prevLightSlot &&
                               forwardDot > kHistoryMinForwardDot &&
                               std::memcmp(m_prevProj, proj, sizeof(m_prevProj)) == 0 &&

@@ -3,7 +3,12 @@
 #include "fog_data.h"
 #include "fog_model.h"
 #include "gpu_timing.h"
+#include "log.h"
 #include "noise_volume.h"
+#include "water_data.h"
+#include "water_fft.h"
+#include "water_spectrum.h"
+#include "status_log.h"
 
 #include <windows.h>
 #include <d3d9.h>
@@ -26,6 +31,39 @@ extern "C" __declspec(dllimport) void __cdecl vf_test_force_depth_write(int);
 extern "C" __declspec(dllimport) void __cdecl vf_test_suppress_depth_write(int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_overlay_visible();
 extern "C" __declspec(dllimport) void __cdecl vf_test_draw_overlay();
+extern "C" __declspec(dllimport) int __cdecl vf_test_assign_water_data(const WaterPreset*, int,
+                                                                       const WaterFftTile*, int,
+                                                                       const WaterMaskView*, int);
+extern "C" __declspec(dllimport) int __cdecl vf_test_load_water_data(const char*);
+extern "C" __declspec(dllimport) int __cdecl vf_test_water_begin(const FrameInputs*, const WaterInputs*, const char**);
+extern "C" __declspec(dllimport) void __cdecl vf_test_water_tag(int);
+extern "C" __declspec(dllimport) void __cdecl vf_test_water_untag();
+extern "C" __declspec(dllimport) int __cdecl vf_test_water_end(const char**);
+extern "C" __declspec(dllimport) void __cdecl vf_test_set_water_seconds(double);
+extern "C" __declspec(dllimport) void __cdecl vf_test_disable_wave_simulation(int);
+extern "C" __declspec(dllimport) void __cdecl vf_test_force_packed_water_depth(int);
+extern "C" __declspec(dllimport) int __cdecl vf_test_transparent_liquids_queued(const void*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_fail_water_in_window(int);
+extern "C" __declspec(dllimport) void __cdecl vf_test_water_abort();
+extern "C" __declspec(dllimport) void __cdecl vf_test_force_water_summary();
+extern "C" __declspec(dllimport) int __cdecl vf_test_water_data_loaded();
+extern "C" __declspec(dllimport) unsigned __cdecl vf_test_water_resources_held();
+extern "C" __declspec(dllimport) int __cdecl vf_test_water_mask_pool();
+extern "C" __declspec(dllimport) void __cdecl vf_test_use_water_hook_client(const FrameInputs*, const WaterInputs*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_water_pass_begin(const void*);
+extern "C" __declspec(dllimport) int __cdecl vf_test_hook_water_draw_tag(const void*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_water_draw_untag();
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_water_pass_end();
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_frame_end();
+extern "C" __declspec(dllimport) int __cdecl vf_test_water_armed();
+extern "C" __declspec(dllimport) int __cdecl vf_test_water_status(const char**);
+extern "C" __declspec(dllimport) const void* __cdecl vf_test_water_pass_thunk(uintptr_t);
+extern "C" __declspec(dllimport) void __cdecl vf_test_water_pass_begin_reuses_argument_slot(int);
+extern "C" __declspec(dllimport) void __cdecl vf_test_record_fog_frame(int, int, const char*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_fail_water_mask_uploads(int);
+extern "C" __declspec(dllimport) int __cdecl vf_test_water_masks_uploaded();
+extern "C" __declspec(dllimport) void __cdecl vf_test_force_water_shading_variant(int);
+extern "C" __declspec(dllimport) int __cdecl vf_test_water_shading_variant();
 
 namespace
 {
@@ -1142,6 +1180,8 @@ std::string NarrowPath(const std::wstring& path)
     return narrow;
 }
 
+std::wstring g_harnessLog;
+
 std::string ReadText(const std::wstring& path)
 {
     std::string text;
@@ -1499,6 +1539,10 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "runtime_quality_checks.h"
 #include "lighting_history_checks.h"
 #include "runtime_cost_checks.h"
+#include "water_data_checks.h"
+#include "water_settings_checks.h"
+#include "water_fft_checks.h"
+#include "water_checks.h"
 
 void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3 at,
                                    const float* proj, const D3DVIEWPORT9& world)
@@ -1529,8 +1573,11 @@ void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3
     vf_test_set_config(&cfg);
 }
 
-int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstring& iniPath)
+int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstring& iniPath,
+        const std::string& waterDataPath)
 {
+    Check(vf_test_water_data_loaded() == 0,
+          "outside the supported client (no water hooks) the DLL does not load waterdata.bin");
     FogData classic;
     Check(classic.Load(dataPath), "Classic fog data loads");
     CheckClassicData(classic);
@@ -1543,10 +1590,14 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckFogThinsIntoFoglessClassicLight(classic);
 
     CreateDirectoryW(outDir.c_str(), nullptr);
+    g_harnessLog = FullPath(outDir + L"\\harness.log");
+    LogOpen(NarrowPath(g_harnessLog).c_str());
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     CheckOverlayKeyNames();
     CheckSettingsSaveKeepsTheIni(outDir, FullPath(iniPath));
     CheckFogDataBounds(outDir, dataPath);
+    water_data_checks::CheckWaterData(outDir, waterDataPath);
+    water_settings_checks::CheckWaterSettings(outDir, FullPath(iniPath));
 
     WNDCLASSW wc = {};
     wc.lpfnWndProc = ClientWindowProc;
@@ -1625,6 +1676,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckTemporalQuality(h.dev);
     CheckLightDisappearanceHistory(h);
     CheckSunOccluderLeavesFogLit(h);
+    water_fft_checks::CheckWaterFft(h.dev);
     const float aspect = 1280.0f / 688.0f;
     const D3DVIEWPORT9 world = {0, 0, 1280, 688, 0.0f, 1.0f};
     float proj[16];
@@ -1944,9 +1996,13 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckWorldTextDepthIsolation(h);
     Config restored = cfg;
     vf_test_set_config(&restored);
+    water_checks::CheckWaterPass(h, outDir, waterDataPath);
+    vf_test_set_config(&restored);
 
     CheckOverlayInput(h);
+    const size_t logBeforeWidgets = water_settings_checks::DllLogSize();
     CheckOverlayWidgets(h);
+    water_settings_checks::CheckSliderDragLoggedOnce(logBeforeWidgets);
     CheckOverlayDraw(h, world, outDir);
 
     h.ReleaseEngineObjects();
@@ -2505,6 +2561,7 @@ int wmain(int argc, wchar_t** argv)
 {
     std::wstring out = L"harness-out";
     std::string data = "fogdata.bin";
+    std::string waterData = "waterdata.bin";
     std::wstring ini = L"CoAVolFog.ini";
     std::wstring scene;
     for (int i = 1; i + 1 < argc; ++i)
@@ -2519,6 +2576,12 @@ int wmain(int argc, wchar_t** argv)
         }
         if (std::wcscmp(argv[i], L"--ini") == 0)
             ini = argv[i + 1];
+        if (std::wcscmp(argv[i], L"--water-data") == 0)
+        {
+            char path[MAX_PATH] = {};
+            WideCharToMultiByte(CP_ACP, 0, argv[i + 1], -1, path, MAX_PATH, nullptr, nullptr);
+            waterData = path;
+        }
         if (std::wcscmp(argv[i], L"--scene") == 0)
         {
             scene = argv[i + 1];
@@ -2535,5 +2598,5 @@ int wmain(int argc, wchar_t** argv)
         std::printf("unknown scene %ls (known: harbour, performance)\n", scene.c_str());
         return 2;
     }
-    return Run(out, data, ini);
+    return Run(out, data, ini, waterData);
 }

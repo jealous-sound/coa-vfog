@@ -38,7 +38,6 @@ constexpr uint32_t kFlagRelativeHeights = 0x2;
 
 constexpr float kDerivedLayerLimit = 1500.0f;
 
-constexpr float kMoonLight = 0.35f;
 constexpr float kLightSettingHalfWidth = 0.02f;
 constexpr float kMinClassicDirectLuminance = 1.0e-3f;
 constexpr float kLuminanceWeights[3] = {0.2126f, 0.7152f, 0.0722f};
@@ -310,7 +309,7 @@ FogParams BuildFogParams(const FrameInputs& in, const Config& cfg, const Authore
     Encode(p.lightColor, p.linear);
 
     float elevation = SmoothStep(-0.03f, 0.10f, in.toLight[2]);
-    p.lightVisibility = elevation * (in.lightIsMoon ? kMoonLight : 1.0f);
+    p.lightVisibility = elevation * (in.lightIsMoon ? kMoonLightScale : 1.0f);
     p.lightAboveHorizon = SmoothStep(-kLightSettingHalfWidth, kLightSettingHalfWidth, in.toLight[2]);
     p.farClip = in.farClip;
     p.maxDistance = std::max(cfg.maxDistance, in.farClip);

@@ -28,6 +28,8 @@ struct FogLayer
 
 static_assert(sizeof(FogLayer) == 6 * sizeof(float[4]), "FogLayer uploads as a march layer's six float4 registers");
 
+constexpr float kMoonLightScale = 0.35f;
+
 constexpr int kFogLayers = 4;
 constexpr int kSceneLayers = 3;
 constexpr int kDistanceFogLayer = kSceneLayers;

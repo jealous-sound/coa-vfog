@@ -4,26 +4,34 @@
 #include "d3d9_wrap.h"
 #include "engine.h"
 #include "log.h"
+#include "water_classify.h"
+#include "status_log.h"
 
 #include <windows.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 namespace
 {
 using GetProcAddressFn = FARPROC(WINAPI*)(HMODULE, LPCSTR);
+using WaterMaterialRenderFn = void(__thiscall*)(void* material, void* environment, void* geometry, void* aux,
+                                                const float* cameraPosition, const float* world, const float* bounds,
+                                                void* liquidSettings);
 
 constexpr unsigned char kCallRel32Opcode = 0xE8;
 constexpr uintptr_t kCallRel32Size = 5;
 constexpr float kOutOfRangeStockFogStart = 50000.0f;
 constexpr DWORD kConfigReloadIntervalMs = 1000;
-constexpr unsigned kMaxSkipsLogged = 50;
 constexpr int kEasternKingdomsMap = 0;
 constexpr int kKalimdorMap = 1;
 constexpr int kOutlandMap = 530;
 constexpr int kNorthrendMap = 571;
+constexpr size_t kDrawnWaterClassesTextSize = 64;
+constexpr unsigned kFlatWavesBit = 1u << 31;
+constexpr const char* kCameraUnderLiquid = "camera under liquid";
 
 uintptr_t g_worldRenderTarget = engine::kWorldRenderTarget;
 uintptr_t g_opaqueM2PassTarget = engine::kOpaqueM2PassTarget;
@@ -36,9 +44,23 @@ bool g_renderedThisFrame = false;
 bool g_stockFogPushed = false;
 engine::StockFog g_savedStockFog = {};
 bool g_deviceChecked = false;
-unsigned g_skipsLogged = 0;
 DWORD g_lastReload = 0;
-const char* g_lastSkip = "";
+const char* g_fogNotDrawnReason = "";
+StatusLog g_fogLog;
+
+uintptr_t g_waterPassTarget = engine::kWaterPassTarget;
+bool g_waterHooksInstalled = false;
+bool g_waterFailed = false;
+bool g_waterFaultLogged = false;
+bool g_waterPassBeginReusesArgumentSlot = false;
+FogDevice* g_waterPassDevice = nullptr;
+FogDevice* g_waterResourcesDevice = nullptr;
+bool g_waterPassRanThisFrame = false;
+unsigned g_waterClassesThisPass = 0;
+WaterFrameStatus g_waterStatus = {false, "waiting for the world to render"};
+StatusLog g_waterLog;
+unsigned g_drawnWaterClassesTextMask = 0;
+char g_drawnWaterClassesText[kDrawnWaterClassesTextSize] = "";
 
 FARPROC WINAPI GetProcAddressFilter(HMODULE module, LPCSTR name)
 {
@@ -143,6 +165,80 @@ void UseClientFogRangeInsteadOfPushed(FrameInputs& in)
     in.fogEnd = g_savedStockFog.end[engine::kFrameInputsFogGroup];
 }
 
+struct WaterClient
+{
+    FogDevice* (*device)();
+    bool (*frameInputs)(FrameInputs& in);
+    bool (*waterInputs)(WaterInputs& water);
+    WaterClass (*classify)(const void* liquidSettings);
+};
+
+bool GameWaterFrameInputs(FrameInputs& in)
+{
+    if (!engine::BuildFrameInputs(in, false))
+        return false;
+    if (g_stockFogPushed)
+        UseClientFogRangeInsteadOfPushed(in);
+    return true;
+}
+
+bool GameWaterInputs(WaterInputs& water)
+{
+    if (!engine::BuildWaterInputs(water))
+        return false;
+    water.stockFogApplies = !g_stockFogPushed;
+    return true;
+}
+
+const WaterClient kGameWaterClient = {&GameFogDevice, &GameWaterFrameInputs, &GameWaterInputs,
+                                      &engine::ClassifyWaterSettings};
+
+FrameInputs g_testWaterFrame = {};
+WaterInputs g_testWaterInputs = {};
+
+bool TestWaterFrameInputs(FrameInputs& in)
+{
+    in = g_testWaterFrame;
+    return true;
+}
+
+bool TestWaterInputs(WaterInputs& water)
+{
+    water = g_testWaterInputs;
+    return true;
+}
+
+WaterClass TestWaterClass(const void* liquidSettings)
+{
+    return liquidSettings ? static_cast<WaterClass>(*static_cast<const int*>(liquidSettings)) : WaterClass::None;
+}
+
+const WaterClient kTestWaterClient = {&LatestFogDevice, &TestWaterFrameInputs, &TestWaterInputs, &TestWaterClass};
+const WaterClient* g_waterClient = &kGameWaterClient;
+
+void RecordFogFrame(bool rendered, bool cameraUnderLiquid, const char* skip)
+{
+    if (rendered)
+    {
+        g_fogNotDrawnReason = "";
+        g_fogLog.Drawn();
+        return;
+    }
+    if (cameraUnderLiquid)
+    {
+        g_fogNotDrawnReason = kCameraUnderLiquid;
+        const StatusLogLine line = g_fogLog.Idle(kCameraUnderLiquid);
+        if (line.write)
+            LogWrite(line.level, "fog idle: %s%s", kCameraUnderLiquid,
+                     line.level == LogLevel::Info ? " (repeats are logged at LogLevel 2)" : "");
+        return;
+    }
+    g_fogNotDrawnReason = skip;
+    const StatusLogLine line = g_fogLog.Skip(skip);
+    if (line.write)
+        LogWrite(line.level, "fog skipped: %s", skip);
+}
+
 bool RenderCurrentWorldFog(FogDevice* device)
 {
     if (!device || !engine::HasOpaqueState())
@@ -156,18 +252,10 @@ bool RenderCurrentWorldFog(FogDevice* device)
     if (g_stockFogPushed)
         UseClientFogRangeInsteadOfPushed(in);
     const char* skip = "invalid frame inputs";
-    bool rendered = false;
-    if (valid && (!in.inLiquid || cfg.underwater))
-        rendered = RenderFog(device, in, cfg, &skip);
-    else if (valid)
-        skip = "camera under liquid";
+    const bool cameraUnderLiquid = valid && in.inLiquid && !cfg.underwater;
+    const bool rendered = valid && !cameraUnderLiquid && RenderFog(device, in, cfg, &skip);
     g_renderedThisFrame = rendered;
-    if (!rendered && skip != g_lastSkip && g_skipsLogged < kMaxSkipsLogged)
-    {
-        ++g_skipsLogged;
-        VF_LOG_INFO("fog skipped: %s", skip);
-    }
-    g_lastSkip = rendered ? "" : skip;
+    RecordFogFrame(rendered, cameraUnderLiquid, skip);
     return rendered;
 }
 
@@ -190,6 +278,245 @@ int GuardFilter(unsigned code, const char* where)
 {
     VF_LOG_ERROR("exception 0x%08X in %s; fog disabled for this session", code, where);
     return EXCEPTION_EXECUTE_HANDLER;
+}
+
+void RecordWaterSkip(const char* reason)
+{
+    g_waterStatus = {false, reason};
+    const StatusLogLine line = g_waterLog.Skip(reason);
+    if (line.write)
+        LogWrite(line.level, "water skipped: %s", reason);
+}
+
+void RecordWaterIdle(const char* state)
+{
+    g_waterStatus = {false, state};
+    const StatusLogLine line = g_waterLog.Idle(state);
+    if (line.write)
+        LogWrite(line.level, "water idle: %s%s", state,
+                 line.level == LogLevel::Info ? " (repeats are logged at LogLevel 2)" : "");
+}
+
+unsigned WaterClassBit(WaterClass waterClass)
+{
+    return 1u << static_cast<unsigned>(waterClass);
+}
+
+const char* DrawnWaterClassesText(unsigned classMask, bool flatWaves)
+{
+    const unsigned key = classMask | (flatWaves ? kFlatWavesBit : 0u);
+    if (key == g_drawnWaterClassesTextMask)
+        return g_drawnWaterClassesText;
+    g_drawnWaterClassesTextMask = key;
+    g_drawnWaterClassesText[0] = 0;
+    for (WaterClass waterClass : {WaterClass::Lake, WaterClass::River, WaterClass::Ocean, WaterClass::Interior})
+    {
+        if (!(classMask & WaterClassBit(waterClass)))
+            continue;
+        const size_t used = std::strlen(g_drawnWaterClassesText);
+        std::snprintf(g_drawnWaterClassesText + used, sizeof(g_drawnWaterClassesText) - used, "%s%s",
+                      used ? ", " : "", WaterClassLabel(waterClass));
+    }
+    if (flatWaves)
+    {
+        const size_t used = std::strlen(g_drawnWaterClassesText);
+        std::snprintf(g_drawnWaterClassesText + used, sizeof(g_drawnWaterClassesText) - used, "; flat waves");
+    }
+    return g_drawnWaterClassesText;
+}
+
+void RecordWaterDrawn(unsigned classMask, bool flatWaves)
+{
+    g_waterStatus = {true, DrawnWaterClassesText(classMask, flatWaves)};
+    g_waterLog.Drawn();
+}
+
+enum class WaterArming
+{
+    Armed,
+    Idle,
+    Failed,
+};
+
+WaterArming ArmWaterPass(FogDevice* device, const Config& cfg, const char** reason)
+{
+    FrameInputs in = {};
+    if (!g_waterClient->frameInputs(in))
+    {
+        *reason = "invalid frame inputs";
+        return WaterArming::Failed;
+    }
+    if (in.inLiquid)
+    {
+        *reason = "camera under water";
+        return WaterArming::Idle;
+    }
+    WaterInputs water = {};
+    if (!g_waterClient->waterInputs(water))
+    {
+        *reason = "the client's water colours are unavailable";
+        return WaterArming::Failed;
+    }
+    const char* skip = "";
+    if (BeginWaterPass(device, in, water, cfg, &skip))
+        return WaterArming::Armed;
+    *reason = skip && *skip ? skip : "the water pass could not start";
+    return WaterArming::Failed;
+}
+
+void OnWaterPassBegin(const void* liquidRenderer)
+{
+    g_waterPassRanThisFrame = true;
+    g_waterPassDevice = nullptr;
+    g_waterClassesThisPass = 0;
+    const Config& cfg = GlobalConfig().Get();
+    if (g_waterFailed || !cfg.water)
+        return;
+    if (g_failed)
+    {
+        RecordWaterSkip("the fog stopped after an exception");
+        return;
+    }
+    if (!engine::TransparentLiquidsQueued(liquidRenderer))
+    {
+        RecordWaterIdle("no water in view");
+        return;
+    }
+    FogDevice* device = g_waterClient->device();
+    if (!device)
+    {
+        RecordWaterSkip("no fog device");
+        return;
+    }
+    const char* reason = "the water pass could not start";
+    g_waterPassDevice = device;
+    g_waterResourcesDevice = device;
+    const WaterArming arming = ArmWaterPass(device, cfg, &reason);
+    if (arming == WaterArming::Armed)
+        return;
+    g_waterPassDevice = nullptr;
+    if (arming == WaterArming::Idle)
+        RecordWaterIdle(reason);
+    else
+        RecordWaterSkip(reason);
+}
+
+void OnWaterPassEnd()
+{
+    if (!g_waterPassDevice)
+        return;
+    const WaterPassEnd end = EndWaterPass(g_waterPassDevice);
+    g_waterPassDevice = nullptr;
+    if (end.shaded)
+        RecordWaterDrawn(end.shadedClasses, end.flatWaves);
+    else if (!g_waterClassesThisPass)
+        RecordWaterIdle("no water in view");
+    else
+        RecordWaterSkip(end.skipReason && *end.skipReason ? end.skipReason : "the water pass shaded nothing");
+}
+
+void TagWaterDrawUnsafe(const void* liquidSettings)
+{
+    const WaterClass waterClass = g_waterClient->classify(liquidSettings);
+    TagWaterDraw(g_waterPassDevice, waterClass);
+    if (waterClass != WaterClass::None)
+        g_waterClassesThisPass |= WaterClassBit(waterClass);
+}
+
+void AbortArmedWaterPass()
+{
+    FogDevice* device = g_waterPassDevice;
+    g_waterPassDevice = nullptr;
+    if (device)
+        AbortWaterPass(device);
+}
+
+void ReleaseWaterWhenOff()
+{
+    if (!g_waterResourcesDevice || (!g_waterFailed && GlobalConfig().Get().water))
+        return;
+    FogDevice* device = g_waterResourcesDevice;
+    g_waterResourcesDevice = nullptr;
+    if (device == g_waterClient->device())
+        ReleaseWaterResources(device);
+}
+
+void EndWaterFrame()
+{
+    if (!g_waterHooksInstalled)
+        return;
+    if (g_waterPassDevice)
+    {
+        AbortArmedWaterPass();
+        RecordWaterSkip("the water pass did not finish");
+    }
+    else if (!g_waterPassRanThisFrame)
+        RecordWaterIdle("no liquid pass in this frame");
+    g_waterPassRanThisFrame = false;
+    ReleaseWaterWhenOff();
+}
+
+int WaterGuardFilter(unsigned code, const char* where)
+{
+    if (!g_waterFaultLogged)
+        VF_LOG_ERROR("exception 0x%08X in %s; water disabled for this session, the fog continues", code, where);
+    g_waterFaultLogged = true;
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+void FailWater()
+{
+    g_waterFailed = true;
+    __try
+    {
+        AbortArmedWaterPass();
+    }
+    __except (WaterGuardFilter(GetExceptionCode(), "water pass abort"))
+    {
+        g_waterPassDevice = nullptr;
+    }
+}
+
+bool TagArmedWaterDraw(const void* liquidSettings)
+{
+    if (!g_waterPassDevice)
+        return false;
+    __try
+    {
+        TagWaterDrawUnsafe(liquidSettings);
+        return true;
+    }
+    __except (WaterGuardFilter(GetExceptionCode(), "water draw classification"))
+    {
+        FailWater();
+        return false;
+    }
+}
+
+void UntagArmedWaterDraw()
+{
+    if (!g_waterPassDevice)
+        return;
+    __try
+    {
+        UntagWaterDraw(g_waterPassDevice);
+    }
+    __except (WaterGuardFilter(GetExceptionCode(), "water draw untag"))
+    {
+        FailWater();
+    }
+}
+
+void EndWaterFrameGuarded()
+{
+    __try
+    {
+        EndWaterFrame();
+    }
+    __except (WaterGuardFilter(GetExceptionCode(), "water frame end"))
+    {
+        FailWater();
+    }
 }
 
 bool PatchCallSite(uintptr_t site, uintptr_t expectedTarget, const void* thunk)
@@ -283,6 +610,7 @@ extern "C" void __cdecl vf_on_frame_begin()
 
 extern "C" void __cdecl vf_on_frame_end()
 {
+    EndWaterFrameGuarded();
     __try
     {
         OnFrameEnd();
@@ -290,6 +618,32 @@ extern "C" void __cdecl vf_on_frame_end()
     __except (GuardFilter(GetExceptionCode(), "frame end hook"))
     {
         g_failed = true;
+    }
+}
+
+extern "C" void __cdecl vf_on_water_pass_begin(const void* liquidRenderer)
+{
+    __try
+    {
+        OnWaterPassBegin(liquidRenderer);
+    }
+    __except (WaterGuardFilter(GetExceptionCode(), "water pass begin hook"))
+    {
+        FailWater();
+    }
+    if (g_waterPassBeginReusesArgumentSlot)
+        *static_cast<const void* volatile*>(&liquidRenderer) = nullptr;
+}
+
+extern "C" void __cdecl vf_on_water_pass_end()
+{
+    __try
+    {
+        OnWaterPassEnd();
+    }
+    __except (WaterGuardFilter(GetExceptionCode(), "water pass end hook"))
+    {
+        FailWater();
     }
 }
 
@@ -391,6 +745,53 @@ __declspec(naked) static void ScreenEffectsThunk()
     }
 }
 
+__declspec(naked) static void WaterPassThunk()
+{
+    __asm {
+        push ecx
+        push ecx
+        call vf_on_water_pass_begin
+        add esp, 4
+        pop ecx
+        push dword ptr [esp + 8]
+        push dword ptr [esp + 8]
+        call dword ptr [g_waterPassTarget]
+        pushad
+        call vf_on_water_pass_end
+        popad
+        ret 8
+    }
+}
+
+const void* RetargetWaterPassThunk(uintptr_t target)
+{
+    g_waterPassTarget = target;
+    return reinterpret_cast<const void*>(&WaterPassThunk);
+}
+
+void ReuseWaterPassBeginArgumentSlot(bool reuse)
+{
+    g_waterPassBeginReusesArgumentSlot = reuse;
+}
+
+template <uintptr_t Render>
+static void __fastcall WaterMaterialRenderHook(void* material, void*, void* environment, void* geometry, void* aux,
+                                               const float* cameraPosition, const float* world, const float* bounds,
+                                               void* liquidSettings)
+{
+    const bool tagged = TagArmedWaterDraw(liquidSettings);
+    __try
+    {
+        reinterpret_cast<WaterMaterialRenderFn>(Render)(material, environment, geometry, aux, cameraPosition, world,
+                                                        bounds, liquidSettings);
+    }
+    __finally
+    {
+        if (tagged)
+            UntagArmedWaterDraw();
+    }
+}
+
 static void __cdecl WorldTextDrawThunk(void* batch)
 {
     FogDevice* device = nullptr;
@@ -422,6 +823,67 @@ struct CallSite
     uintptr_t originalTarget;
     const void* thunk;
 };
+
+struct PointerSlot
+{
+    uintptr_t slot;
+    uintptr_t original;
+    const void* hook;
+};
+
+uintptr_t SlotValue(uintptr_t slot)
+{
+    return *reinterpret_cast<const uintptr_t*>(slot);
+}
+
+bool ExchangeSlot(uintptr_t slot, uintptr_t expected, uintptr_t replacement)
+{
+    DWORD old;
+    if (!VirtualProtect(reinterpret_cast<void*>(slot), sizeof(uintptr_t), PAGE_READWRITE, &old))
+        return false;
+    const LONG previous = InterlockedCompareExchange(reinterpret_cast<volatile LONG*>(slot),
+                                                     static_cast<LONG>(replacement), static_cast<LONG>(expected));
+    VirtualProtect(reinterpret_cast<void*>(slot), sizeof(uintptr_t), old, &old);
+    return static_cast<uintptr_t>(previous) == expected;
+}
+
+void RestoreSlots(const PointerSlot* slots, int count)
+{
+    for (int i = 0; i < count; ++i)
+        ExchangeSlot(slots[i].slot, reinterpret_cast<uintptr_t>(slots[i].hook), slots[i].original);
+}
+
+template <size_t N>
+bool SlotsHoldTheClientRenders(const PointerSlot (&slots)[N])
+{
+    for (const PointerSlot& s : slots)
+        if (SlotValue(s.slot) != s.original)
+        {
+            VF_LOG_ERROR("water material slot 0x%08X holds 0x%08X (expected 0x%08X); water hooks not installed",
+                         static_cast<unsigned>(s.slot), static_cast<unsigned>(SlotValue(s.slot)),
+                         static_cast<unsigned>(s.original));
+            return false;
+        }
+    return true;
+}
+
+template <size_t N>
+bool ReplaceSlots(const PointerSlot (&slots)[N])
+{
+    int replaced = 0;
+    for (const PointerSlot& s : slots)
+    {
+        if (!ExchangeSlot(s.slot, s.original, reinterpret_cast<uintptr_t>(s.hook)))
+        {
+            RestoreSlots(slots, replaced);
+            VF_LOG_ERROR("water material slot 0x%08X could not be replaced; water hooks not installed",
+                         static_cast<unsigned>(s.slot));
+            return false;
+        }
+        ++replaced;
+    }
+    return true;
+}
 }
 
 bool InstallEngineHooks()
@@ -475,7 +937,7 @@ FogFrameStatus LastFogFrameStatus()
         return {false, "stopped after an exception, see CoAVolFog.log"};
     if (g_renderedLastFrame)
         return {true, ""};
-    return {false, *g_lastSkip ? g_lastSkip : "waiting for the world to render"};
+    return {false, *g_fogNotDrawnReason ? g_fogNotDrawnReason : "waiting for the world to render"};
 }
 
 void InstallFarClipHooks()
@@ -503,4 +965,74 @@ void InstallFarClipHooks()
     }
     VF_LOG_INFO("far clip hooks installed at 0x%08X and 0x%08X (FarClipMax %.0f)", static_cast<unsigned>(sites[0]),
                 static_cast<unsigned>(sites[1]), GlobalConfig().Get().farClipMax);
+}
+
+bool InstallWaterHooks()
+{
+    const PointerSlot slots[] = {
+        {engine::kWaterMaterialRenderSlot, engine::kWaterMaterialRender,
+         reinterpret_cast<const void*>(&WaterMaterialRenderHook<engine::kWaterMaterialRender>)},
+        {engine::kWaterNoSpecMaterialRenderSlot, engine::kWaterNoSpecMaterialRender,
+         reinterpret_cast<const void*>(&WaterMaterialRenderHook<engine::kWaterNoSpecMaterialRender>)},
+    };
+    if (!engine::WaterClientLayoutMatches())
+    {
+        VF_LOG_ERROR("water hooks not installed: the client's liquid code differs from the 12340 client");
+        return false;
+    }
+    if (!SiteMatches(engine::kWaterPassSite, engine::kWaterPassTarget))
+    {
+        VF_LOG_ERROR("water pass call site 0x%08X differs from the 12340 client; water hooks not installed",
+                     static_cast<unsigned>(engine::kWaterPassSite));
+        return false;
+    }
+    if (!SlotsHoldTheClientRenders(slots) || !ReplaceSlots(slots))
+        return false;
+    if (!PatchCallSite(engine::kWaterPassSite, engine::kWaterPassTarget,
+                       reinterpret_cast<const void*>(&WaterPassThunk)))
+    {
+        RestoreSlots(slots, static_cast<int>(sizeof(slots) / sizeof(slots[0])));
+        VF_LOG_ERROR("water pass call site 0x%08X could not be patched; water hooks not installed",
+                     static_cast<unsigned>(engine::kWaterPassSite));
+        return false;
+    }
+    g_waterHooksInstalled = true;
+    VF_LOG_INFO("water hooks installed: water pass 0x%08X, material render slots 0x%08X and 0x%08X",
+                static_cast<unsigned>(engine::kWaterPassSite), static_cast<unsigned>(engine::kWaterMaterialRenderSlot),
+                static_cast<unsigned>(engine::kWaterNoSpecMaterialRenderSlot));
+    return true;
+}
+
+void RecordHookedFogFrame(bool rendered, bool cameraUnderLiquid, const char* skip)
+{
+    RecordFogFrame(rendered, cameraUnderLiquid, skip);
+}
+
+void UseTestWaterClient(const FrameInputs& in, const WaterInputs& water)
+{
+    g_testWaterFrame = in;
+    g_testWaterInputs = water;
+    g_waterClient = &kTestWaterClient;
+    g_waterHooksInstalled = true;
+}
+
+bool TagHookedWaterDraw(const void* liquidSettings)
+{
+    return TagArmedWaterDraw(liquidSettings);
+}
+
+void UntagHookedWaterDraw()
+{
+    UntagArmedWaterDraw();
+}
+
+WaterFrameStatus LastWaterFrameStatus()
+{
+    if (!g_waterHooksInstalled)
+        return {false, "hooks not installed"};
+    if (g_waterFailed)
+        return {false, "stopped after an exception, see CoAVolFog.log"};
+    if (!GlobalConfig().Get().water)
+        return {false, "off"};
+    return g_waterStatus;
 }
