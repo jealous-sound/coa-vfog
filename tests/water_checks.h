@@ -66,6 +66,9 @@ constexpr DWORD kStockWaterAlphaRef = 1;
 constexpr UINT kClientStreamOffset = 16;
 constexpr UINT kClientStreamStride = 16;
 constexpr RECT kClientScissor = {3, 5, 700, 400};
+constexpr int kLiquidRendererWords = 8;
+constexpr int kOpaqueLiquidCountWord = 1;
+constexpr int kTransparentLiquidCountWord = 5;
 
 const D3DRENDERSTATETYPE kSentinelRenderStates[] = {
     D3DRS_ZENABLE,           D3DRS_ZWRITEENABLE,     D3DRS_ZFUNC,
@@ -912,6 +915,18 @@ void CheckSkipsAndUntouchedFrames(Harness& h, BasinClient& client, const Config&
           "without water data the pass is skipped and the frame is untouched");
 }
 
+void CheckQueuedTransparentLiquidsDecideArming()
+{
+    uint32_t liquidRenderer[kLiquidRendererWords] = {};
+    liquidRenderer[kOpaqueLiquidCountWord] = 5;
+    const bool emptySkips = vf_test_transparent_liquids_queued(liquidRenderer) == 0;
+    liquidRenderer[kTransparentLiquidCountWord] = 3;
+    const bool queuedArms = vf_test_transparent_liquids_queued(liquidRenderer) == 1;
+    const bool noRendererSkips = vf_test_transparent_liquids_queued(nullptr) == 0;
+    Check(emptySkips && queuedArms && noRendererSkips,
+          "the water pass arms only when the client's transparent liquid bucket ([renderer+0x14]) holds draws");
+}
+
 void CheckIdleTagLeavesState(Harness& h)
 {
     WaterSentinel before;
@@ -1364,6 +1379,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     Config base;
     vf_test_get_config(&base);
     vf_test_set_water_seconds(kFrameSeconds);
+    CheckQueuedTransparentLiquidsDecideArming();
     CheckIdleTagLeavesState(h);
     BasinClient client(h, DefaultWaterView());
     Check(AssignWaterData(MakeSyntheticWaterData()), "synthetic water presets, tiles and masks assigned");

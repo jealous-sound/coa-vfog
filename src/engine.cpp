@@ -72,10 +72,13 @@ constexpr uintptr_t kLiquidTypeRows = 0x00AD4084;
 constexpr uintptr_t kLiquidTypeFlags = 0x08;
 constexpr uintptr_t kLiquidTypeSoundBank = 0x0C;
 constexpr uintptr_t kLiquidTypeMaterialId = 0x38;
+constexpr uintptr_t kLiquidBucketStride = 0x10;
+constexpr uintptr_t kLiquidBucketCount = 0x04;
+constexpr uintptr_t kTransparentLiquidPass = 1;
 constexpr int kClassifiedSettingsCacheSize = 32;
 constexpr int kMaxLoggedLiquidTypes = 64;
 
-constexpr size_t kMaxCodeBytes = 12;
+constexpr size_t kMaxCodeBytes = 16;
 
 struct CodeBytes
 {
@@ -114,6 +117,13 @@ const CodeBytes kWaterClientLayout[] = {
     {"material render call with the settings argument", 0x008A22C7, 11,
      {0x8B, 0x46, 0x04, 0x8B, 0x0E, 0x8B, 0x11, 0x8B, 0x52, 0x08, 0x50}},
     {"liquid render pass return", 0x008A2376, 3, {0xC2, 0x08, 0x00}},
+    {"liquid renderer load at the water pass", 0x00790A91, 6, {0x8B, 0x0D, 0x10, 0x86, 0xCD, 0x00}},
+    {"transparent liquid pass index", 0x00790A9B, 2, {0x6A, 0x01}},
+    {"liquid renderer kept in ebx", 0x008A224C, 2, {0x8B, 0xD9}},
+    {"liquid bucket stride", 0x008A229C, 3, {0xC1, 0xE7, 0x04}},
+    {"liquid bucket count load", 0x008A229F, 4, {0x8B, 0x4C, 0x1F, 0x04}},
+    {"liquid draw loop skipped on an empty bucket", 0x008A22B2, 15,
+     {0x8B, 0x47, 0x04, 0x83, 0xC4, 0x10, 0x33, 0xDB, 0x85, 0xC0, 0x89, 0x45, 0x0C, 0x76, 0x3A}},
     {"water material render return", 0x008A58FB, 3, {0xC2, 0x1C, 0x00}},
     {"water no-specular material render return", 0x008A5C6B, 3, {0xC2, 0x1C, 0x00}},
 };
@@ -615,6 +625,22 @@ bool BuildWaterInputs(WaterInputs& out)
 {
     out = {};
     return LightRecordLayoutMatches() && ReadWaterColors(out);
+}
+
+bool TransparentLiquidsQueued(const void* liquidRenderer)
+{
+    if (!liquidRenderer)
+        return false;
+    __try
+    {
+        const uintptr_t bucket = reinterpret_cast<uintptr_t>(liquidRenderer) +
+                                 kTransparentLiquidPass * kLiquidBucketStride;
+        return Read<uint32_t>(bucket + kLiquidBucketCount) != 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return true;
+    }
 }
 
 bool WaterClientLayoutMatches()

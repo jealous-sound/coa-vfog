@@ -281,7 +281,7 @@ bool ArmWaterPass(FogDevice* device, const Config& cfg, const char** skip)
     return BeginWaterPass(device, in, water, cfg, skip);
 }
 
-void OnWaterPassBegin()
+void OnWaterPassBegin(const void* liquidRenderer)
 {
     g_waterPassRanThisFrame = true;
     g_waterPassDevice = nullptr;
@@ -292,6 +292,11 @@ void OnWaterPassBegin()
     if (g_failed)
     {
         RecordWaterSkip("the fog stopped after an exception");
+        return;
+    }
+    if (!engine::TransparentLiquidsQueued(liquidRenderer))
+    {
+        RecordWaterSkip("no water in view");
         return;
     }
     FogDevice* device = GameFogDevice();
@@ -510,11 +515,11 @@ extern "C" void __cdecl vf_on_frame_end()
     }
 }
 
-extern "C" void __cdecl vf_on_water_pass_begin()
+extern "C" void __cdecl vf_on_water_pass_begin(const void* liquidRenderer)
 {
     __try
     {
-        OnWaterPassBegin();
+        OnWaterPassBegin(liquidRenderer);
     }
     __except (WaterGuardFilter(GetExceptionCode(), "water pass begin hook"))
     {

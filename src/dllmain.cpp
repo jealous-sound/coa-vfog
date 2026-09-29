@@ -164,3 +164,8 @@ extern "C" void __cdecl vf_test_force_packed_water_depth(int forced)
 {
     ForcePackedWaterDepth(forced != 0);
 }
+
+extern "C" int __cdecl vf_test_transparent_liquids_queued(const void* liquidRenderer)
+{
+    return engine::TransparentLiquidsQueued(liquidRenderer) ? 1 : 0;
+}
