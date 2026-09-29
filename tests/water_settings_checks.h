@@ -101,7 +101,7 @@ void CheckShippedWaterDefaults(const std::wstring& shippedIni)
     const std::string text = ReadText(shippedIni);
     Check(text.find("; Modern water:") != std::string::npos &&
               text.find("surfaces write depth whatever LiquidDepth says") != std::string::npos,
-          "the shipped INI documents the water keys and that water writes depth while Water=1");
+          "the shipped INI documents the water keys and that water writes depth while modern water is drawn");
 }
 
 void CheckWaterSettingsSave(const std::wstring& outDir, const std::wstring& shippedIni)

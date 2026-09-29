@@ -18,8 +18,9 @@ const char* const kQualityNames[] = {"Low: quarter resolution, 16 steps", "Mediu
                                      "High: half resolution, 32 steps"};
 const char* const kDebugViewNames[] = {"Off", "Fog radiance", "Transmittance", "Linear depth"};
 const char* const kLogLevelNames[] = {"Errors", "Info", "Debug"};
-const char* const kWaterQualityNames[] = {"Low: 128 waves, no reflections", "Medium: 256 waves, reflections",
-                                          "High: 256 waves, finer reflections"};
+const char* const kWaterQualityNames[] = {"Low: 128 waves, sky reflections only",
+                                          "Medium: 256 waves, scene reflections",
+                                          "High: 256 waves, finer scene reflections"};
 const char* const kWaterDebugViewNames[] = {"Off", "Normals", "Foam", "Transmittance", "Reflection", "Liquid class"};
 
 template <int N>
@@ -192,7 +193,7 @@ bool DrawWorld(Config& c)
     bool changed = Toggle("Fog under water", c.underwater, "Keep the effect while the camera is under water");
     changed |= Toggle("Water writes depth", c.liquidDepth,
                       "Let water surfaces write depth so water is fogged by its own distance; always on while Modern "
-                      "water is on");
+                      "water is drawn");
     changed |= Toggle("Interior-aware fog", c.interiorAware,
                       "Fade outdoor fog and direct sunlight as the camera enters a building or cave");
     changed |= Slider("Interior density", c.interiorDensity, 0.0f, 1.0f, "%.2f",
@@ -208,7 +209,7 @@ bool DrawWater(Config& c)
         return false;
     bool changed = Toggle("Modern water", c.water,
                           "Shade lakes, rivers, the sea and indoor pools like the modern client; water surfaces write "
-                          "depth while it is on. Off: the client's own water");
+                          "depth while it is drawn. Off: the client's own water");
     changed |= Choice("Water quality", c.waterQuality, 1, kWaterQualityNames,
                       "Size of the wave simulation and detail of the reflections");
     changed |= Slider("Waves", c.waterWaves, 0.0f, 2.0f, "%.2f", "Wave height, 0 = flat water");
