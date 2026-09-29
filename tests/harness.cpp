@@ -641,13 +641,13 @@ void CheckClassicData(const FogData& data)
               stormwindWeight > 0.05f && stormwindWeight < 0.1f,
           "Classic light blend at the harbour (light 77 falloff edge)");
     Check(wall && haze && std::fabs(wall->start - 3000.0f) < 0.5f &&
-              std::fabs(wall->density - (globalWeight * 0.6f + stormwindWeight * 0.1f)) < 1e-4f &&
-              std::fabs(haze->density - (globalWeight * 0.12f + stormwindWeight * 0.1f)) < 1e-4f,
+              std::fabs(wall->density - (globalWeight * 0.6f + stormwindWeight * 1.0f)) < 1e-4f &&
+              std::fabs(haze->density - (globalWeight * 0.12f + stormwindWeight * 0.125f)) < 1e-4f,
           "Classic layers blended by light weight at a key time");
 
     AuthoredFog mid = {};
     data.Resolve(kEasternKingdoms, harbourAtStormwindLightEdge, kDayFraction1845, kClearWeather, mid);
-    float expected = WeightOf(mid, kEasternKingdomsGlobalLight) * 0.8f + WeightOf(mid, kStormwindLight) * 0.3f;
+    float expected = WeightOf(mid, kEasternKingdomsGlobalLight) * 0.8f + WeightOf(mid, kStormwindLight) * 0.75f;
     const AuthoredLayer* midWall = FarWall(mid);
     std::printf("     harbour at 18:45: far wall density %.4f (expected %.4f)\n", midWall ? midWall->density : -1.0f,
                 expected);
@@ -702,12 +702,12 @@ void CheckStormBlendsLayersByClassicIndex(const FogData& data)
               Near(clear.layers[1].start, 3000.0f) && Near(clear.layers[1].density, 0.3f) &&
               Near(clear.layers[2].density, 0.1f),
           "open sea resolves only the Eastern Kingdoms light");
-    Check(storm.layerCount == 3 && storm.layers[0].density == 0.0f && Near(storm.layers[1].start, 800.0f) &&
-              Near(storm.layers[1].density, 0.75f) && Near(storm.layers[2].density, 0.75f),
+    Check(storm.layerCount == 3 && storm.layers[0].density == 0.0f && Near(storm.layers[1].start, 500.0f) &&
+              Near(storm.layers[1].density, 0.75f) && Near(storm.layers[2].density, 0.3f),
           "a full storm uses the storm layers at their Classic indices");
     Check(Near(half.layers[0].density, 0.015f) && Near(half.layers[0].g, clear.layers[0].g) &&
-              Near(half.layers[1].start, 1900.0f) && Near(half.layers[1].density, 0.525f) &&
-              Near(half.layers[2].density, 0.425f),
+              Near(half.layers[1].start, 1750.0f) && Near(half.layers[1].density, 0.525f) &&
+              Near(half.layers[2].density, 0.2f),
           "a half storm blends matching layers and thins the clear-only haze");
 }
 

@@ -76,12 +76,22 @@ distance.
 
 ## Classic fog data
 
-`tools/convert_classic_fog.py` converts the Classic client's `Light`, `LightData`, `LightDataGlobalVolumeFog`,
-`ZoneLight` and `ZoneLightPoint` tables, exported from its DB2 files as CSV, into `data/fogdata.bin`:
+`tools/convert_classic_fog.py` converts the WoW Forever fog and lighting kit (build 1.60.1.70009, a folder or its
+zip: the decoded `LightData`, `LightDataGlobalVolumeFog` and `ZoneLightPoint` tables, each checked against the kit's
+`SHA256SUMS`) into `data/fogdata.bin`. The kit could not decrypt the `Light` and `ZoneLight` tables, so the lights and
+zone lights are placed from a previous `fogdata.bin`, whose records are carried over byte for byte, or from the
+Classic client's `Light.csv` and `ZoneLight.csv` exports:
 
 ```powershell
-python tools/convert_classic_fog.py <folder or zip with the CSV exports> data/fogdata.bin
+python tools/convert_classic_fog.py <kit folder or zip> --placements data/fogdata.bin data/fogdata.bin
 ```
+
+The shipped file takes its fog tables and zone outlines from 70009 and its placements from 69876, carried from the file
+committed before the change (`9bf495a`, converted from 69876 CSV exports); the converter checks that the written lights
+and zone lights equal the placement source and that the fog table's layout hash is still `24290E20`, which keeps the
+column numbers valid. 70009 re-authored 18 light params that lights on 3.3.5 maps use (among them Stormwind, Goldshire,
+Westfall, Loch Modan, Durotar, Mulgore, the Barrens and the Eastern Kingdoms storm slot) and deselected the third layer
+of the Un'Goro storm; the 152 params with fog that no 69876 light references cannot be placed and are left out.
 
 The converter keeps the fog rows the Classic client selects (flag bit 3) at their layer index (0–2). At run
 time the DLL blends the Classic lights around the camera: spheres at full weight inside the falloff start and
