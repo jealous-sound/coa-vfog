@@ -309,11 +309,52 @@ bool SameLiveSettings(const Config& a, const Config& b)
     return SameFogSettings(a, b) && SameValues(kWaterIntSettings, a, b) && SameValues(kWaterFloatSettings, a, b);
 }
 
+std::string SettingChanges(const Config& before, const Config& after)
+{
+    std::string changes;
+    auto add = [&changes](const char* key, const std::string& from, const std::string& to) {
+        changes += (changes.empty() ? "" : ", ") + std::string(key) + " " + from + " -> " + to;
+    };
+    ForEachIntSetting([&](const IntSetting& s) {
+        if (before.*s.value != after.*s.value)
+            add(s.key, std::to_string(before.*s.value), std::to_string(after.*s.value));
+    });
+    ForEachFloatSetting([&](const FloatSetting& s) {
+        if (before.*s.value != after.*s.value)
+            add(s.key, SettingText(before.*s.value), SettingText(after.*s.value));
+    });
+    for (const BoolSetting& s : kBoolSettings)
+        if (before.*s.value != after.*s.value)
+            add(s.key, before.*s.value ? "1" : "0", after.*s.value ? "1" : "0");
+    return changes;
+}
+
 void ConfigStore::Load(const std::string& path)
 {
     m_path = path;
     m_stamp = FileStamp(path);
     Read();
+    m_logged = m_config;
+}
+
+void ConfigStore::Override(const Config& config)
+{
+    m_config = config;
+    m_logged = config;
+}
+
+bool ConfigStore::LogChanges(const char* origin)
+{
+    const std::string changes = SettingChanges(m_logged, m_config);
+    m_logged = m_config;
+    if (!changes.empty())
+        VF_LOG_INFO("%s: %s", origin, changes.c_str());
+    return !changes.empty();
+}
+
+void ConfigStore::LogSettledEdits()
+{
+    LogChanges("settings");
 }
 
 bool ConfigStore::ReloadIfChanged()
@@ -322,12 +363,10 @@ bool ConfigStore::ReloadIfChanged()
     if (stamp == m_stamp)
         return false;
     m_stamp = stamp;
+    LogSettledEdits();
     ReadKeepingStartupSwitches();
-    VF_LOG_INFO("config reloaded: density=%.2f haze=%.2f ground=%.2f far=%.2f stockfog=%d sun=%.2f rays=%.2f "
-                "glow=%d farclipmax=%.0f quality=%d debug=%d",
-                m_config.density, m_config.haze, m_config.groundFog, m_config.farFog, m_config.stockFog,
-                m_config.sunScatter, m_config.godRays, m_config.glowCompensation ? 1 : 0, m_config.farClipMax,
-                m_config.quality, m_config.debugView);
+    if (!LogChanges("settings from CoAVolFog.ini"))
+        VF_LOG_INFO("CoAVolFog.ini reloaded; no live setting changed");
     return true;
 }
 
@@ -345,6 +384,7 @@ void ConfigStore::Apply(const Config& edited)
 
 bool ConfigStore::Save()
 {
+    LogSettledEdits();
     const Config onDisk = ReadFile();
     Config merged = m_config;
     bool written = true;
@@ -382,13 +422,16 @@ bool ConfigStore::Save()
     m_saved = merged;
     LogSetLevel(merged.logLevel);
     VF_LOG_INFO("settings saved to %s", m_path.c_str());
+    LogChanges("settings from CoAVolFog.ini");
     return true;
 }
 
 void ConfigStore::Revert()
 {
+    LogSettledEdits();
     m_stamp = FileStamp(m_path);
     ReadKeepingStartupSwitches();
+    LogChanges("settings reverted to CoAVolFog.ini");
 }
 
 void ConfigStore::ReadKeepingStartupSwitches()

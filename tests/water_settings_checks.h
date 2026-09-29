@@ -238,8 +238,87 @@ void CheckWaterOnlyEditsKeepFogHistory()
           "turning water off (which changes the depth the fog sees) and fog edits reset the fog's history");
 }
 
+void CheckSettingChangesListed()
+{
+    const Config before;
+    Config after = before;
+    after.waterQuality = 3;
+    after.density = 2.5f;
+    after.waterWind = 4.0f;
+    after.waterFoam = 1.5f;
+    after.water = false;
+    const std::string changes = SettingChanges(before, after);
+    std::printf("     changes: %s\n", changes.c_str());
+    Check(changes == "WaterQuality 2 -> 3, Density 1 -> 2.5, WaterWind 2 -> 4, WaterFoam 1 -> 1.5, Water 1 -> 0" &&
+              SettingChanges(before, before).empty(),
+          "a settings change lists every changed fog and water key with its old and new value");
+}
+
+size_t CountOf(const std::string& text, const char* fragment)
+{
+    size_t count = 0;
+    for (size_t at = text.find(fragment); at != std::string::npos; at = text.find(fragment, at + 1))
+        ++count;
+    return count;
+}
+
+void CheckSettingChangesLogged(const std::wstring& outDir, const std::wstring& shippedIni)
+{
+    const std::wstring logPath = FullPath(outDir + L"\\harness-settings.log");
+    LogOpen(NarrowPath(logPath).c_str());
+    const std::wstring iniPath = FullPath(outDir + L"\\settings-log.ini");
+    Check(CopyFileW(shippedIni.c_str(), iniPath.c_str(), FALSE) != FALSE, "shipped CoAVolFog.ini copied for logging");
+    ConfigStore store;
+    store.Load(NarrowPath(iniPath));
+    LogSetLevel(static_cast<int>(LogLevel::Info));
+    const size_t start = ReadText(logPath).size();
+    auto logged = [&logPath, start]() {
+        const std::string text = ReadText(logPath);
+        return text.size() > start ? text.substr(start) : std::string();
+    };
+
+    WritePrivateProfileStringW(L"CoAVolFog", L"Density", L"2.5", iniPath.c_str());
+    WritePrivateProfileStringW(L"CoAVolFog", L"WaterFoam", L"1.5", iniPath.c_str());
+    const bool reloaded = store.ReloadIfChanged();
+    Config edited = store.Get();
+    edited.waterWind = 3.0f;
+    store.Apply(edited);
+    edited.waterWind = 4.0f;
+    store.Apply(edited);
+    const bool quietWhileEditing = logged().find("WaterWind") == std::string::npos;
+    store.LogSettledEdits();
+    store.LogSettledEdits();
+    store.Revert();
+    const std::string text = logged();
+    std::printf("%s", text.c_str());
+    Check(reloaded && runtime_cost::HasLine(text, "settings from CoAVolFog.ini: Density 1 -> 2.5, WaterFoam 1 -> 1.5"),
+          "an INI reload logs the changed keys with their old and new values");
+    Check(quietWhileEditing && CountOf(text, "settings: WaterWind 2 -> 4") == 1 &&
+              CountOf(text, "WaterWind 2 -> 3") == 0,
+          "a window edit logs one line once it settles, from the value before the edit to the value after it");
+    Check(runtime_cost::HasLine(text, "settings reverted to CoAVolFog.ini: WaterWind 4 -> 2"),
+          "reverting logs the keys it changes");
+}
+
+size_t DllLogSize()
+{
+    return ReadText(runtime_cost::FogLogBesideTheFogDll()).size();
+}
+
+void CheckSliderDragLoggedOnce(size_t logStart)
+{
+    const std::string text = runtime_cost::LogWrittenSince(logStart);
+    const size_t densityLines = CountOf(text, "settings: Density 1 -> ");
+    std::printf("     settings lines after the Density drag: %zu, Density changes %zu\n", CountOf(text, "settings: "),
+                densityLines);
+    Check(densityLines == 1 && CountOf(text, "Density ") == 1,
+          "dragging a slider in the settings window logs one settings line when the drag ends");
+}
+
 void CheckWaterSettings(const std::wstring& outDir, const std::wstring& shippedIni)
 {
+    CheckSettingChangesListed();
+    CheckSettingChangesLogged(outDir, shippedIni);
     CheckWaterOnlyEditsKeepFogHistory();
     CheckShippedWaterDefaults(shippedIni);
     CheckWaterSettingsSave(outDir, shippedIni);

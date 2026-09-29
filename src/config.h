@@ -70,14 +70,16 @@ struct Config
 
 bool SameFogSettings(const Config& a, const Config& b);
 bool SameLiveSettings(const Config& a, const Config& b);
+std::string SettingChanges(const Config& before, const Config& after);
 
 class ConfigStore
 {
 public:
     void Load(const std::string& path);
     bool ReloadIfChanged();
-    void Override(const Config& config) { m_config = config; }
+    void Override(const Config& config);
     void Apply(const Config& edited);
+    void LogSettledEdits();
     bool Save();
     void Revert();
     bool HasUnsavedChanges() const { return !SameLiveSettings(m_config, m_saved); }
@@ -88,11 +90,13 @@ private:
     void Read();
     Config ReadFile() const;
     void ReadKeepingStartupSwitches();
+    bool LogChanges(const char* origin);
 
     std::string m_path;
     unsigned long long m_stamp = 0;
     Config m_config;
     Config m_saved;
+    Config m_logged;
 };
 
 ConfigStore& GlobalConfig();

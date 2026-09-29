@@ -265,6 +265,8 @@ void SettingsPanel::Draw(ConfigStore& store, const FogFrameStatus& fogStatus, co
     changed |= DrawDebug(edited);
     if (changed)
         store.Apply(edited);
+    if (!ImGui::IsAnyItemActive())
+        store.LogSettledEdits();
     ImGui::Separator();
     DrawWaterStatus(waterStatus);
     DrawSaveRow(store);

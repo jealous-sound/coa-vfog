@@ -3,6 +3,7 @@
 #include "fog_data.h"
 #include "fog_model.h"
 #include "gpu_timing.h"
+#include "log.h"
 #include "noise_volume.h"
 #include "water_data.h"
 #include "water_fft.h"
@@ -1970,7 +1971,9 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     vf_test_set_config(&restored);
 
     CheckOverlayInput(h);
+    const size_t logBeforeWidgets = water_settings_checks::DllLogSize();
     CheckOverlayWidgets(h);
+    water_settings_checks::CheckSliderDragLoggedOnce(logBeforeWidgets);
     CheckOverlayDraw(h, world, outDir);
 
     h.ReleaseEngineObjects();
