@@ -8,6 +8,7 @@
 #include "water_data.h"
 #include "water_fft.h"
 #include "water_spectrum.h"
+#include "water_status.h"
 
 #include <windows.h>
 #include <d3d9.h>
@@ -1160,6 +1161,8 @@ std::string NarrowPath(const std::wstring& path)
     return narrow;
 }
 
+std::wstring g_harnessLog;
+
 std::string ReadText(const std::wstring& path)
 {
     std::string text;
@@ -1566,6 +1569,8 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckFogThinsIntoFoglessClassicLight(classic);
 
     CreateDirectoryW(outDir.c_str(), nullptr);
+    g_harnessLog = FullPath(outDir + L"\\harness.log");
+    LogOpen(NarrowPath(g_harnessLog).c_str());
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     CheckOverlayKeyNames();
     CheckSettingsSaveKeepsTheIni(outDir, FullPath(iniPath));

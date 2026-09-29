@@ -168,6 +168,7 @@ private:
     bool m_prepared = false;
     int m_simulatedResolution = 0;
     int m_loggedResolution = 0;
+    bool m_loggedPairing = false;
     int m_loggedTiles = 0;
     unsigned m_loggedDraws = 0;
 };

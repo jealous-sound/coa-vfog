@@ -652,11 +652,14 @@ void WaterFft::LogPlan()
     const int tiles = m_activeCount;
     if (resolution == m_loggedResolution && tiles == m_loggedTiles && m_passes.Draws() == m_loggedDraws)
         return;
+    const bool newSetup = resolution != m_loggedResolution || m_passes.PairsTargets() != m_loggedPairing;
     m_loggedResolution = resolution;
     m_loggedTiles = tiles;
     m_loggedDraws = m_passes.Draws();
-    VF_LOG_INFO("water waves: %dx%d, %d tiles, %u draws per frame%s", resolution, resolution, tiles,
-                m_passes.Draws(), m_passes.PairsTargets() ? "" : ", maps written in separate passes");
+    m_loggedPairing = m_passes.PairsTargets();
+    LogWrite(newSetup ? LogLevel::Info : LogLevel::Debug, "water waves: %dx%d, %d tiles, %u draws per frame%s",
+             resolution, resolution, tiles, m_passes.Draws(),
+             m_passes.PairsTargets() ? "" : ", maps written in separate passes");
 }
 
 bool WaterFft::Prepare(IDirect3DDevice9* dev, const WaterFftSettings& settings, const std::vector<WaterFftTile>& tiles,

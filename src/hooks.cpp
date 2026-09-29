@@ -5,6 +5,7 @@
 #include "engine.h"
 #include "log.h"
 #include "water_classify.h"
+#include "water_status.h"
 
 #include <windows.h>
 
@@ -55,8 +56,7 @@ FogDevice* g_waterPassDevice = nullptr;
 bool g_waterPassRanThisFrame = false;
 unsigned g_waterClassesThisPass = 0;
 WaterFrameStatus g_waterStatus = {false, "waiting for the world to render"};
-const char* g_lastWaterSkip = "";
-unsigned g_waterSkipsLogged = 0;
+WaterStatusLog g_waterLog;
 unsigned g_drawnWaterClassesTextMask = 0;
 char g_drawnWaterClassesText[kDrawnWaterClassesTextSize] = "";
 
@@ -215,12 +215,18 @@ int GuardFilter(unsigned code, const char* where)
 void RecordWaterSkip(const char* reason)
 {
     g_waterStatus = {false, reason};
-    if (reason != g_lastWaterSkip && g_waterSkipsLogged < kMaxSkipsLogged)
-    {
-        ++g_waterSkipsLogged;
-        VF_LOG_INFO("water skipped: %s", reason);
-    }
-    g_lastWaterSkip = reason;
+    const WaterLogLine line = g_waterLog.Skip(reason);
+    if (line.write)
+        LogWrite(line.level, "water skipped: %s", reason);
+}
+
+void RecordWaterIdle(const char* state)
+{
+    g_waterStatus = {false, state};
+    const WaterLogLine line = g_waterLog.Idle(state);
+    if (line.write)
+        LogWrite(line.level, "water idle: %s%s", state,
+                 line.level == LogLevel::Info ? " (repeats are logged at LogLevel 2)" : "");
 }
 
 unsigned WaterClassBit(WaterClass waterClass)
@@ -254,33 +260,43 @@ const char* DrawnWaterClassesText(unsigned classMask, bool flatWaves)
 void RecordWaterDrawn(unsigned classMask, bool flatWaves)
 {
     g_waterStatus = {true, DrawnWaterClassesText(classMask, flatWaves)};
-    g_lastWaterSkip = "";
+    g_waterLog.Drawn();
 }
 
-bool ArmWaterPass(FogDevice* device, const Config& cfg, const char** skip)
+enum class WaterArming
+{
+    Armed,
+    Idle,
+    Failed,
+};
+
+WaterArming ArmWaterPass(FogDevice* device, const Config& cfg, const char** reason)
 {
     FrameInputs in = {};
     if (!engine::BuildFrameInputs(in, false))
     {
-        *skip = "invalid frame inputs";
-        return false;
+        *reason = "invalid frame inputs";
+        return WaterArming::Failed;
     }
     if (in.inLiquid)
     {
-        *skip = "camera under water";
-        return false;
+        *reason = "camera under water";
+        return WaterArming::Idle;
     }
     if (g_stockFogPushed)
         UseClientFogRangeInsteadOfPushed(in);
     WaterInputs water = {};
     if (!engine::BuildWaterInputs(water))
     {
-        *skip = "the client's water colours are unavailable";
-        return false;
+        *reason = "the client's water colours are unavailable";
+        return WaterArming::Failed;
     }
     water.stockFogApplies = !g_stockFogPushed;
-    *skip = "the water pass could not start";
-    return BeginWaterPass(device, in, water, cfg, skip);
+    const char* skip = "";
+    if (BeginWaterPass(device, in, water, cfg, &skip))
+        return WaterArming::Armed;
+    *reason = skip && *skip ? skip : "the water pass could not start";
+    return WaterArming::Failed;
 }
 
 void OnWaterPassBegin(const void* liquidRenderer)
@@ -298,7 +314,7 @@ void OnWaterPassBegin(const void* liquidRenderer)
     }
     if (!engine::TransparentLiquidsQueued(liquidRenderer))
     {
-        RecordWaterSkip("no water in view");
+        RecordWaterIdle("no water in view");
         return;
     }
     FogDevice* device = GameFogDevice();
@@ -307,12 +323,16 @@ void OnWaterPassBegin(const void* liquidRenderer)
         RecordWaterSkip("no fog device");
         return;
     }
-    const char* skip = "the water pass could not start";
+    const char* reason = "the water pass could not start";
     g_waterPassDevice = device;
-    if (ArmWaterPass(device, cfg, &skip))
+    const WaterArming arming = ArmWaterPass(device, cfg, &reason);
+    if (arming == WaterArming::Armed)
         return;
     g_waterPassDevice = nullptr;
-    RecordWaterSkip(skip && *skip ? skip : "the water pass could not start");
+    if (arming == WaterArming::Idle)
+        RecordWaterIdle(reason);
+    else
+        RecordWaterSkip(reason);
 }
 
 void OnWaterPassEnd()
@@ -326,7 +346,7 @@ void OnWaterPassEnd()
     if (shaded)
         RecordWaterDrawn(g_waterClassesThisPass, flatWaves);
     else if (!g_waterClassesThisPass)
-        RecordWaterSkip("no water in view");
+        RecordWaterIdle("no water in view");
     else
         RecordWaterSkip(skip && *skip ? skip : "the water pass shaded nothing");
 }
@@ -349,13 +369,15 @@ void AbortArmedWaterPass()
 
 void EndWaterFrame()
 {
+    if (!g_waterHooksInstalled)
+        return;
     if (g_waterPassDevice)
     {
         AbortArmedWaterPass();
         RecordWaterSkip("the water pass did not finish");
     }
     else if (!g_waterPassRanThisFrame)
-        RecordWaterSkip("no liquid pass in this frame");
+        RecordWaterIdle("no liquid pass in this frame");
     g_waterPassRanThisFrame = false;
 }
 

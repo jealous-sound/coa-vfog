@@ -264,8 +264,7 @@ size_t CountOf(const std::string& text, const char* fragment)
 
 void CheckSettingChangesLogged(const std::wstring& outDir, const std::wstring& shippedIni)
 {
-    const std::wstring logPath = FullPath(outDir + L"\\harness-settings.log");
-    LogOpen(NarrowPath(logPath).c_str());
+    const std::wstring& logPath = g_harnessLog;
     const std::wstring iniPath = FullPath(outDir + L"\\settings-log.ini");
     Check(CopyFileW(shippedIni.c_str(), iniPath.c_str(), FALSE) != FALSE, "shipped CoAVolFog.ini copied for logging");
     ConfigStore store;
@@ -300,6 +299,32 @@ void CheckSettingChangesLogged(const std::wstring& outDir, const std::wstring& s
           "reverting logs the keys it changes");
 }
 
+void CheckWaterLogPolicy()
+{
+    WaterStatusLog log;
+    int idleInfo = 0;
+    int idleDebug = 0;
+    for (int i = 0; i < 54; ++i)
+    {
+        log.Drawn();
+        const WaterLogLine line = log.Idle("no water in view");
+        idleInfo += line.write && line.level == LogLevel::Info ? 1 : 0;
+        idleDebug += line.write && line.level == LogLevel::Debug ? 1 : 0;
+    }
+    const WaterLogLine repeated = log.Idle("no water in view");
+    const WaterLogLine diving = log.Idle("camera under water");
+    Check(idleInfo == 1 && idleDebug == 53 && !repeated.write && diving.write && diving.level == LogLevel::Info,
+          "routine water idle states log their first occurrence at LogLevel 1 and later changes only at LogLevel 2");
+    const WaterLogLine failure = log.Skip("scene colour copy failed");
+    const WaterLogLine sameFailure = log.Skip("scene colour copy failed");
+    int failuresLogged = 0;
+    for (int i = 0; i < 60; ++i)
+        failuresLogged += log.Skip(i % 2 ? "fog depth surface not bound" : "the water pass did not finish").write;
+    Check(failure.write && failure.level == LogLevel::Info && !sameFailure.write && log.SkipsLogged() == 50 &&
+              failuresLogged == 49,
+          "idle states leave the water's own 50-line skip budget to real failures");
+}
+
 size_t DllLogSize()
 {
     return ReadText(runtime_cost::FogLogBesideTheFogDll()).size();
@@ -317,6 +342,7 @@ void CheckSliderDragLoggedOnce(size_t logStart)
 
 void CheckWaterSettings(const std::wstring& outDir, const std::wstring& shippedIni)
 {
+    CheckWaterLogPolicy();
     CheckSettingChangesListed();
     CheckSettingChangesLogged(outDir, shippedIni);
     CheckWaterOnlyEditsKeepFogHistory();

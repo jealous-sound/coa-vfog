@@ -1062,6 +1062,48 @@ void CheckTileMaskKeepsOtherTiles(IDirect3DDevice9* dev)
           "water tiles outside the tile mask keep their previous surface and foam maps");
 }
 
+size_t CountLines(const std::string& text, const char* fragment)
+{
+    size_t count = 0;
+    for (size_t at = text.find(fragment); at != std::string::npos; at = text.find(fragment, at + 1))
+        ++count;
+    return count;
+}
+
+void CheckTileSetChangesLogQuietly(IDirect3DDevice9* dev)
+{
+    const std::vector<WaterFftTile> tiles = TileList(kLakeTiles);
+    WaterFft fft;
+    const size_t start = ReadText(g_harnessLog).size();
+    auto logged = [start]() {
+        const std::string text = ReadText(g_harnessLog);
+        return text.size() > start ? text.substr(start) : std::string();
+    };
+    LogSetLevel(static_cast<int>(LogLevel::Info));
+    bool simulated = true;
+    for (uint32_t mask : {0x1u, 0x3u, 0x1u, 0x3u, 0x1u})
+        simulated = SimulateFrame(dev, fft, SettingsFor(kWaterFftLowResolution), tiles, mask, kSimulatedSeconds,
+                                  kFrameSeconds) &&
+                    simulated;
+    const size_t atInfo = CountLines(logged(), "water waves: ");
+    LogSetLevel(static_cast<int>(LogLevel::Debug));
+    for (uint32_t mask : {0x3u, 0x1u})
+        simulated = SimulateFrame(dev, fft, SettingsFor(kWaterFftLowResolution), tiles, mask, kSimulatedSeconds,
+                                  kFrameSeconds) &&
+                    simulated;
+    const size_t atDebug = CountLines(logged(), "water waves: ");
+    LogSetLevel(static_cast<int>(LogLevel::Info));
+    simulated = SimulateFrame(dev, fft, SettingsFor(kWaterFftHighResolution), tiles, 0x1u, kSimulatedSeconds,
+                              kFrameSeconds) &&
+                simulated;
+    const size_t afterResolution = CountLines(logged(), "water waves: ");
+    std::printf("     wave plan lines: %zu at LogLevel 1 over five tile sets, %zu after two more at LogLevel 2, %zu "
+                "after a resolution change\n",
+                atInfo, atDebug, afterResolution);
+    Check(simulated && atInfo == 1 && atDebug == 3 && afterResolution == 4,
+          "wave tile-set changes are logged at LogLevel 2; LogLevel 1 logs the first plan and new resolutions");
+}
+
 void CheckChangedTilesRestart(IDirect3DDevice9* dev)
 {
     const std::vector<WaterFftTile> tiles = TileList(kLakeTiles);
@@ -1587,6 +1629,7 @@ void CheckWaterFft(IDirect3DDevice9* dev)
         CheckStepZeroAndRepeatability(dev);
         CheckStillWater(dev);
         CheckTileMaskKeepsOtherTiles(dev);
+        CheckTileSetChangesLogQuietly(dev);
         CheckChangedTilesRestart(dev);
         CheckResolutionsAndRecreation(dev);
         CheckStateContract(dev);
