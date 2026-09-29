@@ -36,3 +36,4 @@ EXPORTS
     vf_test_water_status
     vf_test_water_pass_thunk
     vf_test_water_pass_begin_reuses_argument_slot
+    vf_test_record_fog_frame

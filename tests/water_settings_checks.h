@@ -37,6 +37,8 @@ const LiquidRow kClientLiquidRows[] = {
     {1, "Water without a texture", 0, 1, nullptr, WaterClass::None},
 };
 
+constexpr int kLoggedDives = 60;
+
 const char* const kEditedWaterKeys[] = {"Water", "WaterQuality", "WaterWaves", "WaterFoam", "WaterDebugView"};
 
 std::vector<std::string> IniLines(const std::string& text)
@@ -338,6 +340,31 @@ size_t DllLogSize()
     return ReadText(runtime_cost::FogLogBesideTheFogDll()).size();
 }
 
+void CheckFogDivesLeaveTheSkipBudget()
+{
+    Config cfg;
+    vf_test_get_config(&cfg);
+    Config info = cfg;
+    info.logLevel = static_cast<int>(LogLevel::Info);
+    vf_test_set_config(&info);
+    const size_t start = DllLogSize();
+    for (int dive = 0; dive < kLoggedDives; ++dive)
+    {
+        vf_test_record_fog_frame(1, 0, "");
+        vf_test_record_fog_frame(0, 1, "");
+    }
+    vf_test_record_fog_frame(0, 0, "fog depth surface not bound");
+    const std::string text = runtime_cost::LogWrittenSince(start);
+    const size_t diveLines = CountOf(text, "camera under liquid");
+    const size_t failureLines = CountOf(text, "fog skipped: fog depth surface not bound");
+    std::printf("     %d dives: %zu lines about the camera under liquid, then %zu for a fog failure\n", kLoggedDives,
+                diveLines, failureLines);
+    Check(diveLines == 1 && failureLines == 1,
+          "diving logs the fog's camera-under-liquid state once at LogLevel 1 and leaves the fog's 50-line skip "
+          "budget to real failures");
+    vf_test_set_config(&cfg);
+}
+
 void CheckSliderDragLoggedOnce(size_t logStart)
 {
     const std::string text = runtime_cost::LogWrittenSince(logStart);
@@ -351,6 +378,7 @@ void CheckSliderDragLoggedOnce(size_t logStart)
 void CheckWaterSettings(const std::wstring& outDir, const std::wstring& shippedIni)
 {
     CheckWaterLogPolicy();
+    CheckFogDivesLeaveTheSkipBudget();
     CheckSettingChangesListed();
     CheckSettingChangesLogged(outDir, shippedIni);
     CheckWaterOnlyEditsKeepFogHistory();

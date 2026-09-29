@@ -25,13 +25,13 @@ constexpr unsigned char kCallRel32Opcode = 0xE8;
 constexpr uintptr_t kCallRel32Size = 5;
 constexpr float kOutOfRangeStockFogStart = 50000.0f;
 constexpr DWORD kConfigReloadIntervalMs = 1000;
-constexpr unsigned kMaxSkipsLogged = 50;
 constexpr int kEasternKingdomsMap = 0;
 constexpr int kKalimdorMap = 1;
 constexpr int kOutlandMap = 530;
 constexpr int kNorthrendMap = 571;
 constexpr size_t kDrawnWaterClassesTextSize = 64;
 constexpr unsigned kFlatWavesBit = 1u << 31;
+constexpr const char* kCameraUnderLiquid = "camera under liquid";
 
 uintptr_t g_worldRenderTarget = engine::kWorldRenderTarget;
 uintptr_t g_opaqueM2PassTarget = engine::kOpaqueM2PassTarget;
@@ -44,9 +44,9 @@ bool g_renderedThisFrame = false;
 bool g_stockFogPushed = false;
 engine::StockFog g_savedStockFog = {};
 bool g_deviceChecked = false;
-unsigned g_skipsLogged = 0;
 DWORD g_lastReload = 0;
-const char* g_lastSkip = "";
+const char* g_fogNotDrawnReason = "";
+StatusLog g_fogLog;
 
 uintptr_t g_waterPassTarget = engine::kWaterPassTarget;
 bool g_waterHooksInstalled = false;
@@ -216,6 +216,29 @@ WaterClass TestWaterClass(const void* liquidSettings)
 const WaterClient kTestWaterClient = {&LatestFogDevice, &TestWaterFrameInputs, &TestWaterInputs, &TestWaterClass};
 const WaterClient* g_waterClient = &kGameWaterClient;
 
+void RecordFogFrame(bool rendered, bool cameraUnderLiquid, const char* skip)
+{
+    if (rendered)
+    {
+        g_fogNotDrawnReason = "";
+        g_fogLog.Drawn();
+        return;
+    }
+    if (cameraUnderLiquid)
+    {
+        g_fogNotDrawnReason = kCameraUnderLiquid;
+        const StatusLogLine line = g_fogLog.Idle(kCameraUnderLiquid);
+        if (line.write)
+            LogWrite(line.level, "fog idle: %s%s", kCameraUnderLiquid,
+                     line.level == LogLevel::Info ? " (repeats are logged at LogLevel 2)" : "");
+        return;
+    }
+    g_fogNotDrawnReason = skip;
+    const StatusLogLine line = g_fogLog.Skip(skip);
+    if (line.write)
+        LogWrite(line.level, "fog skipped: %s", skip);
+}
+
 bool RenderCurrentWorldFog(FogDevice* device)
 {
     if (!device || !engine::HasOpaqueState())
@@ -229,18 +252,10 @@ bool RenderCurrentWorldFog(FogDevice* device)
     if (g_stockFogPushed)
         UseClientFogRangeInsteadOfPushed(in);
     const char* skip = "invalid frame inputs";
-    bool rendered = false;
-    if (valid && (!in.inLiquid || cfg.underwater))
-        rendered = RenderFog(device, in, cfg, &skip);
-    else if (valid)
-        skip = "camera under liquid";
+    const bool cameraUnderLiquid = valid && in.inLiquid && !cfg.underwater;
+    const bool rendered = valid && !cameraUnderLiquid && RenderFog(device, in, cfg, &skip);
     g_renderedThisFrame = rendered;
-    if (!rendered && skip != g_lastSkip && g_skipsLogged < kMaxSkipsLogged)
-    {
-        ++g_skipsLogged;
-        VF_LOG_INFO("fog skipped: %s", skip);
-    }
-    g_lastSkip = rendered ? "" : skip;
+    RecordFogFrame(rendered, cameraUnderLiquid, skip);
     return rendered;
 }
 
@@ -922,7 +937,7 @@ FogFrameStatus LastFogFrameStatus()
         return {false, "stopped after an exception, see CoAVolFog.log"};
     if (g_renderedLastFrame)
         return {true, ""};
-    return {false, *g_lastSkip ? g_lastSkip : "waiting for the world to render"};
+    return {false, *g_fogNotDrawnReason ? g_fogNotDrawnReason : "waiting for the world to render"};
 }
 
 void InstallFarClipHooks()
@@ -986,6 +1001,11 @@ bool InstallWaterHooks()
                 static_cast<unsigned>(engine::kWaterPassSite), static_cast<unsigned>(engine::kWaterMaterialRenderSlot),
                 static_cast<unsigned>(engine::kWaterNoSpecMaterialRenderSlot));
     return true;
+}
+
+void RecordHookedFogFrame(bool rendered, bool cameraUnderLiquid, const char* skip)
+{
+    RecordFogFrame(rendered, cameraUnderLiquid, skip);
 }
 
 void UseTestWaterClient(const FrameInputs& in, const WaterInputs& water)

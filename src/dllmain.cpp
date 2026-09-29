@@ -253,3 +253,8 @@ extern "C" void __cdecl vf_test_water_pass_begin_reuses_argument_slot(int reuse)
 {
     ReuseWaterPassBeginArgumentSlot(reuse != 0);
 }
+
+extern "C" void __cdecl vf_test_record_fog_frame(int rendered, int cameraUnderLiquid, const char* skip)
+{
+    RecordHookedFogFrame(rendered != 0, cameraUnderLiquid != 0, skip);
+}
