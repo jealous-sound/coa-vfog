@@ -243,3 +243,13 @@ extern "C" int __cdecl vf_test_water_status(const char** reason)
     *reason = status.reason;
     return status.drawn ? 1 : 0;
 }
+
+extern "C" const void* __cdecl vf_test_water_pass_thunk(uintptr_t target)
+{
+    return RetargetWaterPassThunk(target);
+}
+
+extern "C" void __cdecl vf_test_water_pass_begin_reuses_argument_slot(int reuse)
+{
+    ReuseWaterPassBeginArgumentSlot(reuse != 0);
+}

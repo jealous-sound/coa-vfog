@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 struct FrameInputs;
 struct WaterInputs;
 
@@ -30,5 +32,7 @@ extern "C" void __cdecl vf_on_water_pass_begin(const void* liquidRenderer);
 extern "C" void __cdecl vf_on_water_pass_end();
 
 void UseTestWaterClient(const FrameInputs& in, const WaterInputs& water);
+const void* RetargetWaterPassThunk(uintptr_t target);
+void ReuseWaterPassBeginArgumentSlot(bool reuse);
 bool TagHookedWaterDraw(const void* liquidSettings);
 void UntagHookedWaterDraw();

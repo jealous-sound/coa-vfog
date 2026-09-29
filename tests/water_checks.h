@@ -106,6 +106,7 @@ constexpr size_t kMinWallReflectionPixels = 50;
 constexpr double kMinReflectionFogChange = 8.0;
 constexpr int kOpaqueLiquidCountWord = 1;
 constexpr int kTransparentLiquidCountWord = 5;
+constexpr int kTransparentLiquidPass = 1;
 constexpr Vec3 kLowEye = {225, 0, 0.3f};
 constexpr Vec3 kLowEyeTarget = {225, 100, 0.3f};
 constexpr uint32_t kBlackSky = 0xFF000000;
@@ -1073,6 +1074,48 @@ void CheckQueuedTransparentLiquidsDecideArming()
     const bool noRendererSkips = vf_test_transparent_liquids_queued(nullptr) == 0;
     Check(emptySkips && queuedArms && noRendererSkips,
           "the water pass arms only when the client's transparent liquid bucket ([renderer+0x14]) holds draws");
+}
+
+struct WaterPassCall
+{
+    const void* liquidRenderer;
+    const void* camera;
+    int pass;
+};
+
+WaterPassCall g_waterPassCall = {};
+
+void __fastcall RecordWaterPassCall(const void* liquidRenderer, void*, const void* camera, int pass)
+{
+    g_waterPassCall = {liquidRenderer, camera, pass};
+}
+
+void CallThroughWaterPassThunk(const void* thunk, const void* liquidRenderer, const void* camera, int pass)
+{
+    __asm {
+        mov ecx, liquidRenderer
+        push pass
+        push camera
+        call thunk
+    }
+}
+
+void CheckWaterPassThunkKeepsTheRenderer()
+{
+    const uint32_t emptyRenderer[kLiquidRendererWords] = {};
+    const float camera[3] = {};
+    const void* thunk = vf_test_water_pass_thunk(reinterpret_cast<uintptr_t>(&RecordWaterPassCall));
+    vf_test_water_pass_begin_reuses_argument_slot(1);
+    g_waterPassCall = {};
+    CallThroughWaterPassThunk(thunk, emptyRenderer, camera, kTransparentLiquidPass);
+    vf_test_water_pass_begin_reuses_argument_slot(0);
+    std::printf("     client pass called with renderer %p (given %p), camera %p (given %p), pass %d\n",
+                g_waterPassCall.liquidRenderer, static_cast<const void*>(emptyRenderer), g_waterPassCall.camera,
+                static_cast<const void*>(camera), g_waterPassCall.pass);
+    Check(g_waterPassCall.liquidRenderer == emptyRenderer && g_waterPassCall.camera == camera &&
+              g_waterPassCall.pass == kTransparentLiquidPass,
+          "the water pass thunk calls the client's pass with its liquid renderer (ecx) and arguments even when the "
+          "begin hook reuses its own argument slot");
 }
 
 void CheckIdleTagLeavesState(Harness& h)
@@ -2196,6 +2239,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     vf_test_get_config(&base);
     vf_test_set_water_seconds(kFrameSeconds);
     CheckQueuedTransparentLiquidsDecideArming();
+    CheckWaterPassThunkKeepsTheRenderer();
     CheckIdleTagLeavesState(h);
     BasinClient client(h, DefaultWaterView());
     Check(AssignWaterData(MakeSyntheticWaterData()), "synthetic water presets, tiles and masks assigned");

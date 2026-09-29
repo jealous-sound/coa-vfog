@@ -52,6 +52,7 @@ uintptr_t g_waterPassTarget = engine::kWaterPassTarget;
 bool g_waterHooksInstalled = false;
 bool g_waterFailed = false;
 bool g_waterFaultLogged = false;
+bool g_waterPassBeginReusesArgumentSlot = false;
 FogDevice* g_waterPassDevice = nullptr;
 FogDevice* g_waterResourcesDevice = nullptr;
 bool g_waterPassRanThisFrame = false;
@@ -615,6 +616,8 @@ extern "C" void __cdecl vf_on_water_pass_begin(const void* liquidRenderer)
     {
         FailWater();
     }
+    if (g_waterPassBeginReusesArgumentSlot)
+        *static_cast<const void* volatile*>(&liquidRenderer) = nullptr;
 }
 
 extern "C" void __cdecl vf_on_water_pass_end()
@@ -731,7 +734,9 @@ __declspec(naked) static void WaterPassThunk()
 {
     __asm {
         push ecx
+        push ecx
         call vf_on_water_pass_begin
+        add esp, 4
         pop ecx
         push dword ptr [esp + 8]
         push dword ptr [esp + 8]
@@ -741,6 +746,17 @@ __declspec(naked) static void WaterPassThunk()
         popad
         ret 8
     }
+}
+
+const void* RetargetWaterPassThunk(uintptr_t target)
+{
+    g_waterPassTarget = target;
+    return reinterpret_cast<const void*>(&WaterPassThunk);
+}
+
+void ReuseWaterPassBeginArgumentSlot(bool reuse)
+{
+    g_waterPassBeginReusesArgumentSlot = reuse;
 }
 
 template <uintptr_t Render>
