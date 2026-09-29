@@ -43,6 +43,10 @@ constexpr float kNearStockFogStart = 5.0f;
 constexpr float kNearStockFogEnd = 20.0f;
 constexpr uint32_t kStockFogColour = 0xFFC08040;
 constexpr uint32_t kOtherSunColour = 0xFF4060FF;
+constexpr uint32_t kSunsetDirectColour = 0xFFFF7400;
+constexpr uint32_t kSunsetSpriteColour = 0xFFFFE7B6;
+constexpr float kSunsetElevation = 0.05f;
+constexpr float kLitGroundTolerance = 2.0f / 255.0f;
 constexpr Vec3 kGrazingEye = {0, 0, 4};
 constexpr Vec3 kGrazingTarget = {100, 5, 1};
 constexpr int kReflectionDebugView = 4;
@@ -1396,7 +1400,7 @@ void CheckInteriorIgnoresSun(Harness& h, const Config& base)
     vf_test_set_config(&on);
     WaterView sunny = DefaultWaterView();
     WaterView otherSun = sunny;
-    otherSun.in.sunColor = kOtherSunColour;
+    otherSun.in.directColor = kOtherSunColour;
     otherSun.in.toLight[0] = 0.0f;
     otherSun.in.toLight[1] = 0.6f;
     otherSun.in.toLight[2] = 0.8f;
@@ -1411,6 +1415,26 @@ void CheckInteriorIgnoresSun(Harness& h, const Config& base)
     const WaterFrameResult lakeB = second.Render(lake);
     Check(interiorA.began && SameImage(interiorA.image, interiorB.image) && !SameImage(lakeA.image, lakeB.image),
           "interior water ignores the sun (no sun scattering, glint or foam light) while lake water follows it");
+}
+
+void CheckWaterFollowsTheDirectLight(Harness& h, const Config& base)
+{
+    const Config on = WaterConfig(base);
+    vf_test_set_config(&on);
+    WaterView view = DefaultWaterView();
+    WaterView otherSprite = view;
+    otherSprite.in.sunColor = kOtherSunColour;
+    WaterView otherDirect = view;
+    otherDirect.in.directColor = kOtherSunColour;
+    WaterFrame lake;
+    BasinClient reference(h, view);
+    BasinClient sprite(h, otherSprite);
+    BasinClient direct(h, otherDirect);
+    const WaterFrameResult a = reference.Render(lake);
+    const WaterFrameResult b = sprite.Render(lake);
+    const WaterFrameResult c = direct.Render(lake);
+    Check(a.began && SameImage(a.image, b.image) && !SameImage(a.image, c.image),
+          "water is lit by the client's direct light (band 0), not by the sun sprite colour (band 9)");
 }
 
 bool MatchesColour(const unsigned char* bgr, DWORD colour)
@@ -1518,6 +1542,60 @@ void CheckFoamTintsAreLinear(BasinClient& client, const Config& base)
     AssignWaterData(MakeSyntheticWaterData());
 }
 
+void LinearSkyAmbient(const WaterInputs& water, float* ambient)
+{
+    for (int c = 0; c < 3; ++c)
+        ambient[c] = 0.0f;
+    for (uint32_t sky : water.skyColors)
+        for (int c = 0; c < 3; ++c)
+            ambient[c] += Decode(static_cast<unsigned char>(sky >> (16 - 8 * c))) / kSkyColorCount;
+}
+
+void CheckSunsetFoamStaysBelowLitGround(Harness& h, const Config& base)
+{
+    Config foamOnly = WaterConfig(base);
+    foamOnly.waterWaves = 0.0f;
+    foamOnly.waterReflections = 0.0f;
+    foamOnly.waterSpecular = 0.0f;
+    foamOnly.waterFoam = 1.0f;
+    vf_test_set_config(&foamOnly);
+    vf_test_disable_wave_simulation(1);
+    const bool assigned = AssignWaterData(FoamCoveredLake(1.0f));
+    WaterView sunset = DefaultWaterView();
+    const float horizontal = std::sqrt(1.0f - kSunsetElevation * kSunsetElevation);
+    sunset.in.toLight[0] = horizontal;
+    sunset.in.toLight[1] = 0.0f;
+    sunset.in.toLight[2] = kSunsetElevation;
+    sunset.in.lightIsMoon = false;
+    sunset.in.directColor = kSunsetDirectColour;
+    sunset.in.sunColor = kSunsetSpriteColour;
+    BasinClient client(h, sunset);
+    WaterFrame frame;
+    const WaterFrameResult foam = client.Render(frame);
+    vf_test_disable_wave_simulation(0);
+    float ambient[3];
+    LinearSkyAmbient(sunset.water, ambient);
+    float litGround[3];
+    for (int c = 0; c < 3; ++c)
+        litGround[c] = ambient[c] + Decode(static_cast<unsigned char>(kSunsetDirectColour >> (16 - 8 * c))) *
+                                        kSunsetElevation;
+    const std::vector<AbsorptionSample> samples = FlatFloorSamples(sunset);
+    float worstExcess = -1.0f;
+    for (const AbsorptionSample& s : samples)
+        for (int c = 0; c < 3; ++c)
+        {
+            const float encoded = foam.image.At(s.x, s.y)[2 - c] / 255.0f;
+            worstExcess = std::fmax(worstExcess, encoded - Encode(litGround[c]));
+        }
+    std::printf("     sunset foam: white foam against white ground lit by the same light, worst excess %.1f/255\n",
+                worstExcess * 255.0f);
+    Check(assigned && foam.began && !samples.empty() && worstExcess <= kLitGroundTolerance,
+          "a low warm sun does not make foam brighter than white ground lit by the same sun and sky");
+    const Config on = WaterConfig(base);
+    vf_test_set_config(&on);
+    AssignWaterData(MakeSyntheticWaterData());
+}
+
 void SaveRealDataViews(Harness& h, const Config& base, const std::string& waterDataPath, const std::wstring& outDir)
 {
     const DWORD attributes = GetFileAttributesA(waterDataPath.c_str());
@@ -1616,8 +1694,10 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     CheckFlatFallback(client, base, stock.image, outDir);
     CheckStockFogOnWater(h, base);
     CheckInteriorIgnoresSun(h, base);
+    CheckWaterFollowsTheDirectLight(h, base);
     CheckGrazingReflectionsMissTheShore(h, base, outDir);
     CheckFoamTintsAreLinear(client, base);
+    CheckSunsetFoamStaysBelowLitGround(h, base);
     CheckEndReportsWhatItShaded(h, client, base);
     CheckWaterGpuTimeSummary(client, base);
     CheckFaultInsideThePassRestoresTheDevice(h, client, base);

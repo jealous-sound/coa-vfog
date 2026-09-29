@@ -72,13 +72,18 @@ float3 InScattering(float3 V, float NoV, float crestTilt, float oxygen, float3 t
     return (1 - transmittance) * kInverseFourPi * (isotropic + anisotropic) * colour;
 }
 
+float WrappedFoamDiffuse(float NoL, float3 L)
+{
+    return saturate(NoL + kFoamWrap * saturate(L.z));
+}
+
 float3 FoamLight(float3 N, float foamState)
 {
     float3 L = ToLight();
     float NoL = clamp(dot(N, L), kMinCosine, 1);
     float state = saturate(foamState * kFoamStateGain);
     float crest = saturate(state * state * (3 - 2 * state) * L.z);
-    float diffuse = lerp(saturate(NoL + kFoamWrap), pow(NoL, kFoamCrestSharpness), crest) * SunVisibility();
+    float diffuse = lerp(WrappedFoamDiffuse(NoL, L), pow(NoL, kFoamCrestSharpness), crest) * SunVisibility();
     return lerp(Ambient(), SunColour(), diffuse);
 }
 

@@ -43,7 +43,6 @@ constexpr float kByteMax = 255.0f;
 constexpr float kHighByteWeight = 65536.0f;
 constexpr float kMidByteWeight = 256.0f;
 constexpr float kDisplayGamma = 2.2f;
-constexpr float kMoonlightScale = 0.3f;
 constexpr float kSunVisibilityHalfWidth = 0.1f;
 constexpr float kWaterF0 = 0.02f;
 constexpr int kSchlickExponent = 5;
@@ -918,9 +917,9 @@ void WaterRenderer::FillClassConstants(ShadingConstants& c, const WaterPreset& p
         noSun ? 0.0f : SmoothStep(-kSunVisibilityHalfWidth, kSunVisibilityHalfWidth, toLight[2]);
     const float sunTransmission = noSun ? 1.0f : 1.0f - FresnelSchlick(Saturate(toLight[2]));
     float sun[3];
-    LinearColour(m_in.sunColor, sun);
+    LinearColour(m_in.directColor, sun);
     for (float& channel : sun)
-        channel *= m_in.lightIsMoon ? kMoonlightScale : 1.0f;
+        channel *= m_in.lightIsMoon ? kMoonLightScale : 1.0f;
     float sky[kSkyColorCount][3];
     float ambient[3] = {};
     for (int i = 0; i < kSkyColorCount; ++i)
