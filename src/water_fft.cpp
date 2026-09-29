@@ -646,8 +646,10 @@ void WaterFft::SimulateBatch(const std::vector<WaterFftTile>& tiles, const int* 
     }
 }
 
-void WaterFft::LogPlan(int resolution, int tiles)
+void WaterFft::LogPlan()
 {
+    const int resolution = m_simulatedResolution;
+    const int tiles = m_activeCount;
     if (resolution == m_loggedResolution && tiles == m_loggedTiles && m_passes.Draws() == m_loggedDraws)
         return;
     m_loggedResolution = resolution;
@@ -657,9 +659,10 @@ void WaterFft::LogPlan(int resolution, int tiles)
                 m_passes.Draws(), m_passes.PairsTargets() ? "" : ", maps written in separate passes");
 }
 
-bool WaterFft::Simulate(IDirect3DDevice9* dev, const WaterFftSettings& settings, const std::vector<WaterFftTile>& tiles,
-                        uint32_t tileMask, double seconds, float deltaSeconds)
+bool WaterFft::Prepare(IDirect3DDevice9* dev, const WaterFftSettings& settings, const std::vector<WaterFftTile>& tiles,
+                       uint32_t tileMask)
 {
+    m_prepared = false;
     m_failure = "";
     if (!dev)
         return Fail("no device");
@@ -677,36 +680,57 @@ bool WaterFft::Simulate(IDirect3DDevice9* dev, const WaterFftSettings& settings,
         return Fail(m_retryFailure);
     }
     ForgetChangedTiles(tiles);
-    int active[kWaterMaxTiles] = {};
-    int count = 0;
+    m_activeCount = 0;
     for (size_t i = 0; i < tiles.size(); ++i)
         if (tileMask & (1u << i))
-            active[count++] = static_cast<int>(i);
-    if (count == 0)
-        return true;
-    if (!m_passes.Prepare(dev, settings.resolution, count))
-        return m_passes.Unsupported() ? Fail(m_passes.LastFailure()) : FailCreation(m_passes.LastFailure());
-    if (m_mapResolution != settings.resolution)
+            m_active[m_activeCount++] = static_cast<int>(i);
+    if (m_activeCount > 0)
     {
-        for (TileMaps& maps : m_tiles)
-            ReleaseTileMaps(maps);
-        m_mapResolution = settings.resolution;
+        if (!m_passes.Prepare(dev, settings.resolution, m_activeCount))
+            return m_passes.Unsupported() ? Fail(m_passes.LastFailure()) : FailCreation(m_passes.LastFailure());
+        if (m_mapResolution != settings.resolution)
+        {
+            for (TileMaps& maps : m_tiles)
+                ReleaseTileMaps(maps);
+            m_mapResolution = settings.resolution;
+        }
+        for (int slot = 0; slot < m_activeCount; ++slot)
+            if (!EnsureTileMaps(m_tiles[m_active[slot]], m_created[slot]))
+                return FailCreation("wave map creation failed");
     }
-    bool created[kWaterMaxTiles] = {};
-    for (int slot = 0; slot < count; ++slot)
-        if (!EnsureTileMaps(m_tiles[active[slot]], created[slot]))
-            return FailCreation("wave map creation failed");
+    m_prepared = true;
+    return true;
+}
+
+bool WaterFft::Run(IDirect3DDevice9* dev, const WaterFftSettings& settings, const std::vector<WaterFftTile>& tiles,
+                   double seconds, float deltaSeconds)
+{
+    if (!m_prepared)
+        return Fail(*m_failure ? m_failure : "waves not prepared");
+    m_prepared = false;
+    if (m_activeCount == 0)
+        return true;
     m_passes.Begin(dev);
-    for (int slot = 0; slot < count; ++slot)
-        if (created[slot])
-            for (IDirect3DTexture9* foam : m_tiles[active[slot]].foam)
+    for (int slot = 0; slot < m_activeCount; ++slot)
+        if (m_created[slot])
+            for (IDirect3DTexture9* foam : m_tiles[m_active[slot]].foam)
                 m_passes.ClearFoam(foam);
     const float foamStep = FoamStepSeconds(deltaSeconds);
     const int batch = m_passes.MaxSlots();
-    for (int first = 0; first < count; first += batch)
-        SimulateBatch(tiles, active + first, std::min(batch, count - first), settings, seconds, foamStep);
+    for (int first = 0; first < m_activeCount; first += batch)
+        SimulateBatch(tiles, m_active + first, std::min(batch, m_activeCount - first), settings, seconds, foamStep);
     m_passes.End();
-    LogPlan(settings.resolution, count);
+    m_simulatedResolution = settings.resolution;
+    return true;
+}
+
+bool WaterFft::Simulate(IDirect3DDevice9* dev, const WaterFftSettings& settings, const std::vector<WaterFftTile>& tiles,
+                        uint32_t tileMask, double seconds, float deltaSeconds)
+{
+    if (!Prepare(dev, settings, tiles, tileMask) || !Run(dev, settings, tiles, seconds, deltaSeconds))
+        return false;
+    if (m_activeCount > 0)
+        LogPlan();
     return true;
 }
 

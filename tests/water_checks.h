@@ -66,6 +66,9 @@ constexpr DWORD kStockWaterAlphaRef = 1;
 constexpr UINT kClientStreamOffset = 16;
 constexpr UINT kClientStreamStride = 16;
 constexpr RECT kClientScissor = {3, 5, 700, 400};
+constexpr int kNoWaterFault = 0;
+constexpr int kFaultInBegin = 1;
+constexpr int kFaultInEnd = 2;
 constexpr int kLiquidRendererWords = 8;
 constexpr int kOpaqueLiquidCountWord = 1;
 constexpr int kTransparentLiquidCountWord = 5;
@@ -404,6 +407,7 @@ struct WaterFrame
     int coverCount = 0;
     bool opaqueMask = false;
     bool fogDepthView = false;
+    int fault = kNoWaterFault;
 };
 
 struct WaterFrameResult
@@ -415,7 +419,43 @@ struct WaterFrameResult
     bool armWritesDocumented = true;
     bool tagWritesDocumented = true;
     bool untagRestores = true;
+    bool faulted = false;
+    bool fogRendered = false;
 };
+
+bool BeginWaterFaulted(const FrameInputs* in, const WaterInputs* water, const char** skip, bool* began)
+{
+    __try
+    {
+        *began = vf_test_water_begin(in, water, skip) != 0;
+        return false;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        vf_test_water_abort();
+        return true;
+    }
+}
+
+bool EndWaterFaulted()
+{
+    __try
+    {
+        vf_test_water_end();
+        return false;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        vf_test_water_abort();
+        return true;
+    }
+}
+
+ULONG References(IUnknown* object)
+{
+    object->AddRef();
+    return object->Release();
+}
 
 class BasinClient
 {
@@ -431,8 +471,9 @@ public:
         ApplyClientState();
         WaterSentinel before;
         ReadWaterSentinel(dev, before);
+        vf_test_fail_water_in_window(frame.fault);
         if (frame.calls != WaterCalls::None)
-            result.began = vf_test_water_begin(&m_v.in, &m_v.water, &result.skip) != 0;
+            result.faulted = BeginWaterFaulted(&m_v.in, &m_v.water, &result.skip, &result.began);
         WaterSentinel armed;
         ReadWaterSentinel(dev, armed);
         result.armWritesDocumented = result.began ? OnlyDocumentedStencilWrites(before, armed, 0)
@@ -448,7 +489,8 @@ public:
                                              kOtherPassRawDepth, kOtherPassColour);
         ApplyClientDrawState();
         if (frame.calls != WaterCalls::None)
-            vf_test_water_end();
+            result.faulted = EndWaterFaulted() || result.faulted;
+        vf_test_fail_water_in_window(kNoWaterFault);
         WaterSentinel after;
         ReadWaterSentinel(dev, after);
         result.stateKept = SameWaterSentinel(before, after, true);
@@ -457,7 +499,7 @@ public:
         if (frame.fogDepthView)
         {
             const char* skip = "";
-            vf_test_render(&m_v.in, &skip);
+            result.fogRendered = vf_test_render(&m_v.in, &skip) != 0;
         }
         result.image = Capture(dev);
         dev->EndScene();
@@ -1157,6 +1199,49 @@ void CheckFlatFallback(BasinClient& client, const Config& base, const Image& sto
           "without the wave simulation the water is shaded flat (1x1 zero maps) instead of skipped");
 }
 
+void CheckFaultInsideThePassRestoresTheDevice(Harness& h, BasinClient& client, const Config& base)
+{
+    const Config on = WaterConfig(base);
+    vf_test_set_config(&on);
+    IDirect3DSurface9* backBuffer = nullptr;
+    IDirect3DSurface9* depth = nullptr;
+    h.dev->GetRenderTarget(0, &backBuffer);
+    h.dev->GetDepthStencilSurface(&depth);
+    const ULONG backBufferReferences = References(backBuffer);
+    const ULONG depthReferences = References(depth);
+    const struct
+    {
+        int stage;
+        const char* check;
+    } faults[] = {
+        {kFaultInBegin, "an exception while Begin has the device switched is aborted back to the client's targets, "
+                        "state and references, and the fog still draws"},
+        {kFaultInEnd, "an exception while End has the device switched is aborted back to the client's targets, "
+                      "state and references, and the fog still draws"},
+    };
+    for (const auto& fault : faults)
+    {
+        WaterFrame frame;
+        frame.fault = fault.stage;
+        frame.fogDepthView = true;
+        const WaterFrameResult result = client.Render(frame);
+        const bool referencesKept =
+            References(backBuffer) == backBufferReferences && References(depth) == depthReferences;
+        std::printf("     fault %d: raised %d, state kept %d, references kept %d, fog drawn %d\n", fault.stage,
+                    result.faulted, result.stateKept, referencesKept, result.fogRendered);
+        Check(result.faulted && result.stateKept && referencesKept && result.fogRendered, fault.check);
+    }
+    backBuffer->Release();
+    depth->Release();
+    h.ReleaseEngineObjects();
+    const HRESULT reset = h.dev->Reset(&h.pp);
+    h.CreateEngineObjects();
+    WaterFrame frame;
+    const WaterFrameResult after = client.Render(frame);
+    Check(SUCCEEDED(reset) && after.began && after.stateKept,
+          "after an aborted water pass the device resets and the next water pass draws");
+}
+
 void CheckResetKeepsWater(Harness& h, BasinClient& client, const Config& base)
 {
     vf_test_disable_wave_simulation(1);
@@ -1434,6 +1519,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     CheckInteriorIgnoresSun(h, base);
     CheckGrazingReflectionsMissTheShore(h, base, outDir);
     CheckFoamTintsAreLinear(client, base);
+    CheckFaultInsideThePassRestoresTheDevice(h, client, base);
     CheckResetKeepsWater(h, client, base);
     SaveRealDataViews(h, base, waterDataPath, outDir);
 

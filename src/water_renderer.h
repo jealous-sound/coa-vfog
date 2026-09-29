@@ -15,6 +15,15 @@ void OverrideWaterSeconds(double seconds);
 void DisableWaveSimulation(bool disabled);
 void ForcePackedWaterDepth(bool forced);
 
+enum class WaterFaultStage
+{
+    None,
+    Begin,
+    End,
+};
+
+void InjectWaterFault(WaterFaultStage stage);
+
 constexpr int kWaterQualityLevels = 3;
 constexpr int kWaterSkyBands = 5;
 constexpr int kWaterShadedMaskSlots = 5;
@@ -86,11 +95,11 @@ private:
     bool EnsureFlatTexture(IDirect3DDevice9* dev);
     void EnsureMasks(IDirect3DDevice9* dev);
     IDirect3DTexture9* MaskTexture(int32_t index) const;
-    bool UsableTargets(const SavedTargets& saved, IDirect3DSurface9* depthSurface, const D3DVIEWPORT9& vp,
-                       D3DSURFACE_DESC& depthDesc);
-    void SaveTargets(IDirect3DDevice9* dev, SavedTargets& saved);
-    void ReleaseTargets(SavedTargets& saved);
-    void RestoreTargets(IDirect3DDevice9* dev, SavedTargets& saved);
+    bool UsableTargets(IDirect3DSurface9* depthSurface, const D3DVIEWPORT9& vp, D3DSURFACE_DESC& depthDesc);
+    void SaveTargets(IDirect3DDevice9* dev);
+    void ReleaseTargets();
+    void CaptureClientState();
+    void RestoreTargets(IDirect3DDevice9* dev);
     void SetPassState(IDirect3DDevice9* dev);
     void CopyLinearDepth(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DTexture9* copy);
     bool CopySceneColour(IDirect3DDevice9* dev, IDirect3DSurface9* target, const D3DVIEWPORT9& vp);
@@ -100,7 +109,9 @@ private:
     void RestoreClientStencil(IDirect3DDevice9* dev);
     bool AnyClassDrawn() const;
     uint32_t DrawnTileMask() const;
+    bool PrepareWaves(IDirect3DDevice9* dev);
     bool SimulateWaves(IDirect3DDevice9* dev, double seconds);
+    void LogWaveState();
     void ShadeClasses(IDirect3DDevice9* dev, IDirect3DSurface9* target, IDirect3DSurface9* depthSurface,
                       double seconds);
     void BindClassTextures(IDirect3DDevice9* dev, const WaterPreset& preset);
@@ -128,6 +139,8 @@ private:
     bool m_packedDepthForcedCopies = false;
     bool m_copyFailed = false;
 
+    SavedTargets m_saved;
+    bool m_stateCaptured = false;
     FrameInputs m_in = {};
     WaterInputs m_water = {};
     Config m_cfg;
@@ -137,9 +150,12 @@ private:
     bool m_stencilArmed = false;
     bool m_armed = false;
     bool m_wavesSimulated = false;
+    bool m_wavesAttempted = false;
+    uint32_t m_waveTiles = 0;
+    WaterFftSettings m_waveSettings = {};
     int m_shadedClasses = 0;
     double m_lastSeconds = -1.0;
-    std::string m_loggedWaveState;
+    const char* m_loggedWaveState = "";
     bool m_waveStateLogged = false;
     bool m_loggedFirstShade = false;
     const char* m_skip = "";

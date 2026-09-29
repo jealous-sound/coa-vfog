@@ -128,6 +128,11 @@ public:
 
     bool Simulate(IDirect3DDevice9* dev, const WaterFftSettings& settings, const std::vector<WaterFftTile>& tiles,
                   uint32_t tileMask, double seconds, float deltaSeconds);
+    bool Prepare(IDirect3DDevice9* dev, const WaterFftSettings& settings, const std::vector<WaterFftTile>& tiles,
+                 uint32_t tileMask);
+    bool Run(IDirect3DDevice9* dev, const WaterFftSettings& settings, const std::vector<WaterFftTile>& tiles,
+             double seconds, float deltaSeconds);
+    void LogPlan();
 
     IDirect3DTexture9* Surface(int tile) const;
     IDirect3DTexture9* Foam(int tile) const;
@@ -150,7 +155,6 @@ private:
     bool EnsureTileMaps(TileMaps& maps, bool& created);
     void SimulateBatch(const std::vector<WaterFftTile>& tiles, const int* indices, int count,
                        const WaterFftSettings& settings, double seconds, float deltaSeconds);
-    void LogPlan(int resolution, int tiles);
 
     const char* m_failure = "";
     const char* m_retryFailure = "";
@@ -158,6 +162,11 @@ private:
     WaterFftPasses m_passes;
     std::vector<TileMaps> m_tiles;
     int m_mapResolution = 0;
+    int m_active[kWaterMaxTiles] = {};
+    bool m_created[kWaterMaxTiles] = {};
+    int m_activeCount = 0;
+    bool m_prepared = false;
+    int m_simulatedResolution = 0;
     int m_loggedResolution = 0;
     int m_loggedTiles = 0;
     unsigned m_loggedDraws = 0;

@@ -169,3 +169,13 @@ extern "C" int __cdecl vf_test_transparent_liquids_queued(const void* liquidRend
 {
     return engine::TransparentLiquidsQueued(liquidRenderer) ? 1 : 0;
 }
+
+extern "C" void __cdecl vf_test_fail_water_in_window(int stage)
+{
+    InjectWaterFault(static_cast<WaterFaultStage>(stage));
+}
+
+extern "C" void __cdecl vf_test_water_abort()
+{
+    AbortWaterPass(LatestFogDevice());
+}

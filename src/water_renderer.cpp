@@ -101,9 +101,20 @@ const D3DSAMPLERSTATETYPE kPassSamplerStates[] = {
     D3DSAMP_MAXMIPLEVEL, D3DSAMP_MAXANISOTROPY, D3DSAMP_SRGBTEXTURE,
 };
 
+constexpr DWORD kInjectedWaterFault = 0xE0564657;
+
 double g_secondsOverride = -1.0;
 bool g_waveSimulationDisabled = false;
 bool g_packedDepthForced = false;
+WaterFaultStage g_injectedFault = WaterFaultStage::None;
+
+void RaiseInjectedFault(WaterFaultStage stage)
+{
+    if (g_injectedFault != stage)
+        return;
+    g_injectedFault = WaterFaultStage::None;
+    RaiseException(kInjectedWaterFault, 0, 0, nullptr);
+}
 
 template <typename T>
 void SafeRelease(T*& p)
@@ -325,6 +336,11 @@ void ForcePackedWaterDepth(bool forced)
     g_packedDepthForced = forced;
 }
 
+void InjectWaterFault(WaterFaultStage stage)
+{
+    g_injectedFault = stage;
+}
+
 WaterRenderer::~WaterRenderer()
 {
     ReleaseAll();
@@ -332,6 +348,7 @@ WaterRenderer::~WaterRenderer()
 
 void WaterRenderer::ReleaseDefaultPool()
 {
+    ReleaseTargets();
     SafeRelease(m_sceneColour);
     SafeRelease(m_sceneDepth);
     SafeRelease(m_waterDepth);
@@ -536,36 +553,47 @@ IDirect3DTexture9* WaterRenderer::MaskTexture(int32_t index) const
     return index >= 0 && static_cast<size_t>(index) < m_masks.size() ? m_masks[index] : nullptr;
 }
 
-void WaterRenderer::SaveTargets(IDirect3DDevice9* dev, SavedTargets& saved)
+void WaterRenderer::SaveTargets(IDirect3DDevice9* dev)
 {
+    ReleaseTargets();
     for (DWORD i = 0; i < kMaxRenderTargets; ++i)
-        dev->GetRenderTarget(i, &saved.colour[i]);
-    dev->GetDepthStencilSurface(&saved.depth);
-    dev->GetStreamSource(0, &saved.stream, &saved.streamOffset, &saved.streamStride);
+        dev->GetRenderTarget(i, &m_saved.colour[i]);
+    dev->GetDepthStencilSurface(&m_saved.depth);
+    dev->GetStreamSource(0, &m_saved.stream, &m_saved.streamOffset, &m_saved.streamStride);
 }
 
-void WaterRenderer::ReleaseTargets(SavedTargets& saved)
+void WaterRenderer::ReleaseTargets()
 {
-    for (auto*& surface : saved.colour)
+    m_stateCaptured = false;
+    for (auto*& surface : m_saved.colour)
         SafeRelease(surface);
-    SafeRelease(saved.depth);
-    SafeRelease(saved.stream);
+    SafeRelease(m_saved.depth);
+    SafeRelease(m_saved.stream);
 }
 
-void WaterRenderer::RestoreTargets(IDirect3DDevice9* dev, SavedTargets& saved)
+void WaterRenderer::CaptureClientState()
 {
-    dev->SetRenderTarget(0, saved.colour[0]);
+    m_state->Capture();
+    m_stateCaptured = true;
+}
+
+void WaterRenderer::RestoreTargets(IDirect3DDevice9* dev)
+{
+    const bool captured = m_stateCaptured;
+    m_stateCaptured = false;
+    dev->SetRenderTarget(0, m_saved.colour[0]);
     for (DWORD i = 1; i < kMaxRenderTargets; ++i)
-        dev->SetRenderTarget(i, saved.colour[i]);
-    m_state->Apply();
-    dev->SetDepthStencilSurface(saved.depth);
-    dev->SetStreamSource(0, saved.stream, saved.streamOffset, saved.streamStride);
-    ReleaseTargets(saved);
+        dev->SetRenderTarget(i, m_saved.colour[i]);
+    if (captured && m_state)
+        m_state->Apply();
+    dev->SetDepthStencilSurface(m_saved.depth);
+    dev->SetStreamSource(0, m_saved.stream, m_saved.streamOffset, m_saved.streamStride);
+    ReleaseTargets();
 }
 
-bool WaterRenderer::UsableTargets(const SavedTargets& saved, IDirect3DSurface9* depthSurface, const D3DVIEWPORT9& vp,
-                                  D3DSURFACE_DESC& depthDesc)
+bool WaterRenderer::UsableTargets(IDirect3DSurface9* depthSurface, const D3DVIEWPORT9& vp, D3DSURFACE_DESC& depthDesc)
 {
+    const SavedTargets& saved = m_saved;
     D3DSURFACE_DESC rtDesc = {};
     if (!saved.colour[0])
         return Skip("no render target");
@@ -683,34 +711,34 @@ bool WaterRenderer::Begin(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture
     if (!EnsureShaders(dev) || !EnsureStateBlock(dev) || !EnsureFlatTexture(dev))
         return false;
 
-    SavedTargets saved;
-    SaveTargets(dev, saved);
+    SaveTargets(dev);
     D3DSURFACE_DESC depthDesc = {};
     const D3DVIEWPORT9& vp = in.viewport;
-    if (!UsableTargets(saved, depthSurface, vp, depthDesc) || !EnsureCopies(dev, saved.colour[0], vp.Width, vp.Height))
+    if (!UsableTargets(depthSurface, vp, depthDesc) || !EnsureCopies(dev, m_saved.colour[0], vp.Width, vp.Height))
     {
-        ReleaseTargets(saved);
+        ReleaseTargets();
         return false;
     }
     if (!BuildCommonConstants(in, depthDesc, m_common))
     {
-        ReleaseTargets(saved);
+        ReleaseTargets();
         return Skip("view matrix not invertible");
     }
     EnsureMasks(dev);
 
-    m_state->Capture();
+    CaptureClientState();
     for (DWORD i = 1; i < kMaxRenderTargets; ++i)
         dev->SetRenderTarget(i, nullptr);
-    const bool copied = CopySceneColour(dev, saved.colour[0], vp);
+    const bool copied = CopySceneColour(dev, m_saved.colour[0], vp);
     if (copied)
     {
         dev->SetDepthStencilSurface(nullptr);
         SetPassState(dev);
+        RaiseInjectedFault(WaterFaultStage::Begin);
         CopyLinearDepth(dev, depthTexture, m_sceneDepth);
-        ClearWaterStencil(dev, saved.colour[0], depthSurface, vp);
+        ClearWaterStencil(dev, m_saved.colour[0], depthSurface, vp);
     }
-    RestoreTargets(dev, saved);
+    RestoreTargets(dev);
     if (!copied)
         return Skip("scene colour copy failed");
 
@@ -740,6 +768,10 @@ void WaterRenderer::Untag(IDirect3DDevice9* dev)
 
 void WaterRenderer::Abort(IDirect3DDevice9* dev)
 {
+    if (dev && m_stateCaptured)
+        RestoreTargets(dev);
+    else
+        ReleaseTargets();
     RestoreClientStencil(dev);
     m_armed = false;
 }
@@ -768,32 +800,41 @@ uint32_t WaterRenderer::DrawnTileMask() const
     return mask;
 }
 
+bool WaterRenderer::PrepareWaves(IDirect3DDevice9* dev)
+{
+    m_waveTiles = DrawnTileMask();
+    m_waveSettings = {};
+    m_waveSettings.resolution = m_cfg.waterQuality == kLowQuality ? kFftResolutionLow : kFftResolution;
+    m_waveSettings.referenceResolution = kFftReferenceResolution;
+    m_waveSettings.windSpeed = m_cfg.waterWind;
+    m_waveSettings.windDirection[0] = kWindDirection[0];
+    m_waveSettings.windDirection[1] = kWindDirection[1];
+    m_wavesAttempted = !g_waveSimulationDisabled && m_waveTiles != 0;
+    return m_wavesAttempted && m_fft.Prepare(dev, m_waveSettings, GlobalWaterData().Tiles(), m_waveTiles);
+}
+
 bool WaterRenderer::SimulateWaves(IDirect3DDevice9* dev, double seconds)
 {
-    const uint32_t tiles = DrawnTileMask();
-    if (g_waveSimulationDisabled || !tiles)
-        return false;
-    WaterFftSettings settings = {};
-    settings.resolution = m_cfg.waterQuality == kLowQuality ? kFftResolutionLow : kFftResolution;
-    settings.referenceResolution = kFftReferenceResolution;
-    settings.windSpeed = m_cfg.waterWind;
-    settings.windDirection[0] = kWindDirection[0];
-    settings.windDirection[1] = kWindDirection[1];
     const double step = m_lastSeconds < 0.0 ? 0.0 : std::clamp(seconds - m_lastSeconds, 0.0, kMaxFoamStepSeconds);
-    const bool simulated =
-        m_fft.Simulate(dev, settings, GlobalWaterData().Tiles(), tiles, seconds, static_cast<float>(step));
+    return m_fft.Run(dev, m_waveSettings, GlobalWaterData().Tiles(), seconds, static_cast<float>(step));
+}
+
+void WaterRenderer::LogWaveState()
+{
+    if (!m_wavesAttempted)
+        return;
+    if (m_wavesSimulated)
+        m_fft.LogPlan();
     const char* failure = m_fft.LastFailure();
-    const std::string waveState = simulated ? std::string() : std::string(failure ? failure : "unknown failure");
-    if (!m_waveStateLogged || waveState != m_loggedWaveState)
-    {
-        if (simulated)
-            VF_LOG_INFO("water waves simulated (tiles 0x%02X, %d texels)", tiles, settings.resolution);
-        else
-            VF_LOG_INFO("water waves unavailable, shading flat water: %s", waveState.c_str());
-        m_loggedWaveState = waveState;
-        m_waveStateLogged = true;
-    }
-    return simulated;
+    const char* state = m_wavesSimulated ? "" : (failure && *failure ? failure : "unknown failure");
+    if (m_waveStateLogged && std::strcmp(state, m_loggedWaveState) == 0)
+        return;
+    if (m_wavesSimulated)
+        VF_LOG_INFO("water waves simulated (tiles 0x%02X, %d texels)", m_waveTiles, m_waveSettings.resolution);
+    else
+        VF_LOG_INFO("water waves unavailable, shading flat water: %s", state);
+    m_loggedWaveState = state;
+    m_waveStateLogged = true;
 }
 
 void WaterRenderer::FillClassConstants(ShadingConstants& c, const WaterPreset& preset, WaterClass waterClass,
@@ -989,27 +1030,29 @@ void WaterRenderer::End(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, 
         Skip("device not ready");
         return;
     }
-    SavedTargets saved;
-    SaveTargets(dev, saved);
+    SaveTargets(dev);
     D3DSURFACE_DESC depthDesc = {};
-    if (!UsableTargets(saved, depthSurface, m_in.viewport, depthDesc))
+    if (!UsableTargets(depthSurface, m_in.viewport, depthDesc))
     {
-        ReleaseTargets(saved);
+        ReleaseTargets();
         return;
     }
     const double seconds = WaterSeconds();
-    m_state->Capture();
+    const bool wavesPrepared = PrepareWaves(dev);
+    CaptureClientState();
     for (DWORD i = 1; i < kMaxRenderTargets; ++i)
         dev->SetRenderTarget(i, nullptr);
     dev->SetDepthStencilSurface(nullptr);
     SetPassState(dev);
-    m_wavesSimulated = SimulateWaves(dev, seconds);
+    RaiseInjectedFault(WaterFaultStage::End);
+    m_wavesSimulated = wavesPrepared && SimulateWaves(dev, seconds);
     dev->SetRenderTarget(1, nullptr);
     SetPassState(dev);
     CopyLinearDepth(dev, depthTexture, m_waterDepth);
-    ShadeClasses(dev, saved.colour[0], depthSurface, seconds);
-    RestoreTargets(dev, saved);
+    ShadeClasses(dev, m_saved.colour[0], depthSurface, seconds);
+    RestoreTargets(dev);
     m_lastSeconds = seconds;
+    LogWaveState();
     if (!m_loggedFirstShade && m_shadedClasses > 0)
     {
         m_loggedFirstShade = true;
