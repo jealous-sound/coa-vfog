@@ -434,7 +434,7 @@ void WaterFftPasses::Evolve(int slot, const WaterFftTile& tile, const WaterFftSe
     const float side = static_cast<float>(m_resolution);
     const Float4 constants[4] = {
         {side, 1.0f / side, slot * side, 0.5f * side},
-        {static_cast<float>(kWaterTwoPi / shape.length), static_cast<float>(shape.amplitude),
+        {static_cast<float>(kWaterTwoPi / shape.length), static_cast<float>(shape.amplitude * settings.amplitudeScale),
          static_cast<float>(shape.alignment), static_cast<float>(shape.inversePeakLengthSquared)},
         {static_cast<float>(shape.wind[0]), static_cast<float>(shape.wind[1]), 0.0f, 0.0f},
         {clock.coarse, clock.fine, WaterLoopFrequenciesPerRootRadius(shape.length), 0.0f},

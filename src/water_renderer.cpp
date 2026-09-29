@@ -52,6 +52,7 @@ constexpr double kMaxFoamStepSeconds = 0.1;
 constexpr double kSummarySeconds = 60.0;
 constexpr size_t kSummaryTextSize = 96;
 constexpr int kLowQuality = 1;
+constexpr int kSkyReflectionsOnlyVariant = 0;
 constexpr int kFftResolutionLow = 128;
 constexpr int kFftResolution = 256;
 constexpr int kFftReferenceResolution = 256;
@@ -337,6 +338,11 @@ IDirect3DTexture9* CreateMaskTexture(IDirect3DDevice9* dev, const WaterMaskLevel
 int QualityIndex(const Config& cfg)
 {
     return std::clamp(cfg.waterQuality, 1, kWaterQualityLevels) - 1;
+}
+
+int ShadingVariant(const Config& cfg)
+{
+    return cfg.waterReflections > 0.0f ? QualityIndex(cfg) : kSkyReflectionsOnlyVariant;
 }
 }
 
@@ -875,7 +881,8 @@ bool WaterRenderer::PrepareWaves(IDirect3DDevice9* dev)
     m_waveSettings.windSpeed = m_cfg.waterWind;
     m_waveSettings.windDirection[0] = kWindDirection[0];
     m_waveSettings.windDirection[1] = kWindDirection[1];
-    m_wavesAttempted = !g_waveSimulationDisabled && m_waveTiles != 0;
+    m_waveSettings.amplitudeScale = m_cfg.waterWaves * m_cfg.waterWaves;
+    m_wavesAttempted = !g_waveSimulationDisabled && m_waveTiles != 0 && m_cfg.waterWaves > 0.0f;
     return m_wavesAttempted && m_fft.Prepare(dev, m_waveSettings, GlobalWaterData().Tiles(), m_waveTiles);
 }
 
@@ -989,8 +996,8 @@ void WaterRenderer::FillClassConstants(ShadingConstants& c, const WaterPreset& p
         ++tileCount;
     }
     c.inverseTileSizes = {inverse[0], inverse[1], inverse[2], inverse[3]};
-    c.waveControl = {1.0f / static_cast<float>(std::max(tileCount, 1)), m_cfg.waterWaves,
-                     static_cast<float>(waterClass), static_cast<float>(m_cfg.waterDebugView)};
+    c.waveControl = {1.0f / static_cast<float>(std::max(tileCount, 1)), 0.0f, static_cast<float>(waterClass),
+                     static_cast<float>(m_cfg.waterDebugView)};
     c.foamScroll = {ScrollOffset(seconds, 0, preset.waveFoam[1]), ScrollOffset(seconds, 1, preset.waveFoam[1]),
                     ScrollOffset(seconds, 0, preset.shoreFoam[3]), ScrollOffset(seconds, 1, preset.shoreFoam[3])};
     c.depthFoamScroll = {ScrollOffset(seconds, 0, preset.depthFadeFoam[3]),
@@ -1051,7 +1058,7 @@ void WaterRenderer::ShadeClasses(IDirect3DDevice9* dev, IDirect3DSurface9* targe
     dev->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_KEEP);
     dev->SetRenderState(D3DRS_STENCILMASK, kStencilAllBits);
     dev->SetRenderState(D3DRS_STENCILWRITEMASK, 0);
-    dev->SetPixelShader(m_shade[QualityIndex(m_cfg)]);
+    dev->SetPixelShader(m_shade[ShadingVariant(m_cfg)]);
     dev->SetPixelShaderConstantF(0, &m_common[0][0], kCommonConstants);
     BindPointSampler(dev, kSceneColourStage, m_sceneColour, D3DTADDRESS_MIRROR);
     BindPointSampler(dev, kSceneDepthStage, m_sceneDepth, D3DTADDRESS_MIRROR);

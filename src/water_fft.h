@@ -13,6 +13,7 @@ struct WaterFftSettings
     int referenceResolution;
     float windSpeed;
     float windDirection[2];
+    float amplitudeScale = 1.0f;
 };
 
 class WaterFftPasses

@@ -1104,6 +1104,46 @@ void CheckTileSetChangesLogQuietly(IDirect3DDevice9* dev)
           "wave tile-set changes are logged at LogLevel 2; LogLevel 1 logs the first plan and new resolutions");
 }
 
+constexpr double kSmallestComparedMoment = 1e-3;
+
+void CheckAmplitudeScaleScalesTheWaves(IDirect3DDevice9* dev)
+{
+    const std::vector<WaterFftTile> tiles = TileList(kLakeTiles);
+    const WaterFftSettings full = SettingsFor(kWaterFftLowResolution);
+    WaterFftSettings lower = full;
+    lower.amplitudeScale = 0.25f;
+    WaterFft fullWaves;
+    WaterFft halfWaves;
+    TileReadback a;
+    TileReadback b;
+    const bool ran = SimulateFrame(dev, fullWaves, full, tiles, 0x1u, kSimulatedSeconds, kFrameSeconds) &&
+                     SimulateFrame(dev, halfWaves, lower, tiles, 0x1u, kSimulatedSeconds, kFrameSeconds) &&
+                     ReadTile(dev, fullWaves, 0, a) && ReadTile(dev, halfWaves, 0, b);
+    double worstSlope = 0.0;
+    double worstMoment = 0.0;
+    double largestSlope = 0.0;
+    const std::vector<double>& fullMoments = a.surface.values;
+    const std::vector<double>& lowerMoments = b.surface.values;
+    for (size_t i = 0; ran && i + 3 < fullMoments.size() && i + 3 < lowerMoments.size(); i += 4)
+    {
+        for (size_t c = 0; c < 2; ++c)
+        {
+            worstSlope = std::max(worstSlope, std::fabs(lowerMoments[i + c] - 0.5 * fullMoments[i + c]));
+            largestSlope = std::max(largestSlope, std::fabs(fullMoments[i + c]));
+        }
+        for (size_t c = 2; c < 4; ++c)
+        {
+            const double expected = 0.25 * fullMoments[i + c];
+            worstMoment = std::max(worstMoment, std::fabs(lowerMoments[i + c] - expected) /
+                                                    std::max(kSmallestComparedMoment, std::fabs(fullMoments[i + c])));
+        }
+    }
+    std::printf("     amplitude scale 0.25: worst slope error %.2e (largest slope %.3f), worst moment error %.3f\n",
+                worstSlope, largestSlope, worstMoment);
+    Check(ran && largestSlope > 0.0 && worstSlope <= 0.01 * largestSlope && worstMoment <= 0.02,
+          "the amplitude scale (WaterWaves squared) halves the simulated slopes and quarters their squares at 0.25");
+}
+
 void CheckChangedTilesRestart(IDirect3DDevice9* dev)
 {
     const std::vector<WaterFftTile> tiles = TileList(kLakeTiles);
@@ -1630,6 +1670,7 @@ void CheckWaterFft(IDirect3DDevice9* dev)
         CheckStillWater(dev);
         CheckTileMaskKeepsOtherTiles(dev);
         CheckTileSetChangesLogQuietly(dev);
+        CheckAmplitudeScaleScalesTheWaves(dev);
         CheckChangedTilesRestart(dev);
         CheckResolutionsAndRecreation(dev);
         CheckStateContract(dev);

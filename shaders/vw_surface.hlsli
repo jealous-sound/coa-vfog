@@ -82,8 +82,6 @@ WaveState SampleWaves(WaterPixel w)
                  weight.y * tex2D(sFoamState1, xy * inverseSize.y).xy +
                  weight.z * tex2D(sFoamState2, xy * inverseSize.z).xy +
                  weight.w * tex2D(sFoamState3, xy * inverseSize.w).xy;
-    float scale = WaveScale();
-    waves.moments *= float4(scale, scale, scale * scale, scale * scale);
     return waves;
 }
 

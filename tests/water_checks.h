@@ -76,6 +76,9 @@ constexpr int kFaultInEnd = 2;
 constexpr int kLiquidRendererWords = 8;
 constexpr int kTimedWaterFrames = 30;
 constexpr unsigned kAllWaterResources = 0x7;
+constexpr int kFoamClockSteps = 20;
+constexpr double kFoamClockStep = 0.1;
+constexpr int kFoamCoverageDebugView = 2;
 constexpr int kOpaqueLiquidCountWord = 1;
 constexpr int kTransparentLiquidCountWord = 5;
 
@@ -1345,6 +1348,48 @@ void CheckWaterOffReleasesResources(BasinClient& client, const Config& base)
           "foam masks live in the default pool, without a managed system-memory copy beside the CPU one");
 }
 
+SyntheticWaterData WaveFoamOnlyLake()
+{
+    SyntheticWaterData data = MakeSyntheticWaterData();
+    for (WaterPreset& preset : data.presets)
+    {
+        Set4(preset.shoreFoam, 0.0f, 0.0f, 0.0f, 0.0f);
+        Set4(preset.depthFadeFoam, 0.0f, 0.0f, 0.0f, 0.0f);
+    }
+    return data;
+}
+
+WaterFrameResult RenderAfterFoamClock(BasinClient& client, const WaterFrame& frame)
+{
+    for (int step = 1; step <= kFoamClockSteps; ++step)
+    {
+        vf_test_set_water_seconds(kFrameSeconds + kFoamClockStep * step);
+        client.Render(frame);
+    }
+    return client.Render(frame);
+}
+
+void CheckFlatWaterHasNoCrestFoam(BasinClient& client, const Config& base)
+{
+    const bool assigned = AssignWaterData(WaveFoamOnlyLake());
+    Config flat = WaterConfig(base);
+    flat.waterWaves = 0.0f;
+    flat.waterFoam = 1.0f;
+    flat.waterDebugView = kFoamCoverageDebugView;
+    vf_test_set_config(&flat);
+    WaterFrame frame;
+    const WaterFrameResult settled = RenderAfterFoamClock(client, frame);
+    vf_test_disable_wave_simulation(1);
+    const WaterFrameResult fallback = client.Render(frame);
+    vf_test_disable_wave_simulation(0);
+    vf_test_set_water_seconds(kFrameSeconds);
+    Check(assigned && settled.began && SameImage(settled.image, fallback.image),
+          "WaterWaves=0 shades flat water without crest foam, as without the wave simulation");
+    const Config on = WaterConfig(base);
+    vf_test_set_config(&on);
+    AssignWaterData(MakeSyntheticWaterData());
+}
+
 void CheckResetKeepsWater(Harness& h, BasinClient& client, const Config& base)
 {
     vf_test_disable_wave_simulation(1);
@@ -1702,6 +1747,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     CheckWaterGpuTimeSummary(client, base);
     CheckFaultInsideThePassRestoresTheDevice(h, client, base);
     CheckWaterOffReleasesResources(client, base);
+    CheckFlatWaterHasNoCrestFoam(client, base);
     CheckResetKeepsWater(h, client, base);
     SaveRealDataViews(h, base, waterDataPath, outDir);
 
