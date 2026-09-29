@@ -78,6 +78,7 @@ constexpr int kNoWaterFault = 0;
 constexpr int kFaultInBegin = 1;
 constexpr int kFaultInEnd = 2;
 constexpr int kLiquidRendererWords = 8;
+std::wstring g_harnessOutDir;
 constexpr int kTimedWaterFrames = 30;
 constexpr unsigned kAllWaterResources = 0x7;
 constexpr int kFoamClockSteps = 20;
@@ -91,6 +92,14 @@ constexpr float kNearShoreDepth = 0.03f;
 constexpr float kMidShoreDepth = 0.25f;
 constexpr BYTE kNoFoamCoverage = 0;
 constexpr BYTE kVisibleFoamCoverage = 16;
+constexpr int kNormalDebugView = 1;
+constexpr int kEdgeReferenceOffset = 4;
+constexpr int kEdgeSearchMargin = 6;
+constexpr size_t kMinOccluderEdgePixels = 20;
+constexpr double kMinReferenceSlopeDetail = 3.0;
+constexpr double kMinEdgeDetailRatio = 0.5;
+constexpr Vec3 kOccludedBoxLow = {120, -40, kBasinFloorZ};
+constexpr Vec3 kOccludedBoxHigh = {126, -34, 8};
 constexpr int kOpaqueLiquidCountWord = 1;
 constexpr int kTransparentLiquidCountWord = 5;
 
@@ -1468,6 +1477,78 @@ void CheckShoreFoamWidthFollowsTheSlope(Harness& h, const Config& base)
     AssignWaterData(MakeSyntheticWaterData());
 }
 
+SyntheticWaterData RoughWater()
+{
+    SyntheticWaterData rough = MakeSyntheticWaterData();
+    for (WaterFftTile& tile : rough.tiles)
+    {
+        tile.amplitude = kRoughTileAmplitude;
+        tile.windMultiplier = kRoughTileWindMultiplier;
+    }
+    return rough;
+}
+
+int SlopeDetail(const Image& normals, UINT x, UINT y)
+{
+    const unsigned char* p = normals.At(x, y);
+    return std::abs(p[2] - 128) + std::abs(p[1] - 128);
+}
+
+void CheckOccluderEdgesKeepWaveDetail(Harness& h, const Config& base)
+{
+    const bool assigned = AssignWaterData(RoughWater());
+    const WaterView view = MakeWaterView({95, -37, 2.5f}, {140, -37, 0});
+    BasinClient client(h, view);
+    Config normals = WaterConfig(base);
+    normals.waterDebugView = kNormalDebugView;
+    vf_test_set_config(&normals);
+    WaterFrame mask;
+    mask.calls = WaterCalls::None;
+    mask.opaqueMask = true;
+    const WaterFrameResult water = client.Render(mask);
+    WaterFrame pass;
+    const WaterFrameResult shaded = client.Render(pass);
+    SaveImage(g_harnessOutDir, L"water-occluder-normals", shaded.image);
+    UINT left = view.world.Width;
+    UINT right = 0;
+    for (float x : {kOccludedBoxLow.x, kOccludedBoxHigh.x})
+        for (float y : {kOccludedBoxLow.y, kOccludedBoxHigh.y})
+        {
+            const UINT column = WaterSurfacePixel(view, x, y).first;
+            left = std::min(left, column);
+            right = std::max(right, column);
+        }
+    size_t edges = 0;
+    double edgeDetail = 0.0;
+    double referenceDetail = 0.0;
+    const UINT first = left > kEdgeSearchMargin + kEdgeReferenceOffset ? left - kEdgeSearchMargin : 0;
+    const UINT last = std::min<UINT>(right + kEdgeSearchMargin, view.world.Width - kEdgeReferenceOffset - 2);
+    for (UINT y = 0; y < view.world.Height; ++y)
+        for (UINT x = std::max(first, static_cast<UINT>(kEdgeReferenceOffset)); x <= last; ++x)
+        {
+            const UINT partner = x ^ 1u;
+            if (!IsMaskPixel(water.image, x, y) || IsMaskPixel(water.image, partner, y))
+                continue;
+            const UINT reference = partner > x ? x - kEdgeReferenceOffset : x + kEdgeReferenceOffset;
+            if (!IsMaskPixel(water.image, reference, y) || !IsMaskPixel(water.image, reference ^ 1u, y))
+                continue;
+            ++edges;
+            edgeDetail += SlopeDetail(shaded.image, x, y);
+            referenceDetail += SlopeDetail(shaded.image, reference, y);
+        }
+    const double edgeMean = edges ? edgeDetail / edges : 0.0;
+    const double referenceMean = edges ? referenceDetail / edges : 0.0;
+    std::printf("     occluder edges: %zu water pixels beside the box, slope detail %.1f at the edge, %.1f %d px off\n",
+                edges, edgeMean, referenceMean, kEdgeReferenceOffset);
+    Check(assigned && shaded.began && edges >= kMinOccluderEdgePixels && referenceMean >= kMinReferenceSlopeDetail &&
+              edgeMean >= kMinEdgeDetailRatio * referenceMean,
+          "water beside an occluder keeps its wave detail (texture gradients follow the water plane, not the "
+          "occluder's depth)");
+    const Config on = WaterConfig(base);
+    vf_test_set_config(&on);
+    AssignWaterData(MakeSyntheticWaterData());
+}
+
 void CheckResetKeepsWater(Harness& h, BasinClient& client, const Config& base)
 {
     vf_test_disable_wave_simulation(1);
@@ -1810,6 +1891,7 @@ void SaveRealDataViews(Harness& h, const Config& base, const std::string& waterD
 
 void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& waterDataPath)
 {
+    g_harnessOutDir = outDir;
     Config base;
     vf_test_get_config(&base);
     vf_test_set_water_seconds(kFrameSeconds);
@@ -1877,6 +1959,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     CheckWaterOffReleasesResources(client, base);
     CheckFlatWaterHasNoCrestFoam(client, base);
     CheckShoreFoamWidthFollowsTheSlope(h, base);
+    CheckOccluderEdgesKeepWaveDetail(h, base);
     CheckResetKeepsWater(h, client, base);
     SaveRealDataViews(h, base, waterDataPath, outDir);
 

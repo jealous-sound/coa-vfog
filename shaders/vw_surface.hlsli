@@ -5,6 +5,7 @@ static const float kAdtGridOrigin = 17066.666;
 static const float kAdtTilesPerYard = 0.001875;
 static const float kSlopeToAdtUv = 0.001;
 static const float kMinFoamFade = 1e-4;
+static const float kMinRayRise = 1e-4;
 
 struct WaterPixel
 {
@@ -14,6 +15,8 @@ struct WaterPixel
     float3 position;
     float3 toCamera;
     float columnDepth;
+    float2 footprintX;
+    float2 footprintY;
 };
 
 struct WaveState
@@ -42,6 +45,12 @@ float3 LinearToGamma(float3 colour)
     return pow(saturate(colour), 1 / 2.2);
 }
 
+float2 PlaneFootprint(float3 ray, float3 rayStep, float viewZ)
+{
+    float rise = ray.z < 0 ? min(ray.z, -kMinRayRise) : max(ray.z, kMinRayRise);
+    return viewZ * (rayStep.xy - ray.xy * rayStep.z / rise);
+}
+
 WaterPixel ReconstructWaterPixel(float2 pixel)
 {
     WaterPixel w;
@@ -52,7 +61,21 @@ WaterPixel ReconstructWaterPixel(float2 pixel)
     w.position = CameraPositionWorld() + worldRay * w.waterZ;
     w.toCamera = normalize(-worldRay);
     w.columnDepth = max(0, (w.sceneZ - w.waterZ) * -worldRay.z);
+    float3 rayStepX = ViewToWorldDirection(ViewRayAtUnitDepth(pixel + float2(1, 0))) - worldRay;
+    float3 rayStepY = ViewToWorldDirection(ViewRayAtUnitDepth(pixel + float2(0, 1))) - worldRay;
+    w.footprintX = PlaneFootprint(worldRay, rayStepX, w.waterZ);
+    w.footprintY = PlaneFootprint(worldRay, rayStepY, w.waterZ);
     return w;
+}
+
+float4 SampleTile(sampler2D tile, WaterPixel w, float inverseSize)
+{
+    return tex2Dgrad(tile, w.position.xy * inverseSize, w.footprintX * inverseSize, w.footprintY * inverseSize);
+}
+
+float2 SampleFoamState(sampler2D state, WaterPixel w, float inverseSize)
+{
+    return tex2Dlod(state, float4(w.position.xy * inverseSize, 0, 0)).xy;
 }
 
 float Tanh(float x)
@@ -74,14 +97,15 @@ WaveState SampleWaves(WaterPixel w)
                            ShallowTileWeight(inverseSize.y, w.columnDepth),
                            ShallowTileWeight(inverseSize.z, w.columnDepth),
                            ShallowTileWeight(inverseSize.w, w.columnDepth));
-    float2 xy = w.position.xy;
     WaveState waves;
-    waves.moments = weight.x * tex2D(sSurface0, xy * inverseSize.x) + weight.y * tex2D(sSurface1, xy * inverseSize.y) +
-                    weight.z * tex2D(sSurface2, xy * inverseSize.z) + weight.w * tex2D(sSurface3, xy * inverseSize.w);
-    waves.foam = weight.x * tex2D(sFoamState0, xy * inverseSize.x).xy +
-                 weight.y * tex2D(sFoamState1, xy * inverseSize.y).xy +
-                 weight.z * tex2D(sFoamState2, xy * inverseSize.z).xy +
-                 weight.w * tex2D(sFoamState3, xy * inverseSize.w).xy;
+    waves.moments = weight.x * SampleTile(sSurface0, w, inverseSize.x) +
+                    weight.y * SampleTile(sSurface1, w, inverseSize.y) +
+                    weight.z * SampleTile(sSurface2, w, inverseSize.z) +
+                    weight.w * SampleTile(sSurface3, w, inverseSize.w);
+    waves.foam = weight.x * SampleFoamState(sFoamState0, w, inverseSize.x) +
+                 weight.y * SampleFoamState(sFoamState1, w, inverseSize.y) +
+                 weight.z * SampleFoamState(sFoamState2, w, inverseSize.z) +
+                 weight.w * SampleFoamState(sFoamState3, w, inverseSize.w);
     return waves;
 }
 
@@ -129,8 +153,8 @@ float4 WaveFoam(float2 adtUv, float2 dx, float2 dy, float f)
 float4 FoamAlbedo(WaterPixel w, WaveState waves)
 {
     float2 adtUv = AdtUv(w.position, waves.moments.xy);
-    float2 dx = ddx(adtUv);
-    float2 dy = ddy(adtUv);
+    float2 dx = -w.footprintX.yx * kAdtTilesPerYard;
+    float2 dy = -w.footprintY.yx * kAdtTilesPerYard;
     float f = max(waves.foam.x, 0);
     float shoreWeight = cShoreFoam.x * FoamFade(w.columnDepth * ShoreDistancePerDepth(), cShoreFoam.z);
     float depthWeight = cDepthFadeFoam.x * FoamFade(w.sceneZ - w.waterZ, cDepthFadeFoam.z);
