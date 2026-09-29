@@ -29,7 +29,8 @@ extern "C" __declspec(dllimport) void __cdecl vf_test_force_depth_write(int);
 extern "C" __declspec(dllimport) void __cdecl vf_test_suppress_depth_write(int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_overlay_visible();
 extern "C" __declspec(dllimport) void __cdecl vf_test_draw_overlay();
-extern "C" __declspec(dllimport) int __cdecl vf_test_assign_water_data(const WaterPreset*, int, const WaterFftTile*, int,
+extern "C" __declspec(dllimport) int __cdecl vf_test_assign_water_data(const WaterPreset*, int,
+                                                                       const WaterFftTile*, int,
                                                                        const WaterMaskView*, int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_load_water_data(const char*);
 extern "C" __declspec(dllimport) int __cdecl vf_test_water_begin(const FrameInputs*, const WaterInputs*, const char**);
