@@ -202,7 +202,7 @@ struct ScriptedQueryCreation
     }
 };
 
-void TimeEmptyFrame(FogGpuTimer& timer, IDirect3DDevice9* dev)
+void TimeEmptyFrame(GpuTimer& timer, IDirect3DDevice9* dev)
 {
     timer.Begin(dev);
     timer.End();
@@ -212,7 +212,7 @@ void CheckGpuTimerRetriesTransientCreationFailures(IDirect3DDevice9* dev)
 {
     ScriptedQueryCreation afterReset;
     afterReset.failure = D3DERR_OUTOFVIDEOMEMORY;
-    FogGpuTimer resetTimer(afterReset.Creator());
+    GpuTimer resetTimer("fog", afterReset.Creator());
     TimeEmptyFrame(resetTimer, dev);
     const unsigned failedCalls = afterReset.calls;
     TimeEmptyFrame(resetTimer, dev);
@@ -225,7 +225,7 @@ void CheckGpuTimerRetriesTransientCreationFailures(IDirect3DDevice9* dev)
 
     ScriptedQueryCreation later;
     later.failure = E_OUTOFMEMORY;
-    FogGpuTimer laterTimer(later.Creator());
+    GpuTimer laterTimer("fog", later.Creator());
     TimeEmptyFrame(laterTimer, dev);
     later.failure = S_OK;
     unsigned frames = 0;
@@ -233,11 +233,11 @@ void CheckGpuTimerRetriesTransientCreationFailures(IDirect3DDevice9* dev)
     {
         TimeEmptyFrame(laterTimer, dev);
         ++frames;
-    } while (!laterTimer.Prepare(dev) && frames < 2 * FogGpuTimer::kFramesBetweenCreationAttempts);
-    const FogGpuTime interval = laterTimer.TakeInterval();
+    } while (!laterTimer.Prepare(dev) && frames < 2 * GpuTimer::kFramesBetweenCreationAttempts);
+    const GpuTime interval = laterTimer.TakeInterval();
     std::printf("     fog gpu timing queries recreated %u frames after E_OUTOFMEMORY, %u skipped\n", frames,
                 interval.skipped);
-    Check(!laterTimer.Unsupported() && frames == FogGpuTimer::kFramesBetweenCreationAttempts &&
+    Check(!laterTimer.Unsupported() && frames == GpuTimer::kFramesBetweenCreationAttempts &&
               interval.skipped == frames,
           "fog gpu timing retries query creation 600 frames after E_OUTOFMEMORY and counts every frame without "
           "queries as skipped");
@@ -247,9 +247,9 @@ void CheckGpuTimerReportsUnsupportedBeforeFirstSummary(IDirect3DDevice9* dev)
 {
     ScriptedQueryCreation unsupported;
     unsupported.failure = D3DERR_NOTAVAILABLE;
-    FogGpuTimer timer(unsupported.Creator());
+    GpuTimer timer("fog", unsupported.Creator());
     char firstSummary[96] = {};
-    DescribeFogGpuTime(timer, dev, firstSummary, sizeof(firstSummary));
+    DescribeGpuTime(timer, dev, firstSummary, sizeof(firstSummary));
     const unsigned probedCalls = unsupported.calls;
     timer.Release();
     unsupported.failure = S_OK;
@@ -259,10 +259,10 @@ void CheckGpuTimerReportsUnsupportedBeforeFirstSummary(IDirect3DDevice9* dev)
           "retry them");
 
     ScriptedQueryCreation supported;
-    FogGpuTimer fresh(supported.Creator());
+    GpuTimer fresh("fog", supported.Creator());
     char freshSummary[96] = {};
-    DescribeFogGpuTime(fresh, dev, freshSummary, sizeof(freshSummary));
-    Check(std::strcmp(freshSummary, ", fog gpu no samples (0 skipped)") == 0 && !fresh.Unsupported(),
+    DescribeGpuTime(fresh, dev, freshSummary, sizeof(freshSummary));
+    Check(std::strcmp(freshSummary, "fog gpu no samples (0 skipped)") == 0 && !fresh.Unsupported(),
           "with timestamp queries the first frame summary reports that no fog gpu sample has finished yet");
 }
 }

@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "engine.h"
+#include "gpu_timing.h"
 #include "water_fft.h"
 #include "water_types.h"
 
@@ -23,6 +24,7 @@ enum class WaterFaultStage
 };
 
 void InjectWaterFault(WaterFaultStage stage);
+void ForceWaterSummary();
 
 constexpr int kWaterQualityLevels = 3;
 constexpr int kWaterSkyBands = 5;
@@ -118,6 +120,9 @@ private:
     void BindClassTextures(IDirect3DDevice9* dev, const WaterPreset& preset);
     void FillClassConstants(ShadingConstants& c, const WaterPreset& preset, WaterClass waterClass,
                             double seconds) const;
+    bool ShadeTaggedWater(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* depthSurface);
+    void AddToSummary(bool shaded);
+    void LogSummaryWhenDue(IDirect3DDevice9* dev);
     void DrawFullscreen(IDirect3DDevice9* dev);
 
     IDirect3DVertexShader9* m_vs = nullptr;
@@ -155,6 +160,12 @@ private:
     uint32_t m_waveTiles = 0;
     WaterFftSettings m_waveSettings = {};
     int m_shadedClasses = 0;
+    unsigned m_shadedClassMask = 0;
+    GpuTimer m_gpuTimer{"water"};
+    double m_summaryStart = -1.0;
+    unsigned m_summaryClasses = 0;
+    int m_summaryWaveResolution = 0;
+    int m_summaryWaveTiles = 0;
     double m_lastSeconds = -1.0;
     const char* m_loggedWaveState = "";
     bool m_waveStateLogged = false;

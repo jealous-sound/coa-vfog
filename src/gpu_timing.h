@@ -6,7 +6,7 @@
 #include <functional>
 #include <vector>
 
-struct FogGpuTime
+struct GpuTime
 {
     float medianMs = 0.0f;
     unsigned frames = 0;
@@ -17,20 +17,24 @@ using QueryCreator = std::function<HRESULT(IDirect3DDevice9*, D3DQUERYTYPE, IDir
 
 HRESULT CreateDeviceQuery(IDirect3DDevice9* dev, D3DQUERYTYPE type, IDirect3DQuery9** query);
 
-class FogGpuTimer
+class GpuTimer
 {
 public:
     static constexpr unsigned kFramesBetweenCreationAttempts = 600;
 
-    explicit FogGpuTimer(QueryCreator createQuery = CreateDeviceQuery);
-    ~FogGpuTimer();
+    explicit GpuTimer(const char* subject, QueryCreator createQuery = CreateDeviceQuery);
+    ~GpuTimer();
 
     void Release();
     bool Prepare(IDirect3DDevice9* dev);
     void Begin(IDirect3DDevice9* dev);
+    void Pause();
+    void Resume();
     void End();
-    FogGpuTime TakeInterval();
+    void Cancel();
+    GpuTime TakeInterval();
     bool Unsupported() const { return m_unsupported; }
+    const char* Subject() const { return m_subject; }
 
 private:
     struct QuerySet
@@ -38,8 +42,12 @@ private:
         IDirect3DQuery9* disjoint = nullptr;
         IDirect3DQuery9* frequency = nullptr;
         IDirect3DQuery9* start = nullptr;
+        IDirect3DQuery9* pause = nullptr;
+        IDirect3DQuery9* resume = nullptr;
         IDirect3DQuery9* end = nullptr;
         bool pending = false;
+        bool paused = false;
+        bool split = false;
     };
 
     static constexpr int kQuerySets = 32;
@@ -51,6 +59,7 @@ private:
     bool Collect(QuerySet& set);
     void AddSample(float milliseconds);
 
+    const char* m_subject;
     QueryCreator m_createQuery;
     QuerySet m_sets[kQuerySets];
     int m_next = 0;
@@ -63,4 +72,4 @@ private:
     unsigned m_skipped = 0;
 };
 
-void DescribeFogGpuTime(FogGpuTimer& timer, IDirect3DDevice9* dev, char* text, size_t size);
+void DescribeGpuTime(GpuTimer& timer, IDirect3DDevice9* dev, char* text, size_t size);

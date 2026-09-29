@@ -175,6 +175,11 @@ extern "C" void __cdecl vf_test_fail_water_in_window(int stage)
     InjectWaterFault(static_cast<WaterFaultStage>(stage));
 }
 
+extern "C" void __cdecl vf_test_force_water_summary()
+{
+    ForceWaterSummary();
+}
+
 extern "C" void __cdecl vf_test_water_abort()
 {
     AbortWaterPass(LatestFogDevice());

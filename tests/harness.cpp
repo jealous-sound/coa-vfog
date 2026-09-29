@@ -45,6 +45,7 @@ extern "C" __declspec(dllimport) void __cdecl vf_test_force_packed_water_depth(i
 extern "C" __declspec(dllimport) int __cdecl vf_test_transparent_liquids_queued(const void*);
 extern "C" __declspec(dllimport) void __cdecl vf_test_fail_water_in_window(int);
 extern "C" __declspec(dllimport) void __cdecl vf_test_water_abort();
+extern "C" __declspec(dllimport) void __cdecl vf_test_force_water_summary();
 
 namespace
 {

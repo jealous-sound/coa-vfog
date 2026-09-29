@@ -2,6 +2,7 @@
 
 #include "fog_model.h"
 #include "log.h"
+#include "water_classify.h"
 #include "water_data.h"
 
 #include "ps_vw_depth.h"
@@ -13,6 +14,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 namespace
@@ -48,6 +50,8 @@ constexpr int kSchlickExponent = 5;
 constexpr float kMinClarity = 0.01f;
 constexpr float kMinStockFogRange = 1e-3f;
 constexpr double kMaxFoamStepSeconds = 0.1;
+constexpr double kSummarySeconds = 60.0;
+constexpr size_t kSummaryTextSize = 96;
 constexpr int kLowQuality = 1;
 constexpr int kFftResolutionLow = 128;
 constexpr int kFftResolution = 256;
@@ -107,6 +111,7 @@ double g_secondsOverride = -1.0;
 bool g_waveSimulationDisabled = false;
 bool g_packedDepthForced = false;
 WaterFaultStage g_injectedFault = WaterFaultStage::None;
+bool g_summaryForced = false;
 
 void RaiseInjectedFault(WaterFaultStage stage)
 {
@@ -341,6 +346,11 @@ void InjectWaterFault(WaterFaultStage stage)
     g_injectedFault = stage;
 }
 
+void ForceWaterSummary()
+{
+    g_summaryForced = true;
+}
+
 WaterRenderer::~WaterRenderer()
 {
     ReleaseAll();
@@ -349,6 +359,7 @@ WaterRenderer::~WaterRenderer()
 void WaterRenderer::ReleaseDefaultPool()
 {
     ReleaseTargets();
+    m_gpuTimer.Release();
     SafeRelease(m_sceneColour);
     SafeRelease(m_sceneDepth);
     SafeRelease(m_waterDepth);
@@ -726,6 +737,8 @@ bool WaterRenderer::Begin(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture
     }
     EnsureMasks(dev);
 
+    if (LogEnabled(LogLevel::Info))
+        m_gpuTimer.Begin(dev);
     CaptureClientState();
     for (DWORD i = 1; i < kMaxRenderTargets; ++i)
         dev->SetRenderTarget(i, nullptr);
@@ -740,7 +753,11 @@ bool WaterRenderer::Begin(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture
     }
     RestoreTargets(dev);
     if (!copied)
+    {
+        m_gpuTimer.Cancel();
         return Skip("scene colour copy failed");
+    }
+    m_gpuTimer.Pause();
 
     ArmStencilWrites(dev);
     m_in = in;
@@ -773,6 +790,7 @@ void WaterRenderer::Abort(IDirect3DDevice9* dev)
     else
         ReleaseTargets();
     RestoreClientStencil(dev);
+    m_gpuTimer.Cancel();
     m_armed = false;
 }
 
@@ -1008,17 +1026,75 @@ void WaterRenderer::ShadeClasses(IDirect3DDevice9* dev, IDirect3DSurface9* targe
         dev->SetRenderState(D3DRS_STENCILREF, static_cast<DWORD>(index));
         DrawFullscreen(dev);
         ++m_shadedClasses;
+        m_shadedClassMask |= 1u << index;
     }
 }
 
 bool WaterRenderer::End(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* depthSurface)
 {
     m_shadedClasses = 0;
+    m_shadedClassMask = 0;
     m_wavesSimulated = false;
     if (!m_armed)
         return Skip("water pass not armed");
     RestoreClientStencil(dev);
     m_armed = false;
+    m_gpuTimer.Resume();
+    const bool shaded = ShadeTaggedWater(dev, depthTexture, depthSurface);
+    m_gpuTimer.End();
+    AddToSummary(shaded);
+    LogSummaryWhenDue(dev);
+    return shaded;
+}
+
+void WaterRenderer::AddToSummary(bool shaded)
+{
+    if (!shaded)
+        return;
+    m_summaryClasses |= m_shadedClassMask;
+    if (!m_wavesSimulated)
+        return;
+    m_summaryWaveResolution = m_waveSettings.resolution;
+    int tiles = 0;
+    for (uint32_t mask = m_waveTiles; mask; mask &= mask - 1)
+        ++tiles;
+    m_summaryWaveTiles = std::max(m_summaryWaveTiles, tiles);
+}
+
+void WaterRenderer::LogSummaryWhenDue(IDirect3DDevice9* dev)
+{
+    if (!LogEnabled(LogLevel::Info) || !dev)
+        return;
+    const double now = QpcSeconds();
+    if (m_summaryStart < 0.0)
+        m_summaryStart = now;
+    if (!g_summaryForced && now - m_summaryStart < kSummarySeconds)
+        return;
+    g_summaryForced = false;
+    m_summaryStart = now;
+    char gpu[kSummaryTextSize] = {};
+    DescribeGpuTime(m_gpuTimer, dev, gpu, sizeof(gpu));
+    char classes[kSummaryTextSize] = {};
+    for (int index = 1; index < kWaterClassCount; ++index)
+        if (m_summaryClasses & (1u << index))
+        {
+            const size_t used = std::strlen(classes);
+            std::snprintf(classes + used, sizeof(classes) - used, "%s%s", used ? "+" : "",
+                          WaterClassLabel(static_cast<WaterClass>(index)));
+        }
+    char waves[kSummaryTextSize] = "flat";
+    if (m_summaryWaveResolution > 0)
+        std::snprintf(waves, sizeof(waves), "%d (%d tiles)", m_summaryWaveResolution, m_summaryWaveTiles);
+    VF_LOG_INFO("%s, classes %s, waves %s", gpu[0] ? gpu : "water gpu timing unavailable",
+                classes[0] ? classes : "none", waves);
+    m_summaryClasses = 0;
+    m_summaryWaveResolution = 0;
+    m_summaryWaveTiles = 0;
+}
+
+bool WaterRenderer::ShadeTaggedWater(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture,
+                                     IDirect3DSurface9* depthSurface)
+{
     if (!AnyClassDrawn())
         return Skip("no water drawn");
     if (!dev || !depthTexture || !depthSurface || dev->TestCooperativeLevel() != D3D_OK || !m_state ||

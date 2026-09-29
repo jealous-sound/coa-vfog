@@ -22,3 +22,4 @@ EXPORTS
     vf_test_transparent_liquids_queued
     vf_test_fail_water_in_window
     vf_test_water_abort
+    vf_test_force_water_summary

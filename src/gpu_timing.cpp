@@ -36,37 +36,42 @@ HRESULT CreateDeviceQuery(IDirect3DDevice9* dev, D3DQUERYTYPE type, IDirect3DQue
     return dev->CreateQuery(type, query);
 }
 
-FogGpuTimer::FogGpuTimer(QueryCreator createQuery) : m_createQuery(std::move(createQuery))
+GpuTimer::GpuTimer(const char* subject, QueryCreator createQuery)
+    : m_subject(subject), m_createQuery(std::move(createQuery))
 {
 }
 
-FogGpuTimer::~FogGpuTimer()
+GpuTimer::~GpuTimer()
 {
     ReleaseQueries();
 }
 
-void FogGpuTimer::ReleaseQueries()
+void GpuTimer::ReleaseQueries()
 {
     for (QuerySet& set : m_sets)
     {
         ReleaseQuery(set.disjoint);
         ReleaseQuery(set.frequency);
         ReleaseQuery(set.start);
+        ReleaseQuery(set.pause);
+        ReleaseQuery(set.resume);
         ReleaseQuery(set.end);
         set.pending = false;
+        set.paused = false;
+        set.split = false;
     }
     m_next = 0;
     m_open = -1;
     m_created = false;
 }
 
-void FogGpuTimer::Release()
+void GpuTimer::Release()
 {
     ReleaseQueries();
     m_framesUntilCreationAttempt = 0;
 }
 
-HRESULT FogGpuTimer::CreateQueries(IDirect3DDevice9* dev)
+HRESULT GpuTimer::CreateQueries(IDirect3DDevice9* dev)
 {
     HRESULT result = D3D_OK;
     for (QuerySet& set : m_sets)
@@ -79,6 +84,8 @@ HRESULT FogGpuTimer::CreateQueries(IDirect3DDevice9* dev)
             {D3DQUERYTYPE_TIMESTAMPDISJOINT, &set.disjoint},
             {D3DQUERYTYPE_TIMESTAMPFREQ, &set.frequency},
             {D3DQUERYTYPE_TIMESTAMP, &set.start},
+            {D3DQUERYTYPE_TIMESTAMP, &set.pause},
+            {D3DQUERYTYPE_TIMESTAMP, &set.resume},
             {D3DQUERYTYPE_TIMESTAMP, &set.end},
         };
         for (const auto& request : requests)
@@ -88,7 +95,7 @@ HRESULT FogGpuTimer::CreateQueries(IDirect3DDevice9* dev)
     return result;
 }
 
-bool FogGpuTimer::Prepare(IDirect3DDevice9* dev)
+bool GpuTimer::Prepare(IDirect3DDevice9* dev)
 {
     if (m_created)
         return true;
@@ -104,17 +111,17 @@ bool FogGpuTimer::Prepare(IDirect3DDevice9* dev)
     m_unsupported = TimestampQueriesUnsupported(dev, result);
     if (m_unsupported)
     {
-        VF_LOG_INFO("fog gpu timing unavailable (timestamp query creation HRESULT 0x%08lX); the frame summary omits it",
-                    static_cast<unsigned long>(result));
+        VF_LOG_INFO("%s gpu timing unavailable (timestamp query creation HRESULT 0x%08lX); the summary omits it",
+                    m_subject, static_cast<unsigned long>(result));
         return false;
     }
     m_framesUntilCreationAttempt = kFramesBetweenCreationAttempts;
-    VF_LOG_INFO("fog gpu timing queries not created (HRESULT 0x%08lX); retrying in %u frames or after the next Reset",
-                static_cast<unsigned long>(result), kFramesBetweenCreationAttempts);
+    VF_LOG_INFO("%s gpu timing queries not created (HRESULT 0x%08lX); retrying in %u frames or after the next Reset",
+                m_subject, static_cast<unsigned long>(result), kFramesBetweenCreationAttempts);
     return false;
 }
 
-void FogGpuTimer::AddSample(float milliseconds)
+void GpuTimer::AddSample(float milliseconds)
 {
     if (m_samples.size() < kMaxIntervalSamples)
     {
@@ -125,26 +132,34 @@ void FogGpuTimer::AddSample(float milliseconds)
     m_nextSample = (m_nextSample + 1) % kMaxIntervalSamples;
 }
 
-bool FogGpuTimer::Collect(QuerySet& set)
+bool GpuTimer::Collect(QuerySet& set)
 {
     BOOL disjoint = TRUE;
     UINT64 frequency = 0;
     UINT64 start = 0;
+    UINT64 pause = 0;
+    UINT64 resume = 0;
     UINT64 end = 0;
-    const HRESULT results[] = {ReadWithoutFlush(set.end, end), ReadWithoutFlush(set.start, start),
-                               ReadWithoutFlush(set.frequency, frequency), ReadWithoutFlush(set.disjoint, disjoint)};
+    const HRESULT results[] = {ReadWithoutFlush(set.end, end),
+                               set.split ? ReadWithoutFlush(set.resume, resume) : S_OK,
+                               set.split ? ReadWithoutFlush(set.pause, pause) : S_OK,
+                               ReadWithoutFlush(set.start, start),
+                               ReadWithoutFlush(set.frequency, frequency),
+                               ReadWithoutFlush(set.disjoint, disjoint)};
     if (std::any_of(std::begin(results), std::end(results), [](HRESULT r) { return r == S_FALSE; }))
         return false;
     set.pending = false;
     const bool read = std::all_of(std::begin(results), std::end(results), [](HRESULT r) { return r == S_OK; });
-    if (!read || disjoint || !frequency || end < start)
+    const bool ordered = set.split ? start <= pause && pause <= resume && resume <= end : start <= end;
+    if (!read || disjoint || !frequency || !ordered)
         ++m_skipped;
     else
-        AddSample(static_cast<float>(1000.0 * static_cast<double>(end - start) / static_cast<double>(frequency)));
+        AddSample(static_cast<float>(1000.0 * static_cast<double>(end - start - (resume - pause)) /
+                                     static_cast<double>(frequency)));
     return true;
 }
 
-void FogGpuTimer::CollectFinished()
+void GpuTimer::CollectFinished()
 {
     for (int i = 0; i < kQuerySets; ++i)
     {
@@ -154,7 +169,7 @@ void FogGpuTimer::CollectFinished()
     }
 }
 
-void FogGpuTimer::Begin(IDirect3DDevice9* dev)
+void GpuTimer::Begin(IDirect3DDevice9* dev)
 {
     m_open = -1;
     if (m_framesUntilCreationAttempt > 0)
@@ -178,12 +193,48 @@ void FogGpuTimer::Begin(IDirect3DDevice9* dev)
         ++m_skipped;
         return;
     }
+    set.paused = false;
+    set.split = false;
     m_open = m_next;
     m_next = (m_next + 1) % kQuerySets;
 }
 
-void FogGpuTimer::End()
+void GpuTimer::Pause()
 {
+    if (m_open < 0)
+        return;
+    QuerySet& set = m_sets[m_open];
+    if (set.paused || set.split)
+        return;
+    if (FAILED(set.pause->Issue(D3DISSUE_END)))
+    {
+        Cancel();
+        return;
+    }
+    set.paused = true;
+}
+
+void GpuTimer::Resume()
+{
+    if (m_open < 0)
+        return;
+    QuerySet& set = m_sets[m_open];
+    if (!set.paused)
+        return;
+    if (FAILED(set.resume->Issue(D3DISSUE_END)))
+    {
+        Cancel();
+        return;
+    }
+    set.paused = false;
+    set.split = true;
+}
+
+void GpuTimer::End()
+{
+    if (m_open < 0)
+        return;
+    Resume();
     if (m_open < 0)
         return;
     QuerySet& set = m_sets[m_open];
@@ -196,9 +247,20 @@ void FogGpuTimer::End()
     set.pending = true;
 }
 
-FogGpuTime FogGpuTimer::TakeInterval()
+void GpuTimer::Cancel()
 {
-    FogGpuTime interval;
+    if (m_open < 0)
+        return;
+    QuerySet& set = m_sets[m_open];
+    m_open = -1;
+    set.disjoint->Issue(D3DISSUE_END);
+    set.pending = false;
+    ++m_skipped;
+}
+
+GpuTime GpuTimer::TakeInterval()
+{
+    GpuTime interval;
     interval.frames = static_cast<unsigned>(m_samples.size());
     interval.skipped = m_skipped;
     if (!m_samples.empty())
@@ -213,15 +275,15 @@ FogGpuTime FogGpuTimer::TakeInterval()
     return interval;
 }
 
-void DescribeFogGpuTime(FogGpuTimer& timer, IDirect3DDevice9* dev, char* text, size_t size)
+void DescribeGpuTime(GpuTimer& timer, IDirect3DDevice9* dev, char* text, size_t size)
 {
     timer.Prepare(dev);
-    const FogGpuTime interval = timer.TakeInterval();
+    const GpuTime interval = timer.TakeInterval();
     if (timer.Unsupported())
         return;
     if (interval.frames > 0)
-        std::snprintf(text, size, ", fog gpu %.2f ms (median of %u frames, %u skipped)", interval.medianMs,
-                      interval.frames, interval.skipped);
+        std::snprintf(text, size, "%s gpu %.2f ms (median of %u frames, %u skipped)", timer.Subject(),
+                      interval.medianMs, interval.frames, interval.skipped);
     else
-        std::snprintf(text, size, ", fog gpu no samples (%u skipped)", interval.skipped);
+        std::snprintf(text, size, "%s gpu no samples (%u skipped)", timer.Subject(), interval.skipped);
 }

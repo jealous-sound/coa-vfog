@@ -70,6 +70,7 @@ constexpr int kNoWaterFault = 0;
 constexpr int kFaultInBegin = 1;
 constexpr int kFaultInEnd = 2;
 constexpr int kLiquidRendererWords = 8;
+constexpr int kTimedWaterFrames = 30;
 constexpr int kOpaqueLiquidCountWord = 1;
 constexpr int kTransparentLiquidCountWord = 5;
 
@@ -1242,6 +1243,36 @@ void CheckEndReportsWhatItShaded(Harness& h, BasinClient& client, const Config& 
           "End reports that it shaded nothing when no drawn class has a preset");
 }
 
+void CheckWaterGpuTimeSummary(BasinClient& client, const Config& base)
+{
+    Config logged = WaterConfig(base);
+    logged.logLevel = static_cast<int>(LogLevel::Info);
+    vf_test_set_config(&logged);
+    WaterFrame frame;
+    vf_test_force_water_summary();
+    bool began = client.Render(frame).began;
+    const size_t start = water_settings_checks::DllLogSize();
+    for (int i = 0; i < kTimedWaterFrames; ++i)
+        began = client.Render(frame).began && began;
+    vf_test_force_water_summary();
+    began = client.Render(frame).began && began;
+    const std::string text = runtime_cost::LogWrittenSince(start);
+    const size_t at = text.rfind("water gpu ");
+    float medianMs = 0.0f;
+    unsigned frames = 0;
+    unsigned skipped = 0;
+    char details[128] = {};
+    const char* const format = "water gpu %f ms (median of %u frames, %u skipped), %127[^\r\n]";
+    const bool parsed =
+        at != std::string::npos && std::sscanf(text.c_str() + at, format, &medianMs, &frames, &skipped, details) == 4;
+    std::printf("     water summary: %.3f ms over %u frames, %u skipped, %s\n", medianMs, frames, skipped, details);
+    Check(began && parsed && frames > 0 && medianMs > 0.0f &&
+              std::strcmp(details, "classes lake, waves 256 (3 tiles)") == 0,
+          "the water summary reports the water pass's GPU time, the classes shaded and the wave simulation");
+    const Config on = WaterConfig(base);
+    vf_test_set_config(&on);
+}
+
 void CheckFaultInsideThePassRestoresTheDevice(Harness& h, BasinClient& client, const Config& base)
 {
     const Config on = WaterConfig(base);
@@ -1563,6 +1594,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     CheckGrazingReflectionsMissTheShore(h, base, outDir);
     CheckFoamTintsAreLinear(client, base);
     CheckEndReportsWhatItShaded(h, client, base);
+    CheckWaterGpuTimeSummary(client, base);
     CheckFaultInsideThePassRestoresTheDevice(h, client, base);
     CheckResetKeepsWater(h, client, base);
     SaveRealDataViews(h, base, waterDataPath, outDir);
