@@ -96,7 +96,7 @@ private:
     bool CopySceneColour(IDirect3DDevice9* dev, IDirect3DSurface9* target, const D3DVIEWPORT9& vp);
     void ClearWaterStencil(IDirect3DDevice9* dev, IDirect3DSurface9* target, IDirect3DSurface9* depthSurface,
                            const D3DVIEWPORT9& vp);
-    void CaptureClientStencil(IDirect3DDevice9* dev);
+    void ArmStencilWrites(IDirect3DDevice9* dev);
     void RestoreClientStencil(IDirect3DDevice9* dev);
     bool AnyClassDrawn() const;
     uint32_t DrawnTileMask() const;
@@ -134,7 +134,7 @@ private:
     float m_common[9][4] = {};
     DWORD m_clientStencil[kWaterStencilStates] = {};
     unsigned m_draws[kWaterClassCount] = {};
-    bool m_tagged = false;
+    bool m_stencilArmed = false;
     bool m_armed = false;
     bool m_wavesSimulated = false;
     int m_shadedClasses = 0;

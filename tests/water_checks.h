@@ -19,6 +19,8 @@ constexpr DWORD kStockWaterColour = 0x8030507A;
 constexpr DWORD kInvisibleWaterColour = 0x0030507A;
 constexpr DWORD kWaterMaskColour = 0xFFFF00FF;
 constexpr DWORD kOtherPassColour = 0xFF20C0C0;
+constexpr DWORD kCoverLiquidColour = 0xFFC03030;
+constexpr float kCoverLiquidZ = 0.3f;
 constexpr float kOtherPassRawDepth = 0.05f;
 constexpr float kOtherPassLeft = 40.0f;
 constexpr float kOtherPassTop = 600.0f;
@@ -364,6 +366,8 @@ struct WaterStrip
     float y1;
     int waterClass;
     DWORD colour;
+    float z = kWaterSurfaceZ;
+    bool hooked = true;
 };
 
 const WaterStrip kLakeBasin[] = {{-kBasinHalfWidth, kBasinHalfWidth, kLakeClass, kStockWaterColour}};
@@ -374,6 +378,10 @@ const WaterStrip kClassStrips[] = {
 };
 const WaterStrip kHiddenLake[] = {{-kBasinHalfWidth, kBasinHalfWidth, kLakeClass, kInvisibleWaterColour}};
 const WaterStrip kInteriorBasin[] = {{-kBasinHalfWidth, kBasinHalfWidth, kInteriorClass, kStockWaterColour}};
+const WaterStrip kCoverLiquids[] = {
+    {-60.0f, -20.0f, static_cast<int>(WaterClass::None), kCoverLiquidColour, kCoverLiquidZ, true},
+    {20.0f, 60.0f, static_cast<int>(WaterClass::None), kCoverLiquidColour, kCoverLiquidZ, false},
+};
 
 enum class WaterCalls
 {
@@ -389,6 +397,8 @@ struct WaterFrame
     WaterCalls calls = WaterCalls::Pass;
     const WaterStrip* hiddenTaggedStrips = nullptr;
     int hiddenTaggedStripCount = 0;
+    const WaterStrip* covers = nullptr;
+    int coverCount = 0;
     bool opaqueMask = false;
     bool fogDepthView = false;
 };
@@ -399,6 +409,7 @@ struct WaterFrameResult
     bool began = false;
     const char* skip = "";
     bool stateKept = true;
+    bool armWritesDocumented = true;
     bool tagWritesDocumented = true;
     bool untagRestores = true;
 };
@@ -419,10 +430,17 @@ public:
         ReadWaterSentinel(dev, before);
         if (frame.calls != WaterCalls::None)
             result.began = vf_test_water_begin(&m_v.in, &m_v.water, &result.skip) != 0;
+        WaterSentinel armed;
+        ReadWaterSentinel(dev, armed);
+        result.armWritesDocumented = result.began ? OnlyDocumentedStencilWrites(before, armed, 0)
+                                                  : SameWaterSentinel(before, armed, true);
+        ReleaseWaterSentinel(armed);
         for (int i = 0; i < frame.stripCount; ++i)
             DrawStrip(frame.strips[i], frame.calls == WaterCalls::Pass, frame.opaqueMask, result);
         for (int i = 0; i < frame.hiddenTaggedStripCount; ++i)
             DrawStrip(frame.hiddenTaggedStrips[i], true, false, result);
+        for (int i = 0; i < frame.coverCount; ++i)
+            DrawStrip(frame.covers[i], frame.calls == WaterCalls::Pass, frame.opaqueMask, result);
         m_h.DrawPretransformedQuadAtRawDepth(kOtherPassLeft, kOtherPassTop, kOtherPassRight, kOtherPassBottom,
                                              kOtherPassRawDepth, kOtherPassColour);
         ApplyClientDrawState();
@@ -544,6 +562,7 @@ private:
         IDirect3DDevice9* dev = m_h.dev;
         WaterSentinel beforeTag;
         ReadWaterSentinel(dev, beforeTag);
+        tag = tag && strip.hooked;
         if (tag)
         {
             vf_test_water_tag(strip.waterClass);
@@ -556,8 +575,8 @@ private:
         }
         const DWORD colour = opaqueMask ? kWaterMaskColour : strip.colour;
         SceneVertex quad[6];
-        const Vec3 corners[4] = {{kBasinNearX, strip.y0, kWaterSurfaceZ}, {kBasinFarX, strip.y0, kWaterSurfaceZ},
-                                 {kBasinFarX, strip.y1, kWaterSurfaceZ}, {kBasinNearX, strip.y1, kWaterSurfaceZ}};
+        const Vec3 corners[4] = {{kBasinNearX, strip.y0, strip.z}, {kBasinFarX, strip.y0, strip.z},
+                                 {kBasinFarX, strip.y1, strip.z}, {kBasinNearX, strip.y1, strip.z}};
         const int order[6] = {0, 1, 2, 0, 2, 3};
         for (int i = 0; i < 6; ++i)
         {
@@ -1038,6 +1057,32 @@ void CheckStencilClearedEachPass(BasinClient& client, const Config& base)
     vf_test_set_config(&on);
 }
 
+void CheckUntaggedLiquidKeepsItsColour(BasinClient& client, const Config& base)
+{
+    const Config on = WaterConfig(base);
+    Config off = on;
+    off.water = false;
+    WaterFrame covered;
+    covered.covers = kCoverLiquids;
+    covered.coverCount = 2;
+    WaterFrame coverMask = covered;
+    coverMask.calls = WaterCalls::None;
+    coverMask.stripCount = 0;
+    coverMask.opaqueMask = true;
+    vf_test_set_config(&on);
+    const WaterFrameResult mask = client.Render(coverMask);
+    const WaterFrameResult shaded = client.Render(covered);
+    vf_test_set_config(&off);
+    const WaterFrameResult stock = client.Render(covered);
+    vf_test_set_config(&on);
+    const MaskComparison cover = CompareByMask(mask.image, shaded.image, stock.image);
+    std::printf("     untagged liquid over tagged water: %zu pixels, %zu reshaded; %zu other pixels changed\n",
+                cover.waterPixels, cover.changedWater, cover.changedElsewhere);
+    Check(shaded.began && cover.waterPixels > 0 && cover.changedWater == 0 && cover.changedElsewhere > 0,
+          "liquids drawn in the pass without a water class (hooked as None or not hooked) in front of tagged water "
+          "keep their own colour");
+}
+
 void CheckClassesShadeSeparately(BasinClient& client, const Config& base, const std::wstring& outDir)
 {
     Config classes = WaterConfig(base);
@@ -1339,8 +1384,10 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     Check(shaded.began, (std::string("the water pass arms ") + shaded.skip).c_str());
     Check(shaded.stateKept, "render, stencil, sampler (s0-s15), shader, constant, stream, viewport, scissor and target "
                             "state is identical before the water pass and after it");
-    Check(shaded.tagWritesDocumented, "tagging a water draw changes only the documented stencil states");
-    Check(shaded.untagRestores, "untagging restores the client's stencil states");
+    Check(shaded.armWritesDocumented, "arming the water pass turns on stencil writes of 0 for every draw in the pass "
+                                      "and changes no other state");
+    Check(shaded.tagWritesDocumented, "tagging a water draw changes only the stencil reference, to its class");
+    Check(shaded.untagRestores, "untagging returns the stencil reference to 0 and changes nothing else");
     const MaskComparison changes = CompareByMask(waterMask.image, shaded.image, stock.image);
     std::printf("     water pixels %zu, shaded %zu, changed outside the water %zu\n", changes.waterPixels,
                 changes.changedWater, changes.changedElsewhere);
@@ -1364,6 +1411,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     CheckOpticsAgainstReference(client, base, outDir);
     CheckWaterDepthReachesFog(h, base);
     CheckStencilClearedEachPass(client, base);
+    CheckUntaggedLiquidKeepsItsColour(client, base);
     CheckClassesShadeSeparately(client, base, outDir);
     CheckFlatFallback(client, base, stock.image, outDir);
     CheckStockFogOnWater(h, base);

@@ -62,10 +62,24 @@ constexpr int kSkyColourOfBand[kWaterSkyBands] = {kSkyTop, kSkyMiddle, kSkyUpper
 constexpr int kCloseWaterColour = 0;
 constexpr int kFarWaterColour = 1;
 
-const D3DRENDERSTATETYPE kStencilStates[kWaterStencilStates] = {
-    D3DRS_STENCILENABLE, D3DRS_STENCILFUNC,      D3DRS_STENCILPASS,
-    D3DRS_STENCILFAIL,   D3DRS_STENCILZFAIL,     D3DRS_STENCILREF,
-    D3DRS_STENCILMASK,   D3DRS_STENCILWRITEMASK, D3DRS_TWOSIDEDSTENCILMODE,
+constexpr DWORD kUntaggedStencil = 0;
+
+struct StencilSetting
+{
+    D3DRENDERSTATETYPE state;
+    DWORD value;
+};
+
+const StencilSetting kPassStencil[kWaterStencilStates] = {
+    {D3DRS_STENCILENABLE, TRUE},
+    {D3DRS_STENCILFUNC, D3DCMP_ALWAYS},
+    {D3DRS_STENCILPASS, D3DSTENCILOP_REPLACE},
+    {D3DRS_STENCILFAIL, D3DSTENCILOP_KEEP},
+    {D3DRS_STENCILZFAIL, D3DSTENCILOP_KEEP},
+    {D3DRS_STENCILREF, kUntaggedStencil},
+    {D3DRS_STENCILMASK, kStencilAllBits},
+    {D3DRS_STENCILWRITEMASK, kStencilAllBits},
+    {D3DRS_TWOSIDEDSTENCILMODE, FALSE},
 };
 
 const D3DRENDERSTATETYPE kPassRenderStates[] = {
@@ -325,7 +339,7 @@ void WaterRenderer::ReleaseDefaultPool()
     m_copyW = m_copyH = 0;
     m_copyFailed = false;
     m_armed = false;
-    m_tagged = false;
+    m_stencilArmed = false;
     m_lastSeconds = -1.0;
     m_fft.ReleaseDefaultPool();
 }
@@ -629,16 +643,25 @@ void WaterRenderer::ClearWaterStencil(IDirect3DDevice9* dev, IDirect3DSurface9* 
     dev->Clear(1, &world, D3DCLEAR_STENCIL, 0, 1.0f, 0);
 }
 
-void WaterRenderer::CaptureClientStencil(IDirect3DDevice9* dev)
+void WaterRenderer::ArmStencilWrites(IDirect3DDevice9* dev)
 {
     for (int i = 0; i < kWaterStencilStates; ++i)
-        dev->GetRenderState(kStencilStates[i], &m_clientStencil[i]);
+    {
+        dev->GetRenderState(kPassStencil[i].state, &m_clientStencil[i]);
+        dev->SetRenderState(kPassStencil[i].state, kPassStencil[i].value);
+    }
+    m_stencilArmed = true;
 }
 
 void WaterRenderer::RestoreClientStencil(IDirect3DDevice9* dev)
 {
+    if (!m_stencilArmed)
+        return;
+    m_stencilArmed = false;
+    if (!dev)
+        return;
     for (int i = 0; i < kWaterStencilStates; ++i)
-        dev->SetRenderState(kStencilStates[i], m_clientStencil[i]);
+        dev->SetRenderState(kPassStencil[i].state, m_clientStencil[i]);
 }
 
 bool WaterRenderer::Begin(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* depthSurface,
@@ -691,12 +714,11 @@ bool WaterRenderer::Begin(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture
     if (!copied)
         return Skip("scene colour copy failed");
 
-    CaptureClientStencil(dev);
+    ArmStencilWrites(dev);
     m_in = in;
     m_water = water;
     m_cfg = cfg;
     std::fill(std::begin(m_draws), std::end(m_draws), 0u);
-    m_tagged = false;
     m_armed = true;
     return true;
 }
@@ -704,34 +726,21 @@ bool WaterRenderer::Begin(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture
 void WaterRenderer::Tag(IDirect3DDevice9* dev, WaterClass waterClass)
 {
     const int index = static_cast<int>(waterClass);
-    if (!m_armed || index <= 0 || index >= kWaterClassCount)
+    if (!m_stencilArmed || index < 0 || index >= kWaterClassCount)
         return;
-    dev->SetRenderState(D3DRS_STENCILENABLE, TRUE);
-    dev->SetRenderState(D3DRS_STENCILFUNC, D3DCMP_ALWAYS);
-    dev->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_REPLACE);
-    dev->SetRenderState(D3DRS_STENCILFAIL, D3DSTENCILOP_KEEP);
-    dev->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_KEEP);
     dev->SetRenderState(D3DRS_STENCILREF, static_cast<DWORD>(index));
-    dev->SetRenderState(D3DRS_STENCILMASK, kStencilAllBits);
-    dev->SetRenderState(D3DRS_STENCILWRITEMASK, kStencilAllBits);
-    dev->SetRenderState(D3DRS_TWOSIDEDSTENCILMODE, FALSE);
-    m_tagged = true;
     ++m_draws[index];
 }
 
 void WaterRenderer::Untag(IDirect3DDevice9* dev)
 {
-    if (!m_tagged)
-        return;
-    RestoreClientStencil(dev);
-    m_tagged = false;
+    if (m_stencilArmed)
+        dev->SetRenderState(D3DRS_STENCILREF, kUntaggedStencil);
 }
 
 void WaterRenderer::Abort(IDirect3DDevice9* dev)
 {
-    if (m_tagged && dev)
-        RestoreClientStencil(dev);
-    m_tagged = false;
+    RestoreClientStencil(dev);
     m_armed = false;
 }
 
@@ -965,7 +974,7 @@ void WaterRenderer::End(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, 
 {
     if (!m_armed)
         return;
-    Untag(dev);
+    RestoreClientStencil(dev);
     m_armed = false;
     m_shadedClasses = 0;
     m_wavesSimulated = false;
