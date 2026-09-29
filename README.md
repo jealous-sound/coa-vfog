@@ -99,8 +99,7 @@ client's darker lighting; this is a compatibility calibration, not a reproductio
 
 Classic data applies on maps where any Classic light has fog, wherever Classic lights hold at least half of the
 blend weight. A light without fog in the active slot counts with zero density, so the fog thins smoothly into it
-and the distance fog hides the far clip there. Other maps use the derived layers. The data is Classic-derived;
-keep it in private repositories.
+and the distance fog hides the far clip there. Other maps use the derived layers.
 
 ## Forever water data
 
@@ -119,8 +118,7 @@ inferred from value ranges and shader use: absorption from `-ln(Color[0])` scale
 scattering colours from `Color[1]`/`Color[2]` with `Float[2]`/`Float[1]`, scattering weights `Float[3..6]`, depth,
 shore and wave foam `Float[7..19]`, sun and reflection roughness `Float[27]`/`Float[29]` and reflection strength
 `Float[30]`; tile size, amplitude, wind alignment and multiplier from `FFTTile` fields 0–3 and the foam and oxygen
-rates from fields 4–9. The water is tuned by eye against this mapping, not matched to Forever captures. The data is
-Forever-derived; keep it in private repositories.
+rates from fields 4–9. The water is tuned by eye against this mapping, not matched to Forever captures.
 
 ## How it attaches
 
@@ -466,6 +464,3 @@ CoAVolFog is licensed under the GNU General Public License version 3 only (`GPL-
 As an additional permission under GPLv3 section 7, you may link or combine CoAVolFog, including modified versions,
 with the World of Warcraft client, and distribute the resulting combination without providing the client's source
 code. GPLv3 continues to apply to CoAVolFog.
-
-`data/fogdata.bin` and `data/waterdata.bin` are converted from WoW Classic and WoW Forever client data and are not
-covered by this license or exception.
