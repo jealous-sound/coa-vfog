@@ -198,3 +198,38 @@ extern "C" void __cdecl vf_test_water_abort()
 {
     AbortWaterPass(LatestFogDevice());
 }
+
+extern "C" void __cdecl vf_test_use_water_hook_client(const FrameInputs* in, const WaterInputs* water)
+{
+    UseTestWaterClient(*in, *water);
+}
+
+extern "C" void __cdecl vf_test_hook_water_pass_begin(const void* liquidRenderer)
+{
+    vf_on_water_pass_begin(liquidRenderer);
+}
+
+extern "C" int __cdecl vf_test_hook_water_draw_tag(const void* liquidSettings)
+{
+    return TagHookedWaterDraw(liquidSettings) ? 1 : 0;
+}
+
+extern "C" void __cdecl vf_test_hook_water_draw_untag()
+{
+    UntagHookedWaterDraw();
+}
+
+extern "C" void __cdecl vf_test_hook_water_pass_end()
+{
+    vf_on_water_pass_end();
+}
+
+extern "C" void __cdecl vf_test_hook_frame_end()
+{
+    vf_on_frame_end();
+}
+
+extern "C" int __cdecl vf_test_water_armed()
+{
+    return WaterPassArmed(LatestFogDevice()) ? 1 : 0;
+}

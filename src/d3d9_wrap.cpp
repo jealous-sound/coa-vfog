@@ -943,6 +943,11 @@ unsigned HeldWaterResources(FogDevice* device)
     return device ? device->Water().HeldResources() : 0u;
 }
 
+bool WaterPassArmed(FogDevice* device)
+{
+    return device && device->Water().Armed();
+}
+
 int WaterFoamMaskPool(FogDevice* device)
 {
     return device ? device->Water().FoamMaskPool() : -1;

@@ -49,6 +49,13 @@ extern "C" __declspec(dllimport) void __cdecl vf_test_force_water_summary();
 extern "C" __declspec(dllimport) int __cdecl vf_test_water_data_loaded();
 extern "C" __declspec(dllimport) unsigned __cdecl vf_test_water_resources_held();
 extern "C" __declspec(dllimport) int __cdecl vf_test_water_mask_pool();
+extern "C" __declspec(dllimport) void __cdecl vf_test_use_water_hook_client(const FrameInputs*, const WaterInputs*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_water_pass_begin(const void*);
+extern "C" __declspec(dllimport) int __cdecl vf_test_hook_water_draw_tag(const void*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_water_draw_untag();
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_water_pass_end();
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_frame_end();
+extern "C" __declspec(dllimport) int __cdecl vf_test_water_armed();
 
 namespace
 {

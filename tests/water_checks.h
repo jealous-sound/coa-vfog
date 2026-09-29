@@ -436,7 +436,15 @@ enum class WaterCalls
     None,
     Pass,
     PassWithoutTags,
+    Hooks,
 };
+
+const uint32_t* QueuedLiquidRenderer()
+{
+    static uint32_t liquidRenderer[kLiquidRendererWords] = {};
+    liquidRenderer[kTransparentLiquidCountWord] = 1;
+    return liquidRenderer;
+}
 
 struct WaterFrame
 {
@@ -516,20 +524,28 @@ public:
         ApplyClientState();
         WaterSentinel before;
         ReadWaterSentinel(dev, before);
+        const bool hooked = frame.calls == WaterCalls::Hooks;
         vf_test_fail_water_in_window(frame.fault);
-        if (frame.calls != WaterCalls::None)
+        if (hooked)
+        {
+            vf_test_use_water_hook_client(&m_v.in, &m_v.water);
+            vf_test_hook_water_pass_begin(QueuedLiquidRenderer());
+            result.began = vf_test_water_armed() != 0;
+        }
+        else if (frame.calls != WaterCalls::None)
             result.faulted = BeginWaterFaulted(&m_v.in, &m_v.water, &result.skip, &result.began);
         WaterSentinel armed;
         ReadWaterSentinel(dev, armed);
         result.armWritesDocumented = result.began ? OnlyDocumentedStencilWrites(before, armed, 0)
                                                   : SameWaterSentinel(before, armed, true);
         ReleaseWaterSentinel(armed);
+        const bool tagged = frame.calls == WaterCalls::Pass || hooked;
         for (int i = 0; i < frame.stripCount; ++i)
-            DrawStrip(frame.strips[i], frame.calls == WaterCalls::Pass, frame.opaqueMask, result);
+            DrawStrip(frame.strips[i], tagged, hooked, frame.opaqueMask, result);
         for (int i = 0; i < frame.hiddenTaggedStripCount; ++i)
-            DrawStrip(frame.hiddenTaggedStrips[i], true, false, result);
+            DrawStrip(frame.hiddenTaggedStrips[i], true, hooked, false, result);
         for (int i = 0; i < frame.coverCount; ++i)
-            DrawStrip(frame.covers[i], frame.calls == WaterCalls::Pass, frame.opaqueMask, result);
+            DrawStrip(frame.covers[i], tagged, hooked, frame.opaqueMask, result);
         m_h.DrawPretransformedQuadAtRawDepth(kOtherPassLeft, kOtherPassTop, kOtherPassRight, kOtherPassBottom,
                                              kOtherPassRawDepth, kOtherPassColour);
         ApplyClientDrawState();
@@ -539,7 +555,9 @@ public:
             dev->GetDepthStencilSurface(&clientDepth);
             dev->SetDepthStencilSurface(frame.depthAtEnd);
         }
-        if (frame.calls != WaterCalls::None)
+        if (hooked)
+            vf_test_hook_water_pass_end();
+        else if (frame.calls != WaterCalls::None)
             result.faulted = EndWaterFaulted(&result.endSkip, &result.shaded) || result.faulted;
         if (frame.depthAtEnd)
         {
@@ -560,6 +578,8 @@ public:
         result.image = Capture(dev);
         dev->EndScene();
         dev->Present(nullptr, nullptr, nullptr, nullptr);
+        if (hooked)
+            vf_test_hook_frame_end();
         return result;
     }
 
@@ -677,21 +697,29 @@ private:
         dev->SetPixelShaderConstantF(0, constants, kSentinelPixelConstants);
     }
 
-    void DrawStrip(const WaterStrip& strip, bool tag, bool opaqueMask, WaterFrameResult& result)
+    bool Tag(const WaterStrip& strip, bool throughHooks)
+    {
+        if (throughHooks)
+            return vf_test_hook_water_draw_tag(&strip.waterClass) != 0;
+        vf_test_water_tag(strip.waterClass);
+        return true;
+    }
+
+    void DrawStrip(const WaterStrip& strip, bool tag, bool throughHooks, bool opaqueMask, WaterFrameResult& result)
     {
         IDirect3DDevice9* dev = m_h.dev;
         WaterSentinel beforeTag;
         ReadWaterSentinel(dev, beforeTag);
-        tag = tag && strip.hooked;
-        if (tag)
+        bool tagged = false;
+        if (tag && strip.hooked)
         {
-            vf_test_water_tag(strip.waterClass);
-            WaterSentinel tagged;
-            ReadWaterSentinel(dev, tagged);
-            const bool documented = result.began ? OnlyDocumentedStencilWrites(beforeTag, tagged, strip.waterClass)
-                                                 : SameWaterSentinel(beforeTag, tagged, true);
+            tagged = Tag(strip, throughHooks);
+            WaterSentinel afterTag;
+            ReadWaterSentinel(dev, afterTag);
+            const bool documented = result.began ? OnlyDocumentedStencilWrites(beforeTag, afterTag, strip.waterClass)
+                                                 : SameWaterSentinel(beforeTag, afterTag, true);
             result.tagWritesDocumented = result.tagWritesDocumented && documented;
-            ReleaseWaterSentinel(tagged);
+            ReleaseWaterSentinel(afterTag);
         }
         const DWORD colour = opaqueMask ? kWaterMaskColour : strip.colour;
         SceneVertex quad[6];
@@ -715,9 +743,12 @@ private:
         dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
         dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 2, quad, sizeof(SceneVertex));
         ApplyClientDrawState();
-        if (tag)
+        if (tagged)
         {
-            vf_test_water_untag();
+            if (throughHooks)
+                vf_test_hook_water_draw_untag();
+            else
+                vf_test_water_untag();
             WaterSentinel untagged;
             ReadWaterSentinel(dev, untagged);
             result.untagRestores = result.untagRestores && SameWaterSentinel(beforeTag, untagged, true);
@@ -1381,6 +1412,7 @@ void CheckWaterOffReleasesResources(BasinClient& client, const Config& base)
     Config on = WaterConfig(base);
     vf_test_set_config(&on);
     WaterFrame frame;
+    frame.calls = WaterCalls::Hooks;
     const WaterFrameResult before = client.Render(frame);
     const unsigned heldOn = vf_test_water_resources_held();
     const int maskPool = vf_test_water_mask_pool();
@@ -1393,7 +1425,8 @@ void CheckWaterOffReleasesResources(BasinClient& client, const Config& base)
     const WaterFrameResult after = client.Render(frame);
     std::printf("     water resources held: 0x%X on, 0x%X off; foam mask pool %d\n", heldOn, heldOff, maskPool);
     Check(before.began && heldOn == kAllWaterResources && !disabled.began && heldOff == 0,
-          "turning water off releases the scene copies, wave maps and foam masks");
+          "turning water off releases the scene copies, wave maps and foam masks at the end of the next frame "
+          "through the hooks the game runs");
     Check(after.began && SameImage(before.image, after.image),
           "turning water back on recreates them and renders the same frame");
     Check(maskPool == D3DPOOL_DEFAULT,

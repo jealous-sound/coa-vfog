@@ -768,10 +768,7 @@ bool WaterRenderer::Begin(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture
     if (m_armed)
         Abort(dev);
     if (!cfg.water)
-    {
-        ReleaseDefaultPool();
         return Skip("water disabled");
-    }
     if (in.inLiquid)
         return Skip("camera under water");
     if (!GlobalWaterData().Loaded())

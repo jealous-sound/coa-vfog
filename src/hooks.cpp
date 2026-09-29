@@ -164,6 +164,57 @@ void UseClientFogRangeInsteadOfPushed(FrameInputs& in)
     in.fogEnd = g_savedStockFog.end[engine::kFrameInputsFogGroup];
 }
 
+struct WaterClient
+{
+    FogDevice* (*device)();
+    bool (*frameInputs)(FrameInputs& in);
+    bool (*waterInputs)(WaterInputs& water);
+    WaterClass (*classify)(const void* liquidSettings);
+};
+
+bool GameWaterFrameInputs(FrameInputs& in)
+{
+    if (!engine::BuildFrameInputs(in, false))
+        return false;
+    if (g_stockFogPushed)
+        UseClientFogRangeInsteadOfPushed(in);
+    return true;
+}
+
+bool GameWaterInputs(WaterInputs& water)
+{
+    if (!engine::BuildWaterInputs(water))
+        return false;
+    water.stockFogApplies = !g_stockFogPushed;
+    return true;
+}
+
+const WaterClient kGameWaterClient = {&GameFogDevice, &GameWaterFrameInputs, &GameWaterInputs,
+                                      &engine::ClassifyWaterSettings};
+
+FrameInputs g_testWaterFrame = {};
+WaterInputs g_testWaterInputs = {};
+
+bool TestWaterFrameInputs(FrameInputs& in)
+{
+    in = g_testWaterFrame;
+    return true;
+}
+
+bool TestWaterInputs(WaterInputs& water)
+{
+    water = g_testWaterInputs;
+    return true;
+}
+
+WaterClass TestWaterClass(const void* liquidSettings)
+{
+    return liquidSettings ? static_cast<WaterClass>(*static_cast<const int*>(liquidSettings)) : WaterClass::None;
+}
+
+const WaterClient kTestWaterClient = {&LatestFogDevice, &TestWaterFrameInputs, &TestWaterInputs, &TestWaterClass};
+const WaterClient* g_waterClient = &kGameWaterClient;
+
 bool RenderCurrentWorldFog(FogDevice* device)
 {
     if (!device || !engine::HasOpaqueState())
@@ -274,7 +325,7 @@ enum class WaterArming
 WaterArming ArmWaterPass(FogDevice* device, const Config& cfg, const char** reason)
 {
     FrameInputs in = {};
-    if (!engine::BuildFrameInputs(in, false))
+    if (!g_waterClient->frameInputs(in))
     {
         *reason = "invalid frame inputs";
         return WaterArming::Failed;
@@ -284,15 +335,12 @@ WaterArming ArmWaterPass(FogDevice* device, const Config& cfg, const char** reas
         *reason = "camera under water";
         return WaterArming::Idle;
     }
-    if (g_stockFogPushed)
-        UseClientFogRangeInsteadOfPushed(in);
     WaterInputs water = {};
-    if (!engine::BuildWaterInputs(water))
+    if (!g_waterClient->waterInputs(water))
     {
         *reason = "the client's water colours are unavailable";
         return WaterArming::Failed;
     }
-    water.stockFogApplies = !g_stockFogPushed;
     const char* skip = "";
     if (BeginWaterPass(device, in, water, cfg, &skip))
         return WaterArming::Armed;
@@ -318,7 +366,7 @@ void OnWaterPassBegin(const void* liquidRenderer)
         RecordWaterIdle("no water in view");
         return;
     }
-    FogDevice* device = GameFogDevice();
+    FogDevice* device = g_waterClient->device();
     if (!device)
     {
         RecordWaterSkip("no fog device");
@@ -355,7 +403,7 @@ void OnWaterPassEnd()
 
 void TagWaterDrawUnsafe(const void* liquidSettings)
 {
-    const WaterClass waterClass = engine::ClassifyWaterSettings(liquidSettings);
+    const WaterClass waterClass = g_waterClient->classify(liquidSettings);
     TagWaterDraw(g_waterPassDevice, waterClass);
     if (waterClass != WaterClass::None)
         g_waterClassesThisPass |= WaterClassBit(waterClass);
@@ -375,7 +423,7 @@ void ReleaseWaterWhenOff()
         return;
     FogDevice* device = g_waterResourcesDevice;
     g_waterResourcesDevice = nullptr;
-    if (device == GameFogDevice())
+    if (device == g_waterClient->device())
         ReleaseWaterResources(device);
 }
 
@@ -924,6 +972,24 @@ bool InstallWaterHooks()
                 static_cast<unsigned>(engine::kWaterPassSite), static_cast<unsigned>(engine::kWaterMaterialRenderSlot),
                 static_cast<unsigned>(engine::kWaterNoSpecMaterialRenderSlot));
     return true;
+}
+
+void UseTestWaterClient(const FrameInputs& in, const WaterInputs& water)
+{
+    g_testWaterFrame = in;
+    g_testWaterInputs = water;
+    g_waterClient = &kTestWaterClient;
+    g_waterHooksInstalled = true;
+}
+
+bool TagHookedWaterDraw(const void* liquidSettings)
+{
+    return TagArmedWaterDraw(liquidSettings);
+}
+
+void UntagHookedWaterDraw()
+{
+    UntagArmedWaterDraw();
 }
 
 WaterFrameStatus LastWaterFrameStatus()

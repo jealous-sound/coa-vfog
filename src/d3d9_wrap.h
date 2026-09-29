@@ -30,4 +30,5 @@ bool EndWaterPass(FogDevice* device, const char** skipReason, bool* flatWaves);
 void AbortWaterPass(FogDevice* device);
 void ReleaseWaterResources(FogDevice* device);
 unsigned HeldWaterResources(FogDevice* device);
+bool WaterPassArmed(FogDevice* device);
 int WaterFoamMaskPool(FogDevice* device);
