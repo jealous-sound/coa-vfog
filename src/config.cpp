@@ -41,7 +41,11 @@ const IntSetting kIntSettings[] = {
     {"Quality", &Config::quality, 1, 3},     {"StockFog", &Config::stockFog, 0, 1},
     {"DataMode", &Config::dataMode, 0, 1},   {"ColorSpace", &Config::colorSpace, 0, 1},
     {"DebugView", &Config::debugView, 0, 3}, {"LogLevel", &Config::logLevel, 0, 2},
-    {"WaterQuality", &Config::waterQuality, 1, 3}, {"WaterDebugView", &Config::waterDebugView, 0, 5},
+};
+
+const IntSetting kWaterIntSettings[] = {
+    {"WaterQuality", &Config::waterQuality, 1, 3},
+    {"WaterDebugView", &Config::waterDebugView, 0, 5},
 };
 
 const FloatSetting kFloatSettings[] = {
@@ -62,6 +66,9 @@ const FloatSetting kFloatSettings[] = {
     {"FarClipMax", &Config::farClipMax, 0.0f, kEngineFarClipMax},
     {"MaxDistance", &Config::maxDistance, 200.0f, 5000.0f},
     {"Temporal", &Config::temporal, 0.0f, 0.97f},
+};
+
+const FloatSetting kWaterFloatSettings[] = {
     {"WaterWaves", &Config::waterWaves, 0.0f, 2.0f},
     {"WaterWind", &Config::waterWind, 0.5f, 10.0f},
     {"WaterFoam", &Config::waterFoam, 0.0f, 2.0f},
@@ -77,6 +84,33 @@ const BoolSetting kBoolSettings[] = {
     {"LiquidDepth", &Config::liquidDepth},           {"SunMarker", &Config::sunMarker},
     {"Water", &Config::water},
 };
+
+template <typename Visit>
+void ForEachIntSetting(Visit visit)
+{
+    for (const IntSetting& s : kIntSettings)
+        visit(s);
+    for (const IntSetting& s : kWaterIntSettings)
+        visit(s);
+}
+
+template <typename Visit>
+void ForEachFloatSetting(Visit visit)
+{
+    for (const FloatSetting& s : kFloatSettings)
+        visit(s);
+    for (const FloatSetting& s : kWaterFloatSettings)
+        visit(s);
+}
+
+template <typename Setting, size_t N>
+bool SameValues(const Setting (&settings)[N], const Config& a, const Config& b)
+{
+    for (const Setting& s : settings)
+        if (a.*s.value != b.*s.value)
+            return false;
+    return true;
+}
 
 struct NamedKey
 {
@@ -157,10 +191,8 @@ bool WriteSetting(const std::string& path, const char* key, const std::string& t
 
 void ClampLiveSettings(Config& c)
 {
-    for (const IntSetting& s : kIntSettings)
-        c.*s.value = std::clamp(c.*s.value, s.lo, s.hi);
-    for (const FloatSetting& s : kFloatSettings)
-        c.*s.value = ClampedSetting(c.*s.value, s.lo, s.hi);
+    ForEachIntSetting([&c](const IntSetting& s) { c.*s.value = std::clamp(c.*s.value, s.lo, s.hi); });
+    ForEachFloatSetting([&c](const FloatSetting& s) { c.*s.value = ClampedSetting(c.*s.value, s.lo, s.hi); });
     if (c.farClipMax < kEngineFarClipMin)
         c.farClipMax = kFarClipMaxKeepsClientCap;
 }
@@ -267,18 +299,14 @@ std::string HotkeyName(const Hotkey& key)
     return name + KeyName(key.virtualKey);
 }
 
+bool SameFogSettings(const Config& a, const Config& b)
+{
+    return SameValues(kIntSettings, a, b) && SameValues(kFloatSettings, a, b) && SameValues(kBoolSettings, a, b);
+}
+
 bool SameLiveSettings(const Config& a, const Config& b)
 {
-    for (const IntSetting& s : kIntSettings)
-        if (a.*s.value != b.*s.value)
-            return false;
-    for (const FloatSetting& s : kFloatSettings)
-        if (a.*s.value != b.*s.value)
-            return false;
-    for (const BoolSetting& s : kBoolSettings)
-        if (a.*s.value != b.*s.value)
-            return false;
-    return true;
+    return SameFogSettings(a, b) && SameValues(kWaterIntSettings, a, b) && SameValues(kWaterFloatSettings, a, b);
 }
 
 void ConfigStore::Load(const std::string& path)
@@ -320,25 +348,23 @@ bool ConfigStore::Save()
     const Config onDisk = ReadFile();
     Config merged = m_config;
     bool written = true;
-    for (const IntSetting& s : kIntSettings)
-    {
+    ForEachIntSetting([&](const IntSetting& s) {
         if (m_config.*s.value == m_saved.*s.value)
             merged.*s.value = onDisk.*s.value;
         else if (m_config.*s.value != onDisk.*s.value)
             written = WriteSetting(m_path, s.key, std::to_string(m_config.*s.value)) && written;
-    }
-    for (const FloatSetting& s : kFloatSettings)
-    {
+    });
+    ForEachFloatSetting([&](const FloatSetting& s) {
         if (m_config.*s.value == m_saved.*s.value)
         {
             merged.*s.value = onDisk.*s.value;
-            continue;
+            return;
         }
         const std::string text = SettingText(m_config.*s.value);
         merged.*s.value = std::strtof(text.c_str(), nullptr);
         if (merged.*s.value != onDisk.*s.value)
             written = WriteSetting(m_path, s.key, text) && written;
-    }
+    });
     for (const BoolSetting& s : kBoolSettings)
     {
         if (m_config.*s.value == m_saved.*s.value)
@@ -390,10 +416,8 @@ Config ConfigStore::ReadFile() const
     c.hooks = ReadInt(p, "EngineHooks", 1, 0, 1) != 0;
     c.overlay = ReadInt(p, "Overlay", 1, 0, 1) != 0;
     c.overlayKey = ReadHotkey(p, "OverlayKey", c.overlayKey);
-    for (const IntSetting& s : kIntSettings)
-        c.*s.value = ReadInt(p, s.key, c.*s.value, s.lo, s.hi);
-    for (const FloatSetting& s : kFloatSettings)
-        c.*s.value = ReadFloat(p, s.key, c.*s.value, s.lo, s.hi);
+    ForEachIntSetting([&](const IntSetting& s) { c.*s.value = ReadInt(p, s.key, c.*s.value, s.lo, s.hi); });
+    ForEachFloatSetting([&](const FloatSetting& s) { c.*s.value = ReadFloat(p, s.key, c.*s.value, s.lo, s.hi); });
     for (const BoolSetting& s : kBoolSettings)
         c.*s.value = ReadInt(p, s.key, c.*s.value ? 1 : 0, 0, 1) != 0;
     ClampLiveSettings(c);

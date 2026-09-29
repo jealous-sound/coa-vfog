@@ -215,8 +215,32 @@ void CheckLiquidClassification()
           "interior wins over the ocean sound bank, which wins over fast water");
 }
 
+void CheckWaterOnlyEditsKeepFogHistory()
+{
+    const Config base;
+    Config waterOnly = base;
+    waterOnly.waterSpecular = 2.0f;
+    waterOnly.waterWind = 4.0f;
+    waterOnly.waterClarity = 2.0f;
+    waterOnly.waterWaves = 0.5f;
+    waterOnly.waterFoam = 1.5f;
+    waterOnly.waterReflections = 0.5f;
+    waterOnly.waterZoneColors = 0.25f;
+    waterOnly.waterQuality = 3;
+    waterOnly.waterDebugView = 4;
+    Check(SameFogSettings(base, waterOnly) && !SameLiveSettings(base, waterOnly),
+          "water-only edits leave the fog's settings (and its temporal history) alone but count as live changes");
+    Config waterOff = base;
+    waterOff.water = false;
+    Config densityEdit = base;
+    densityEdit.density = 2.0f;
+    Check(!SameFogSettings(base, waterOff) && !SameFogSettings(base, densityEdit),
+          "turning water off (which changes the depth the fog sees) and fog edits reset the fog's history");
+}
+
 void CheckWaterSettings(const std::wstring& outDir, const std::wstring& shippedIni)
 {
+    CheckWaterOnlyEditsKeepFogHistory();
     CheckShippedWaterDefaults(shippedIni);
     CheckWaterSettingsSave(outDir, shippedIni);
     CheckWaterSettingClamps(outDir, shippedIni);

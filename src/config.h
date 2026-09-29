@@ -68,6 +68,7 @@ struct Config
     int waterDebugView = 0;
 };
 
+bool SameFogSettings(const Config& a, const Config& b);
 bool SameLiveSettings(const Config& a, const Config& b);
 
 class ConfigStore
