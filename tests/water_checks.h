@@ -41,6 +41,14 @@ constexpr float kNearStockFogStart = 5.0f;
 constexpr float kNearStockFogEnd = 20.0f;
 constexpr uint32_t kStockFogColour = 0xFFC08040;
 constexpr uint32_t kOtherSunColour = 0xFF4060FF;
+constexpr Vec3 kGrazingEye = {0, 0, 4};
+constexpr Vec3 kGrazingTarget = {100, 5, 1};
+constexpr int kReflectionDebugView = 4;
+constexpr UINT kMirroredShoreRows = 8;
+constexpr int kShoreColourTolerance = 3;
+constexpr float kMaxShoreReflectionFraction = 0.02f;
+constexpr float kRoughTileAmplitude = 30000.0f;
+constexpr float kRoughTileWindMultiplier = 3.0f;
 constexpr DWORD kClientStencilRef = 7;
 constexpr DWORD kClientStencilMask = 0x3C;
 constexpr DWORD kClientStencilWriteMask = 0x5A;
@@ -1157,6 +1165,60 @@ void CheckInteriorIgnoresSun(Harness& h, const Config& base)
           "interior water ignores the sun (no sun scattering, glint or foam light) while lake water follows it");
 }
 
+bool MatchesColour(const unsigned char* bgr, DWORD colour)
+{
+    const int expected[3] = {static_cast<int>(colour & 0xFF), static_cast<int>((colour >> 8) & 0xFF),
+                             static_cast<int>((colour >> 16) & 0xFF)};
+    for (int channel = 0; channel < 3; ++channel)
+        if (std::abs(bgr[channel] - expected[channel]) > kShoreColourTolerance)
+            return false;
+    return true;
+}
+
+void CheckGrazingReflectionsMissTheShore(Harness& h, const Config& base, const std::wstring& outDir)
+{
+    SyntheticWaterData rough = MakeSyntheticWaterData();
+    for (WaterFftTile& tile : rough.tiles)
+    {
+        tile.amplitude = kRoughTileAmplitude;
+        tile.windMultiplier = kRoughTileWindMultiplier;
+    }
+    const bool assigned = AssignWaterData(rough);
+    BasinClient client(h, MakeWaterView(kGrazingEye, kGrazingTarget));
+    Config reflection = WaterConfig(base);
+    reflection.waterDebugView = kReflectionDebugView;
+    vf_test_set_config(&reflection);
+    WaterFrame mask;
+    mask.calls = WaterCalls::None;
+    mask.opaqueMask = true;
+    const WaterFrameResult water = client.Render(mask);
+    WaterFrame pass;
+    const WaterFrameResult reflected = client.Render(pass);
+    SaveImage(outDir, L"water-grazing-reflection", reflected.image);
+    size_t considered = 0;
+    size_t shore = 0;
+    for (UINT x = 0; x < water.image.w; ++x)
+    {
+        UINT y = 0;
+        while (y < water.image.h && !IsMaskPixel(water.image, x, y))
+            ++y;
+        for (y += kMirroredShoreRows; y < water.image.h && IsMaskPixel(water.image, x, y); ++y)
+        {
+            const unsigned char* colour = reflected.image.At(x, y);
+            ++considered;
+            shore += MatchesColour(colour, kLandColour) || MatchesColour(colour, kFloorColour) ? 1 : 0;
+        }
+    }
+    const float fraction = considered ? static_cast<float>(shore) / static_cast<float>(considered) : 1.0f;
+    std::printf("     grazing reflections: %zu of %zu water pixels below the mirrored shore reflect it (%.2f%%)\n",
+                shore, considered, fraction * 100.0f);
+    Check(assigned && reflected.began && considered > 0 && fraction <= kMaxShoreReflectionFraction,
+          "wave facets that reflect below the horizon do not streak the far shore across distant water");
+    const Config on = WaterConfig(base);
+    vf_test_set_config(&on);
+    AssignWaterData(MakeSyntheticWaterData());
+}
+
 void SaveRealDataViews(Harness& h, const Config& base, const std::string& waterDataPath, const std::wstring& outDir)
 {
     const DWORD attributes = GetFileAttributesA(waterDataPath.c_str());
@@ -1251,6 +1313,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     CheckFlatFallback(client, base, stock.image, outDir);
     CheckStockFogOnWater(h, base);
     CheckInteriorIgnoresSun(h, base);
+    CheckGrazingReflectionsMissTheShore(h, base, outDir);
     CheckResetKeepsWater(h, client, base);
     SaveRealDataViews(h, base, waterDataPath, outDir);
 

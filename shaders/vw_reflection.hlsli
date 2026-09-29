@@ -1,4 +1,3 @@
-static const float kHorizonReflectionLift = 1e-4;
 static const float kSkyLowerBandElevation = 0.06;
 static const float kSkyUpperBandElevation = 0.15;
 static const float kSkyMiddleElevation = 0.35;
@@ -7,7 +6,7 @@ static const float kSkyTopElevation = 0.8;
 float3 ReflectedDirection(float3 V, float3 N)
 {
     float3 r = reflect(-V, N);
-    return r.z < 0 ? normalize(float3(r.xy, kHorizonReflectionLift)) : r;
+    return float3(r.xy, abs(r.z));
 }
 
 float3 SkyColour(float elevation)
