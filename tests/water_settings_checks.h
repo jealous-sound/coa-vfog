@@ -39,6 +39,7 @@ const LiquidRow kClientLiquidRows[] = {
 
 constexpr int kLoggedDives = 60;
 constexpr float kTypedDensity = 3.3712f;
+constexpr Hotkey kCtrlF8 = {VK_F8, true, false, false};
 
 const char* const kEditedWaterKeys[] = {"Water", "WaterQuality", "WaterWaves", "WaterFoam", "WaterDebugView"};
 
@@ -326,6 +327,31 @@ void CheckSaveLogsNoRoundingChange(const std::wstring& outDir, const std::wstrin
           "saving a value typed with more decimals than the INI keeps logs its edit once and no rounding change");
 }
 
+void CheckOverlayKeyReloadLogged(const std::wstring& outDir, const std::wstring& shippedIni)
+{
+    Config before;
+    Config after = before;
+    after.overlay = false;
+    after.overlayKey = kCtrlF8;
+    const std::string changes = SettingChanges(before, after);
+    std::printf("     overlay changes: %s\n", changes.c_str());
+    Check(changes == "Overlay 1 -> 0, OverlayKey Ctrl+F7 -> Ctrl+F8",
+          "a settings change lists Overlay and OverlayKey, which an INI reload applies live");
+    const std::wstring iniPath = FullPath(outDir + L"\\settings-overlay.ini");
+    Check(CopyFileW(shippedIni.c_str(), iniPath.c_str(), FALSE) != FALSE, "shipped CoAVolFog.ini copied for OverlayKey");
+    ConfigStore store;
+    store.Load(NarrowPath(iniPath));
+    LogSetLevel(static_cast<int>(LogLevel::Info));
+    const size_t start = ReadText(g_harnessLog).size();
+    WritePrivateProfileStringW(L"CoAVolFog", L"OverlayKey", L"Ctrl+F8", iniPath.c_str());
+    const bool reloaded = store.ReloadIfChanged();
+    const std::string text = LoggedByTheHarnessSince(start);
+    std::printf("%s", text.c_str());
+    Check(reloaded && runtime_cost::HasLine(text, "settings from CoAVolFog.ini: OverlayKey Ctrl+F7 -> Ctrl+F8") &&
+              !runtime_cost::HasLine(text, "no live setting changed"),
+          "an INI reload that changes only OverlayKey logs the new key instead of saying nothing changed");
+}
+
 void CheckWaterLogPolicy()
 {
     StatusLog log;
@@ -407,6 +433,7 @@ void CheckWaterSettings(const std::wstring& outDir, const std::wstring& shippedI
     CheckSettingChangesListed();
     CheckSettingChangesLogged(outDir, shippedIni);
     CheckSaveLogsNoRoundingChange(outDir, shippedIni);
+    CheckOverlayKeyReloadLogged(outDir, shippedIni);
     CheckWaterOnlyEditsKeepFogHistory();
     CheckShippedWaterDefaults(shippedIni);
     CheckWaterSettingsSave(outDir, shippedIni);

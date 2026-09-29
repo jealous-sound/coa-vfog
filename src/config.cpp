@@ -248,6 +248,11 @@ bool ParseKeyName(const std::string& name, unsigned& virtualKey)
     return false;
 }
 
+bool SameHotkey(const Hotkey& a, const Hotkey& b)
+{
+    return a.virtualKey == b.virtualKey && a.ctrl == b.ctrl && a.shift == b.shift && a.alt == b.alt;
+}
+
 std::string KeyName(unsigned virtualKey)
 {
     if (virtualKey >= VK_F1 && virtualKey < VK_F1 + kMaxFunctionKey)
@@ -315,6 +320,10 @@ std::string SettingChanges(const Config& before, const Config& after)
     auto add = [&changes](const char* key, const std::string& from, const std::string& to) {
         changes += (changes.empty() ? "" : ", ") + std::string(key) + " " + from + " -> " + to;
     };
+    if (before.overlay != after.overlay)
+        add("Overlay", before.overlay ? "1" : "0", after.overlay ? "1" : "0");
+    if (!SameHotkey(before.overlayKey, after.overlayKey))
+        add("OverlayKey", HotkeyName(before.overlayKey), HotkeyName(after.overlayKey));
     ForEachIntSetting([&](const IntSetting& s) {
         if (before.*s.value != after.*s.value)
             add(s.key, std::to_string(before.*s.value), std::to_string(after.*s.value));
