@@ -12,7 +12,7 @@ struct FogFrameStatus
 
 FogFrameStatus LastFogFrameStatus();
 
-void InstallWaterHooks();
+bool InstallWaterHooks();
 
 struct WaterFrameStatus
 {

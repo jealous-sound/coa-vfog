@@ -737,6 +737,14 @@ bool WaterFft::Simulate(IDirect3DDevice9* dev, const WaterFftSettings& settings,
     return true;
 }
 
+bool WaterFft::HoldsDeviceResources() const
+{
+    for (const TileMaps& maps : m_tiles)
+        if (maps.surface || maps.foam[0] || maps.foam[1])
+            return true;
+    return m_passes.HoldsDeviceResources();
+}
+
 IDirect3DTexture9* WaterFft::Surface(int tile) const
 {
     if (tile < 0 || static_cast<size_t>(tile) >= m_tiles.size() || !m_tiles[tile].simulated)

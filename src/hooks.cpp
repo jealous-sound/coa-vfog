@@ -53,6 +53,7 @@ bool g_waterHooksInstalled = false;
 bool g_waterFailed = false;
 bool g_waterFaultLogged = false;
 FogDevice* g_waterPassDevice = nullptr;
+FogDevice* g_waterResourcesDevice = nullptr;
 bool g_waterPassRanThisFrame = false;
 unsigned g_waterClassesThisPass = 0;
 WaterFrameStatus g_waterStatus = {false, "waiting for the world to render"};
@@ -326,6 +327,7 @@ void OnWaterPassBegin(const void* liquidRenderer)
     const char* reason = "the water pass could not start";
     g_waterPassDevice = device;
     const WaterArming arming = ArmWaterPass(device, cfg, &reason);
+    g_waterResourcesDevice = device;
     if (arming == WaterArming::Armed)
         return;
     g_waterPassDevice = nullptr;
@@ -367,6 +369,16 @@ void AbortArmedWaterPass()
         AbortWaterPass(device);
 }
 
+void ReleaseWaterWhenOff()
+{
+    if (!g_waterResourcesDevice || (!g_waterFailed && GlobalConfig().Get().water))
+        return;
+    FogDevice* device = g_waterResourcesDevice;
+    g_waterResourcesDevice = nullptr;
+    if (device == GameFogDevice())
+        ReleaseWaterResources(device);
+}
+
 void EndWaterFrame()
 {
     if (!g_waterHooksInstalled)
@@ -379,6 +391,7 @@ void EndWaterFrame()
     else if (!g_waterPassRanThisFrame)
         RecordWaterIdle("no liquid pass in this frame");
     g_waterPassRanThisFrame = false;
+    ReleaseWaterWhenOff();
 }
 
 int WaterGuardFilter(unsigned code, const char* where)
@@ -877,7 +890,7 @@ void InstallFarClipHooks()
                 static_cast<unsigned>(sites[1]), GlobalConfig().Get().farClipMax);
 }
 
-void InstallWaterHooks()
+bool InstallWaterHooks()
 {
     const PointerSlot slots[] = {
         {engine::kWaterMaterialRenderSlot, engine::kWaterMaterialRender,
@@ -888,28 +901,29 @@ void InstallWaterHooks()
     if (!engine::WaterClientLayoutMatches())
     {
         VF_LOG_ERROR("water hooks not installed: the client's liquid code differs from the 12340 client");
-        return;
+        return false;
     }
     if (!SiteMatches(engine::kWaterPassSite, engine::kWaterPassTarget))
     {
         VF_LOG_ERROR("water pass call site 0x%08X differs from the 12340 client; water hooks not installed",
                      static_cast<unsigned>(engine::kWaterPassSite));
-        return;
+        return false;
     }
     if (!SlotsHoldTheClientRenders(slots) || !ReplaceSlots(slots))
-        return;
+        return false;
     if (!PatchCallSite(engine::kWaterPassSite, engine::kWaterPassTarget,
                        reinterpret_cast<const void*>(&WaterPassThunk)))
     {
         RestoreSlots(slots, static_cast<int>(sizeof(slots) / sizeof(slots[0])));
         VF_LOG_ERROR("water pass call site 0x%08X could not be patched; water hooks not installed",
                      static_cast<unsigned>(engine::kWaterPassSite));
-        return;
+        return false;
     }
     g_waterHooksInstalled = true;
     VF_LOG_INFO("water hooks installed: water pass 0x%08X, material render slots 0x%08X and 0x%08X",
                 static_cast<unsigned>(engine::kWaterPassSite), static_cast<unsigned>(engine::kWaterMaterialRenderSlot),
                 static_cast<unsigned>(engine::kWaterNoSpecMaterialRenderSlot));
+    return true;
 }
 
 WaterFrameStatus LastWaterFrameStatus()

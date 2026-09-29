@@ -46,6 +46,9 @@ extern "C" __declspec(dllimport) int __cdecl vf_test_transparent_liquids_queued(
 extern "C" __declspec(dllimport) void __cdecl vf_test_fail_water_in_window(int);
 extern "C" __declspec(dllimport) void __cdecl vf_test_water_abort();
 extern "C" __declspec(dllimport) void __cdecl vf_test_force_water_summary();
+extern "C" __declspec(dllimport) int __cdecl vf_test_water_data_loaded();
+extern "C" __declspec(dllimport) unsigned __cdecl vf_test_water_resources_held();
+extern "C" __declspec(dllimport) int __cdecl vf_test_water_mask_pool();
 
 namespace
 {
@@ -1558,6 +1561,8 @@ void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3
 int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstring& iniPath,
         const std::string& waterDataPath)
 {
+    Check(vf_test_water_data_loaded() == 0,
+          "outside the supported client (no water hooks) the DLL does not load waterdata.bin");
     FogData classic;
     Check(classic.Load(dataPath), "Classic fog data loads");
     CheckClassicData(classic);

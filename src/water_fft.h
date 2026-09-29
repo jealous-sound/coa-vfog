@@ -45,6 +45,7 @@ public:
     bool PairsTargets() const { return m_pairTargets; }
     IDirect3DTexture9* Spectrum() const { return m_atlas[0]; }
     IDirect3DTexture9* Displacement() const { return m_atlas[m_displacementAtlas]; }
+    bool HoldsDeviceResources() const { return m_noise || m_butterflies || m_atlas[0] || m_mapScratch[0]; }
     unsigned Draws() const { return m_draws; }
 
 private:
@@ -137,6 +138,7 @@ public:
     IDirect3DTexture9* Surface(int tile) const;
     IDirect3DTexture9* Foam(int tile) const;
     const char* LastFailure() const { return m_failure; }
+    bool HoldsDeviceResources() const;
 
 private:
     struct TileMaps

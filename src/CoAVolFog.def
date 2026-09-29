@@ -23,3 +23,6 @@ EXPORTS
     vf_test_fail_water_in_window
     vf_test_water_abort
     vf_test_force_water_summary
+    vf_test_water_data_loaded
+    vf_test_water_resources_held
+    vf_test_water_mask_pool

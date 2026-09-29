@@ -71,6 +71,7 @@ constexpr int kFaultInBegin = 1;
 constexpr int kFaultInEnd = 2;
 constexpr int kLiquidRendererWords = 8;
 constexpr int kTimedWaterFrames = 30;
+constexpr unsigned kAllWaterResources = 0x7;
 constexpr int kOpaqueLiquidCountWord = 1;
 constexpr int kTransparentLiquidCountWord = 5;
 
@@ -1316,6 +1317,30 @@ void CheckFaultInsideThePassRestoresTheDevice(Harness& h, BasinClient& client, c
           "after an aborted water pass the device resets and the next water pass draws");
 }
 
+void CheckWaterOffReleasesResources(BasinClient& client, const Config& base)
+{
+    Config on = WaterConfig(base);
+    vf_test_set_config(&on);
+    WaterFrame frame;
+    const WaterFrameResult before = client.Render(frame);
+    const unsigned heldOn = vf_test_water_resources_held();
+    const int maskPool = vf_test_water_mask_pool();
+    Config off = on;
+    off.water = false;
+    vf_test_set_config(&off);
+    const WaterFrameResult disabled = client.Render(frame);
+    const unsigned heldOff = vf_test_water_resources_held();
+    vf_test_set_config(&on);
+    const WaterFrameResult after = client.Render(frame);
+    std::printf("     water resources held: 0x%X on, 0x%X off; foam mask pool %d\n", heldOn, heldOff, maskPool);
+    Check(before.began && heldOn == kAllWaterResources && !disabled.began && heldOff == 0,
+          "turning water off releases the scene copies, wave maps and foam masks");
+    Check(after.began && SameImage(before.image, after.image),
+          "turning water back on recreates them and renders the same frame");
+    Check(maskPool == D3DPOOL_DEFAULT,
+          "foam masks live in the default pool, without a managed system-memory copy beside the CPU one");
+}
+
 void CheckResetKeepsWater(Harness& h, BasinClient& client, const Config& base)
 {
     vf_test_disable_wave_simulation(1);
@@ -1596,6 +1621,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     CheckEndReportsWhatItShaded(h, client, base);
     CheckWaterGpuTimeSummary(client, base);
     CheckFaultInsideThePassRestoresTheDevice(h, client, base);
+    CheckWaterOffReleasesResources(client, base);
     CheckResetKeepsWater(h, client, base);
     SaveRealDataViews(h, base, waterDataPath, outDir);
 

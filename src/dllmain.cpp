@@ -31,7 +31,6 @@ void Attach(HMODULE module)
     const Config& cfg = GlobalConfig().Get();
     VF_LOG_INFO("CoAVolFog loaded from %s", dir.c_str());
     GlobalFogData().Load(dir + "fogdata.bin");
-    GlobalWaterData().Load(dir + "waterdata.bin");
 
     if (!engine::IsSupportedClient())
     {
@@ -50,8 +49,8 @@ void Attach(HMODULE module)
     }
     const bool engineHooks = InstallEngineHooks();
     AllowFogOnNewDevices(engineHooks);
-    if (engineHooks)
-        InstallWaterHooks();
+    if (engineHooks && InstallWaterHooks())
+        GlobalWaterData().Load(dir + "waterdata.bin");
     InstallFarClipHooks();
 }
 }
@@ -173,6 +172,21 @@ extern "C" int __cdecl vf_test_transparent_liquids_queued(const void* liquidRend
 extern "C" void __cdecl vf_test_fail_water_in_window(int stage)
 {
     InjectWaterFault(static_cast<WaterFaultStage>(stage));
+}
+
+extern "C" int __cdecl vf_test_water_data_loaded()
+{
+    return GlobalWaterData().Loaded() ? 1 : 0;
+}
+
+extern "C" unsigned __cdecl vf_test_water_resources_held()
+{
+    return HeldWaterResources(LatestFogDevice());
+}
+
+extern "C" int __cdecl vf_test_water_mask_pool()
+{
+    return WaterFoamMaskPool(LatestFogDevice());
 }
 
 extern "C" void __cdecl vf_test_force_water_summary()

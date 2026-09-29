@@ -299,25 +299,40 @@ bool FillMaskLevel(IDirect3DTexture9* texture, UINT level, const std::vector<uin
     return SUCCEEDED(texture->UnlockRect(level));
 }
 
+IDirect3DTexture9* CreateMaskStaging(IDirect3DDevice9* dev, const WaterMaskLevels& mask, D3DFORMAT format)
+{
+    const UINT levels = static_cast<UINT>(mask.levels.size());
+    const UINT size = mask.info.size;
+    IDirect3DTexture9* staging = nullptr;
+    if (FAILED(dev->CreateTexture(size, size, levels, 0, format, D3DPOOL_SYSTEMMEM, &staging, nullptr)))
+        return nullptr;
+    for (UINT level = 0; level < levels; ++level)
+        if (!FillMaskLevel(staging, level, mask.levels[level], MipSide(size, level), format == D3DFMT_L8))
+        {
+            staging->Release();
+            return nullptr;
+        }
+    return staging;
+}
+
 IDirect3DTexture9* CreateMaskTexture(IDirect3DDevice9* dev, const WaterMaskLevels& mask)
 {
     const UINT levels = static_cast<UINT>(mask.levels.size());
     const UINT size = mask.info.size;
-    IDirect3DTexture9* texture = nullptr;
-    bool luminance = true;
-    if (FAILED(dev->CreateTexture(size, size, levels, 0, D3DFMT_L8, D3DPOOL_MANAGED, &texture, nullptr)))
+    for (D3DFORMAT format : {D3DFMT_L8, D3DFMT_A8R8G8B8})
     {
-        luminance = false;
-        if (FAILED(dev->CreateTexture(size, size, levels, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &texture, nullptr)))
-            return nullptr;
+        IDirect3DTexture9* texture = nullptr;
+        if (FAILED(dev->CreateTexture(size, size, levels, 0, format, D3DPOOL_DEFAULT, &texture, nullptr)))
+            continue;
+        IDirect3DTexture9* staging = CreateMaskStaging(dev, mask, format);
+        const bool uploaded = staging && SUCCEEDED(dev->UpdateTexture(staging, texture));
+        if (staging)
+            staging->Release();
+        if (uploaded)
+            return texture;
+        texture->Release();
     }
-    for (UINT level = 0; level < levels; ++level)
-        if (!FillMaskLevel(texture, level, mask.levels[level], MipSide(size, level), luminance))
-        {
-            texture->Release();
-            return nullptr;
-        }
-    return texture;
+    return nullptr;
 }
 
 int QualityIndex(const Config& cfg)
@@ -360,6 +375,7 @@ void WaterRenderer::ReleaseDefaultPool()
 {
     ReleaseTargets();
     m_gpuTimer.Release();
+    ReleaseMasks();
     SafeRelease(m_sceneColour);
     SafeRelease(m_sceneDepth);
     SafeRelease(m_waterDepth);
@@ -383,11 +399,15 @@ void WaterRenderer::ReleaseAll()
     for (auto*& shader : m_shade)
         SafeRelease(shader);
     SafeRelease(m_flat);
+    m_fft.ReleaseAll();
+}
+
+void WaterRenderer::ReleaseMasks()
+{
     for (auto*& mask : m_masks)
         SafeRelease(mask);
     m_masks.clear();
     m_masksUploaded = false;
-    m_fft.ReleaseAll();
 }
 
 bool WaterRenderer::Skip(const char* reason)
@@ -544,9 +564,7 @@ void WaterRenderer::EnsureMasks(IDirect3DDevice9* dev)
     const WaterData& data = GlobalWaterData();
     if (m_masksUploaded && m_maskRevision == data.Revision())
         return;
-    for (auto*& mask : m_masks)
-        SafeRelease(mask);
-    m_masks.clear();
+    ReleaseMasks();
     int uploaded = 0;
     for (const WaterMaskLevels& mask : data.Masks())
     {
@@ -555,8 +573,36 @@ void WaterRenderer::EnsureMasks(IDirect3DDevice9* dev)
         m_masks.push_back(texture);
     }
     m_masksUploaded = true;
+    const bool newData = !m_masksLogged || m_maskRevision != data.Revision() || uploaded != m_loggedMaskUploads;
     m_maskRevision = data.Revision();
-    VF_LOG_INFO("water foam masks uploaded: %d of %d", uploaded, static_cast<int>(data.Masks().size()));
+    m_masksLogged = true;
+    m_loggedMaskUploads = uploaded;
+    LogWrite(newData ? LogLevel::Info : LogLevel::Debug, "water foam masks uploaded: %d of %d", uploaded,
+             static_cast<int>(data.Masks().size()));
+}
+
+unsigned WaterRenderer::HeldResources() const
+{
+    unsigned held = 0;
+    if (m_sceneColour || m_sceneDepth || m_waterDepth)
+        held |= kWaterSceneCopiesHeld;
+    if (m_fft.HoldsDeviceResources())
+        held |= kWaterWaveMapsHeld;
+    for (IDirect3DTexture9* mask : m_masks)
+        if (mask)
+            held |= kWaterFoamMasksHeld;
+    return held;
+}
+
+int WaterRenderer::FoamMaskPool() const
+{
+    for (IDirect3DTexture9* mask : m_masks)
+    {
+        D3DSURFACE_DESC desc = {};
+        if (mask && SUCCEEDED(mask->GetLevelDesc(0, &desc)))
+            return static_cast<int>(desc.Pool);
+    }
+    return -1;
 }
 
 IDirect3DTexture9* WaterRenderer::MaskTexture(int32_t index) const
@@ -710,7 +756,10 @@ bool WaterRenderer::Begin(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture
     if (m_armed)
         Abort(dev);
     if (!cfg.water)
+    {
+        ReleaseDefaultPool();
         return Skip("water disabled");
+    }
     if (in.inLiquid)
         return Skip("camera under water");
     if (!GlobalWaterData().Loaded())

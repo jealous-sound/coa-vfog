@@ -63,6 +63,12 @@ public:
     void UntagWater() { m_water.Untag(m_real); }
     bool EndWater(const char** skip, bool* flatWaves);
     void AbortWater();
+    void ReleaseWater()
+    {
+        AbortWater();
+        m_water.ReleaseDefaultPool();
+    }
+    const WaterRenderer& Water() const { return m_water; }
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** out) override;
     ULONG STDMETHODCALLTYPE AddRef() override;
@@ -924,4 +930,20 @@ void AbortWaterPass(FogDevice* device)
 {
     if (device)
         device->AbortWater();
+}
+
+void ReleaseWaterResources(FogDevice* device)
+{
+    if (device)
+        device->ReleaseWater();
+}
+
+unsigned HeldWaterResources(FogDevice* device)
+{
+    return device ? device->Water().HeldResources() : 0u;
+}
+
+int WaterFoamMaskPool(FogDevice* device)
+{
+    return device ? device->Water().FoamMaskPool() : -1;
 }

@@ -30,6 +30,9 @@ constexpr int kWaterQualityLevels = 3;
 constexpr int kWaterSkyBands = 5;
 constexpr int kWaterShadedMaskSlots = 5;
 constexpr int kWaterStencilStates = 9;
+constexpr unsigned kWaterSceneCopiesHeld = 0x1;
+constexpr unsigned kWaterWaveMapsHeld = 0x2;
+constexpr unsigned kWaterFoamMasksHeld = 0x4;
 
 class WaterRenderer
 {
@@ -48,6 +51,8 @@ public:
 
     bool Armed() const { return m_armed; }
     bool WavesSimulated() const { return m_wavesSimulated; }
+    unsigned HeldResources() const;
+    int FoamMaskPool() const;
     const char* LastSkipReason() const { return m_skip; }
 
 private:
@@ -97,6 +102,7 @@ private:
     bool EnsureCopies(IDirect3DDevice9* dev, IDirect3DSurface9* target, UINT w, UINT h);
     bool EnsureFlatTexture(IDirect3DDevice9* dev);
     void EnsureMasks(IDirect3DDevice9* dev);
+    void ReleaseMasks();
     IDirect3DTexture9* MaskTexture(int32_t index) const;
     bool UsableTargets(IDirect3DSurface9* depthSurface, const D3DVIEWPORT9& vp, D3DSURFACE_DESC& depthDesc);
     void SaveTargets(IDirect3DDevice9* dev);
@@ -139,6 +145,8 @@ private:
     std::vector<IDirect3DTexture9*> m_masks;
     bool m_masksUploaded = false;
     uint32_t m_maskRevision = 0;
+    bool m_masksLogged = false;
+    int m_loggedMaskUploads = 0;
     UINT m_copyW = 0;
     UINT m_copyH = 0;
     bool m_packedDepth = false;

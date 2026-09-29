@@ -28,3 +28,6 @@ void TagWaterDraw(FogDevice* device, WaterClass waterClass);
 void UntagWaterDraw(FogDevice* device);
 bool EndWaterPass(FogDevice* device, const char** skipReason, bool* flatWaves);
 void AbortWaterPass(FogDevice* device);
+void ReleaseWaterResources(FogDevice* device);
+unsigned HeldWaterResources(FogDevice* device);
+int WaterFoamMaskPool(FogDevice* device);
