@@ -106,6 +106,13 @@ constexpr size_t kMinWallReflectionPixels = 50;
 constexpr double kMinReflectionFogChange = 8.0;
 constexpr int kOpaqueLiquidCountWord = 1;
 constexpr int kTransparentLiquidCountWord = 5;
+constexpr Vec3 kLowEye = {225, 0, 0.3f};
+constexpr Vec3 kLowEyeTarget = {225, 100, 0.3f};
+constexpr uint32_t kBlackSky = 0xFF000000;
+constexpr int kFogRadianceDebugView = 1;
+constexpr float kSkyFogElevationsDegrees[] = {1.0f, 2.0f, 4.0f, 8.0f, 16.0f};
+constexpr float kMaxSkyReflectionFogMismatch = 0.05f;
+constexpr float kMinComparedFogRadiance = 1e-4f;
 
 const D3DRENDERSTATETYPE kSentinelRenderStates[] = {
     D3DRS_ZENABLE,           D3DRS_ZWRITEENABLE,     D3DRS_ZFUNC,
@@ -1631,6 +1638,66 @@ void CheckReflectionsCarryTheirSourcesFog(Harness& h, const Config& base)
     vf_test_set_config(&on);
 }
 
+UINT RowAtElevation(const WaterView& v, UINT column, float elevation)
+{
+    UINT best = 0;
+    float bestError = std::numeric_limits<float>::max();
+    for (UINT row = 0; row < v.world.Height; ++row)
+    {
+        const Vec3 ray = PixelRay(v, column + 0.5f, row + 0.5f);
+        const float error = std::fabs(std::atan2(ray.z, std::sqrt(ray.x * ray.x + ray.y * ray.y)) - elevation);
+        if (error < bestError)
+        {
+            best = row;
+            bestError = error;
+        }
+    }
+    return best;
+}
+
+void CheckSkyReflectionsCarryTheSkysFog(Harness& h, const Config& base)
+{
+    WaterView view = MakeWaterView(kLowEye, kLowEyeTarget);
+    for (uint32_t& sky : view.water.skyColors)
+        sky = kBlackSky;
+    BasinClient client(h, view);
+    Config heightFog = WaterConfig(base);
+    heightFog.dataMode = 0;
+    heightFog.farFog = 0.0f;
+    heightFog.waterQuality = 1;
+    heightFog.waterWaves = 0.0f;
+    heightFog.waterDebugView = kReflectionDebugView;
+    vf_test_set_config(&heightFog);
+    WaterFrame reflection;
+    const WaterFrameResult mirrored = client.Render(reflection);
+    Config skyFog = heightFog;
+    skyFog.debugView = kFogRadianceDebugView;
+    skyFog.waterDebugView = 0;
+    vf_test_set_config(&skyFog);
+    WaterFrame direct;
+    direct.calls = WaterCalls::None;
+    direct.fogDepthView = true;
+    const WaterFrameResult sky = client.Render(direct);
+    const UINT column = view.world.Width / 2;
+    float worst = 0.0f;
+    for (float degrees : kSkyFogElevationsDegrees)
+    {
+        const float elevation = degrees * kPi / 180.0f;
+        const UINT skyRow = RowAtElevation(view, column, elevation);
+        const UINT waterRow = RowAtElevation(view, column, -elevation);
+        const float direct = Decode(sky.image.At(column, skyRow)[1]);
+        const float reflected = Decode(mirrored.image.At(column, waterRow)[1]);
+        const float mismatch = std::fabs(reflected / std::fmax(direct, kMinComparedFogRadiance) - 1.0f);
+        std::printf("     %4.1f degrees: sky row %u fog %.4f, reflected at row %u %.4f (%+.0f%%)\n", degrees, skyRow,
+                    direct, waterRow, reflected, (reflected / std::fmax(direct, kMinComparedFogRadiance) - 1) * 100);
+        worst = std::fmax(worst, mismatch);
+    }
+    Check(mirrored.began && sky.fogRendered && worst <= kMaxSkyReflectionFogMismatch,
+          "a sky reflection carries the height fog the fog pass puts on the sky at the same elevation");
+    const Config on = WaterConfig(base);
+    vf_test_set_config(&on);
+}
+
 void CheckResetKeepsWater(Harness& h, BasinClient& client, const Config& base)
 {
     vf_test_disable_wave_simulation(1);
@@ -2124,6 +2191,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     CheckShoreFoamWidthFollowsTheSlope(h, base);
     CheckOccluderEdgesKeepWaveDetail(h, base);
     CheckReflectionsCarryTheirSourcesFog(h, base);
+    CheckSkyReflectionsCarryTheSkysFog(h, base);
     CheckCrestFoamAccumulates(client, base, waterMask.image);
     CheckResetKeepsWater(h, client, base);
     CheckRealDataViews(h, base, waterDataPath, outDir);

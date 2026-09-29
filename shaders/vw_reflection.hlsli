@@ -124,6 +124,19 @@ static const int kReflectionFogLayers = 4;
 static const int kReflectionFogLayerRegisters = 5;
 static const float kSkyHitDepthFraction = 0.99;
 static const float kMinPhaseDistance = 1e-6;
+static const float kMinProfileHeightSpan = 1e-3;
+static const float kMinExponentSpan = 1e-2;
+static const float kMinPathLength = 1e-3;
+
+struct ReflectedPath
+{
+    float from;
+    float to;
+    float startHeight;
+    float heightPerYard;
+    float skyRise;
+    float cosToLight;
+};
 
 float ReflectionFogCurveIntegral(float4 curve, float distance)
 {
@@ -134,9 +147,37 @@ float ReflectionFogCurveIntegral(float4 curve, float distance)
     return travelled + curve.z * (range * pow(ramp, exponent) / exponent + max(travelled - range, 0));
 }
 
-float ReflectionFogHeightProfile(float4 height, float worldHeight)
+float LogHeightProfile(float4 height, float worldHeight)
 {
-    return saturate(exp((height.x - worldHeight) * height.y)) * saturate(exp((worldHeight - height.z) * height.w));
+    return min((height.x - worldHeight) * height.y, 0) + min((worldHeight - height.z) * height.w, 0);
+}
+
+float MeanExpAlongRamp(float2 fromLogAndExp, float2 toLogAndExp)
+{
+    float logSpan = toLogAndExp.x - fromLogAndExp.x;
+    return abs(logSpan) < kMinExponentSpan ? fromLogAndExp.y * (1 + 0.5 * logSpan)
+                                           : (toLogAndExp.y - fromLogAndExp.y) / logSpan;
+}
+
+float2 HeightProfileLogAndExp(float4 height, float worldHeight)
+{
+    float logProfile = LogHeightProfile(height, worldHeight);
+    return float2(logProfile, exp(logProfile));
+}
+
+float MeanHeightProfile(float4 height, float lowHeight, float highHeight)
+{
+    float heightSpan = highHeight - lowHeight;
+    float firstKink = clamp(min(height.x, height.z), lowHeight, highHeight);
+    float secondKink = clamp(max(height.x, height.z), lowHeight, highHeight);
+    float2 atLow = HeightProfileLogAndExp(height, lowHeight);
+    float2 atFirstKink = HeightProfileLogAndExp(height, firstKink);
+    float2 atSecondKink = HeightProfileLogAndExp(height, secondKink);
+    float2 atHigh = HeightProfileLogAndExp(height, highHeight);
+    float integral = (firstKink - lowHeight) * MeanExpAlongRamp(atLow, atFirstKink) +
+                     (secondKink - firstKink) * MeanExpAlongRamp(atFirstKink, atSecondKink) +
+                     (highHeight - secondKink) * MeanExpAlongRamp(atSecondKink, atHigh);
+    return heightSpan < kMinProfileHeightSpan ? atLow.y : integral / heightSpan;
 }
 
 float ReflectionFogPhase(float4 scattering, float cosToLight)
@@ -146,7 +187,12 @@ float ReflectionFogPhase(float4 scattering, float cosToLight)
     return lerp(r * r * r, 1, scattering.y);
 }
 
-float4 ReflectedPathFog(float from, float to, float meanHeight, float skyRise, float cosToLight)
+float PathHeight(ReflectedPath path, float distance)
+{
+    return path.startHeight + path.heightPerYard * (distance - path.from);
+}
+
+float4 ReflectedPathFog(ReflectedPath path)
 {
     float3 inscatter = 0;
     float opticalDepth = 0;
@@ -157,29 +203,54 @@ float4 ReflectedPathFog(float from, float to, float meanHeight, float skyRise, f
         float3 emissive = cReflectionFogLayers[j * kReflectionFogLayerRegisters + 2].rgb;
         float3 diffuse = cReflectionFogLayers[j * kReflectionFogLayerRegisters + 3].rgb;
         float4 scattering = cReflectionFogLayers[j * kReflectionFogLayerRegisters + 4];
-        [branch] if (curve.y <= 0)
+        float start = max(path.from, curve.x);
+        float end = min(path.to, scattering.z);
+        [branch] if (curve.y <= 0 || end <= start)
             continue;
-        float start = max(from, curve.x);
-        float end = min(to, scattering.z);
-        float span = end > start ? ReflectionFogCurveIntegral(curve, end) - ReflectionFogCurveIntegral(curve, start)
-                                 : 0;
-        float layerDepth = curve.y * span * ReflectionFogHeightProfile(height, meanHeight) *
-                           exp(-skyRise * scattering.w);
-        inscatter += (diffuse * ReflectionFogPhase(scattering, cosToLight) + emissive) * layerDepth;
+        float span = ReflectionFogCurveIntegral(curve, end) - ReflectionFogCurveIntegral(curve, start);
+        float startHeight = PathHeight(path, start);
+        float endHeight = PathHeight(path, end);
+        float profile = MeanHeightProfile(height, min(startHeight, endHeight), max(startHeight, endHeight));
+        float layerDepth = curve.y * span * profile * exp(-path.skyRise * scattering.w);
+        inscatter += (diffuse * ReflectionFogPhase(scattering, path.cosToLight) + emissive) * layerDepth;
         opticalDepth += layerDepth;
     }
     float transmittance = exp(-opticalDepth);
     return float4(opticalDepth > 0 ? inscatter / opticalDepth * (1 - transmittance) : 0, transmittance);
 }
 
+ReflectedPath SkyReflectionPath(WaterPixel w, float3 R)
+{
+    ReflectedPath path;
+    path.from = w.cameraDistance;
+    path.to = max(ReflectionFogSkyEnd(), w.cameraDistance);
+    path.startHeight = w.position.z;
+    path.heightPerYard = max(R.z, 0);
+    path.skyRise = path.heightPerYard;
+    path.cosToLight = dot(R, ToLight());
+    return path;
+}
+
+ReflectedPath SurfaceReflectionPath(WaterPixel w, float3 R, float2 hitUv, float hitZ)
+{
+    float2 hitPixel = ViewportOrigin() + hitUv * ViewportSize();
+    float3 hit = CameraPositionWorld() + ViewToWorldDirection(ViewRayAtUnitDepth(hitPixel)) * hitZ;
+    float pathLength = distance(hit, w.position);
+    ReflectedPath path;
+    path.from = w.cameraDistance;
+    path.to = w.cameraDistance + pathLength;
+    path.startHeight = w.position.z;
+    path.heightPerYard = (hit.z - w.position.z) / max(pathLength, kMinPathLength);
+    path.skyRise = 0;
+    path.cosToLight = dot(R, ToLight());
+    return path;
+}
+
 float3 FoggedSkyReflection(WaterPixel w, float3 R, float3 sky)
 {
     [branch] if (!ReflectionFogActive())
         return sky;
-    float rise = max(R.z, 0);
-    float to = max(ReflectionFogSkyEnd(), w.cameraDistance);
-    float meanHeight = w.position.z + 0.5 * rise * (to - w.cameraDistance);
-    float4 fog = ReflectedPathFog(w.cameraDistance, to, meanHeight, rise, dot(R, ToLight()));
+    float4 fog = ReflectedPathFog(SkyReflectionPath(w, R));
     return sky * fog.a + fog.rgb;
 }
 
@@ -188,11 +259,9 @@ float3 FoggedScreenReflection(WaterPixel w, float3 R, float3 colour, float2 hitU
     [branch] if (!ReflectionFogActive())
         return colour;
     float hitZ = CopiedViewDepth(sSceneDepth, hitUv);
-    [branch] if (hitZ >= kSkyHitDepthFraction * MaxFogDistance())
-        return FoggedSkyReflection(w, R, colour);
-    float2 hitPixel = ViewportOrigin() + hitUv * ViewportSize();
-    float3 hit = CameraPositionWorld() + ViewToWorldDirection(ViewRayAtUnitDepth(hitPixel)) * hitZ;
-    float to = w.cameraDistance + distance(hit, w.position);
-    float4 fog = ReflectedPathFog(w.cameraDistance, to, 0.5 * (w.position.z + hit.z), 0, dot(R, ToLight()));
+    ReflectedPath path = SkyReflectionPath(w, R);
+    [flatten] if (hitZ < kSkyHitDepthFraction * MaxFogDistance())
+        path = SurfaceReflectionPath(w, R, hitUv, hitZ);
+    float4 fog = ReflectedPathFog(path);
     return colour * fog.a + fog.rgb;
 }
