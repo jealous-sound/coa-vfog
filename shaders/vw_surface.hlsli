@@ -104,9 +104,9 @@ float2 AdtUv(float3 position, float2 slope)
     return (kAdtGridOrigin - position.yx) * kAdtTilesPerYard + slope * kSlopeToAdtUv;
 }
 
-float4 FoamLayer(sampler2D mask, int slot, float2 uv)
+float4 FoamLayer(sampler2D mask, int slot, float2 uv, float2 dx, float2 dy)
 {
-    float coverage = tex2D(mask, uv).r * MaskPresent(slot);
+    float coverage = tex2Dgrad(mask, uv, dx, dy).r * MaskPresent(slot);
     return float4(lerp(MaskTintLow(slot), MaskTintHigh(slot), coverage), coverage);
 }
 
@@ -118,18 +118,32 @@ float FoamFade(float distance, float fadeDistance)
     return eased * eased;
 }
 
+float4 WaveFoam(float2 adtUv, float2 dx, float2 dy, float f)
+{
+    float3 scale = cWaveFoamScaling.xyz;
+    float4 high = FoamLayer(sHighFoamMask, kHighFoamSlot, adtUv * scale.x + cFoamScroll.xy, dx * scale.x, dy * scale.x);
+    float4 mid = FoamLayer(sMidFoamMask, kMidFoamSlot, adtUv * scale.y + cFoamScroll.xy, dx * scale.y, dy * scale.y);
+    float4 low = FoamLayer(sLowFoamMask, kLowFoamSlot, adtUv * scale.z + cFoamScroll.xy, dx * scale.z, dy * scale.z);
+    float rootF = sqrt(f);
+    return saturate(low * rootF + mid * f * rootF + high * pow(f, 4.5)) * WaveFoamIntensity();
+}
+
 float4 FoamAlbedo(WaterPixel w, WaveState waves)
 {
     float2 adtUv = AdtUv(w.position, waves.moments.xy);
-    float4 high = FoamLayer(sHighFoamMask, kHighFoamSlot, adtUv * cWaveFoamScaling.x + cFoamScroll.xy);
-    float4 mid = FoamLayer(sMidFoamMask, kMidFoamSlot, adtUv * cWaveFoamScaling.y + cFoamScroll.xy);
-    float4 low = FoamLayer(sLowFoamMask, kLowFoamSlot, adtUv * cWaveFoamScaling.z + cFoamScroll.xy);
-    float4 shore = FoamLayer(sShoreFoamMask, kShoreFoamSlot, adtUv * cShoreFoam.y + cFoamScroll.zw);
-    float4 depth = FoamLayer(sDepthFoamMask, kDepthFoamSlot, adtUv * cDepthFadeFoam.y + cDepthFoamScroll.xy);
+    float2 dx = ddx(adtUv);
+    float2 dy = ddy(adtUv);
     float f = max(waves.foam.x, 0);
-    float rootF = sqrt(f);
-    float4 foam = saturate(low * rootF + mid * f * rootF + high * pow(f, 4.5)) * WaveFoamIntensity();
-    foam += shore * cShoreFoam.x * FoamFade(w.columnDepth, cShoreFoam.z);
-    foam += depth * cDepthFadeFoam.x * FoamFade(w.sceneZ - w.waterZ, cDepthFadeFoam.z);
+    float shoreWeight = cShoreFoam.x * FoamFade(w.columnDepth, cShoreFoam.z);
+    float depthWeight = cDepthFadeFoam.x * FoamFade(w.sceneZ - w.waterZ, cDepthFadeFoam.z);
+    float4 foam = 0;
+    [branch] if (f * WaveFoamIntensity() > 0)
+        foam = WaveFoam(adtUv, dx, dy, f);
+    [branch] if (shoreWeight > 0)
+        foam += shoreWeight * FoamLayer(sShoreFoamMask, kShoreFoamSlot, adtUv * cShoreFoam.y + cFoamScroll.zw,
+                                        dx * cShoreFoam.y, dy * cShoreFoam.y);
+    [branch] if (depthWeight > 0)
+        foam += depthWeight * FoamLayer(sDepthFoamMask, kDepthFoamSlot, adtUv * cDepthFadeFoam.y + cDepthFoamScroll.xy,
+                                        dx * cDepthFadeFoam.y, dy * cDepthFadeFoam.y);
     return saturate(foam);
 }
