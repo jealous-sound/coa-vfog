@@ -84,6 +84,7 @@ constexpr unsigned kAllWaterResources = 0x7;
 constexpr int kFoamClockSteps = 20;
 constexpr double kFoamClockStep = 0.1;
 constexpr int kFoamCoverageDebugView = 2;
+constexpr float kWhitecapWind = 8.0f;
 constexpr float kBeachWaterlineX = kBasinFarX - (kLandZ - kWaterSurfaceZ) * (kBasinFarX - kBeachStartX) /
                                                     (kLandZ - kBasinFloorZ);
 constexpr float kBeachRisePerYard = (kLandZ - kBasinFloorZ) / (kBasinFarX - kBeachStartX);
@@ -1931,21 +1932,70 @@ void CheckSunsetFoamStaysBelowLitGround(Harness& h, const Config& base)
     AssignWaterData(MakeSyntheticWaterData());
 }
 
-void SaveRealDataViews(Harness& h, const Config& base, const std::string& waterDataPath, const std::wstring& outDir)
+double MaskedCoverage(const Image& mask, const Image& coverage)
 {
-    const DWORD attributes = GetFileAttributesA(waterDataPath.c_str());
-    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY))
-    {
-        std::printf("     %s not found; real water data views skipped\n", waterDataPath.c_str());
-        return;
-    }
-    if (!vf_test_load_water_data(waterDataPath.c_str()))
-    {
-        std::printf("     %s did not load; real water data views skipped\n", waterDataPath.c_str());
-        return;
-    }
+    double sum = 0.0;
+    for (UINT y = 0; y < mask.h; ++y)
+        for (UINT x = 0; x < mask.w; ++x)
+            if (IsMaskPixel(mask, x, y))
+                sum += coverage.At(x, y)[1];
+    return sum;
+}
+
+struct CrestFoamResult
+{
+    bool rendered = false;
+    MaskComparison shaded;
+    double coverageBefore = 0.0;
+    double coverageAfter = 0.0;
+};
+
+CrestFoamResult AccumulateCrestFoam(BasinClient& client, const Config& shading, const WaterFrame& frame,
+                                    const Image& mask)
+{
+    Config coverage = shading;
+    coverage.waterDebugView = kFoamCoverageDebugView;
+    CrestFoamResult result;
+    vf_test_set_water_seconds(kFrameSeconds);
+    vf_test_set_config(&shading);
+    const WaterFrameResult before = client.Render(frame);
+    vf_test_set_config(&coverage);
+    const WaterFrameResult beforeCoverage = client.Render(frame);
+    vf_test_set_config(&shading);
+    RenderAfterFoamClock(client, frame);
+    vf_test_set_water_seconds(kFrameSeconds);
+    const WaterFrameResult after = client.Render(frame);
+    vf_test_set_config(&coverage);
+    const WaterFrameResult afterCoverage = client.Render(frame);
+    result.rendered = before.began && after.began && beforeCoverage.began && afterCoverage.began;
+    result.shaded = CompareByMask(mask, after.image, before.image);
+    result.coverageBefore = MaskedCoverage(mask, beforeCoverage.image);
+    result.coverageAfter = MaskedCoverage(mask, afterCoverage.image);
+    return result;
+}
+
+void CheckCrestFoamAccumulates(BasinClient& client, const Config& base, const Image& mask)
+{
+    const bool assigned = AssignWaterData(WaveFoamOnlyLake());
+    WaterFrame frame;
+    const CrestFoamResult foam = AccumulateCrestFoam(client, WaterConfig(base), frame, mask);
+    std::printf("     crest foam over %d steps of %.1f s: %zu water pixels changed, %zu other pixels, coverage "
+                "%.0f -> %.0f\n",
+                kFoamClockSteps, kFoamClockStep, foam.shaded.changedWater, foam.shaded.changedElsewhere,
+                foam.coverageBefore, foam.coverageAfter);
+    Check(assigned && foam.rendered && foam.shaded.changedWater > 0 && foam.shaded.changedElsewhere == 0 &&
+              foam.coverageAfter > foam.coverageBefore,
+          "the simulated crest foam and oxygen accumulate over time and shade only the water");
+    const Config on = WaterConfig(base);
+    vf_test_set_config(&on);
+    AssignWaterData(MakeSyntheticWaterData());
+}
+
+void CheckRealDataViews(Harness& h, const Config& base, const std::string& waterDataPath, const std::wstring& outDir)
+{
+    const bool loaded = vf_test_load_water_data(waterDataPath.c_str()) != 0;
+    Check(loaded, "the converted water data loads for the real-data views");
     const Config cfg = WaterConfig(base);
-    vf_test_set_config(&cfg);
     const struct
     {
         const wchar_t* name;
@@ -1960,15 +2010,46 @@ void SaveRealDataViews(Harness& h, const Config& base, const std::string& waterD
     };
     for (const auto& view : views)
     {
+        vf_test_set_config(&cfg);
         BasinClient client(h, MakeWaterView(view.eye, view.at));
         WaterFrame frame;
         frame.strips = view.strips;
         frame.stripCount = view.strips == kClassStrips ? 3 : 1;
+        WaterFrame none = frame;
+        none.calls = WaterCalls::None;
+        WaterFrame mask = none;
+        mask.opaqueMask = true;
+        const WaterFrameResult stock = client.Render(none);
+        const WaterFrameResult water = client.Render(mask);
         const WaterFrameResult result = client.Render(frame);
-        std::printf("     %ls: pass %s%s\n", view.name, result.began ? "drawn" : "skipped: ", result.skip);
         SaveImage(outDir, view.name, result.image);
+        const MaskComparison changes = CompareByMask(water.image, result.image, stock.image);
+        std::printf("     %ls: %s%s, water pixels %zu, shaded %zu, changed elsewhere %zu\n", view.name,
+                    result.began ? "drawn" : "skipped: ", result.skip, changes.waterPixels, changes.changedWater,
+                    changes.changedElsewhere);
+        const std::string check = "the real data shades the water of " + NarrowPath(view.name) +
+                                  " and leaves every other pixel alone";
+        Check(loaded && result.began && result.stateKept && changes.waterPixels > 0 &&
+                  changes.changedWater >= kMinShadedFraction * changes.waterPixels && changes.changedElsewhere == 0,
+              check.c_str());
     }
-    std::printf("     the real water data stays loaded after these views\n");
+    BasinClient client(h, DefaultWaterView());
+    WaterFrame none;
+    none.calls = WaterCalls::None;
+    none.opaqueMask = true;
+    vf_test_set_config(&cfg);
+    const WaterFrameResult mask = client.Render(none);
+    Config windy = cfg;
+    windy.waterWind = kWhitecapWind;
+    WaterFrame frame;
+    const CrestFoamResult foam = AccumulateCrestFoam(client, windy, frame, mask.image);
+    std::printf("     real data at wind %.0f: crest foam coverage %.0f -> %.0f, %zu water pixels changed\n",
+                kWhitecapWind, foam.coverageBefore, foam.coverageAfter, foam.shaded.changedWater);
+    Check(loaded && foam.rendered && foam.coverageAfter > foam.coverageBefore && foam.shaded.changedElsewhere == 0,
+          "the real presets, tiles and masks shade crest foam that builds up in a strong wind");
+    const Config on = WaterConfig(base);
+    vf_test_set_config(&on);
+    Check(AssignWaterData(MakeSyntheticWaterData()), "synthetic water data restored after the real-data views");
 }
 
 void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& waterDataPath)
@@ -2043,8 +2124,9 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     CheckShoreFoamWidthFollowsTheSlope(h, base);
     CheckOccluderEdgesKeepWaveDetail(h, base);
     CheckReflectionsCarryTheirSourcesFog(h, base);
+    CheckCrestFoamAccumulates(client, base, waterMask.image);
     CheckResetKeepsWater(h, client, base);
-    SaveRealDataViews(h, base, waterDataPath, outDir);
+    CheckRealDataViews(h, base, waterDataPath, outDir);
 
     vf_test_set_water_seconds(kRealTime);
     vf_test_set_config(&base);
