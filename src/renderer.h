@@ -4,6 +4,7 @@
 #include "engine.h"
 #include "fog_data.h"
 #include "gpu_timing.h"
+#include "msaa_depth.h"
 
 #include <d3d9.h>
 
@@ -17,8 +18,7 @@ public:
     void ReleaseDefaultPool();
     void ReleaseAll();
 
-    bool Render(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* boundDepthStencil,
-                const FrameInputs& in, const Config& cfg);
+    bool Render(IDirect3DDevice9* dev, const SceneDepth& depth, const FrameInputs& in, const Config& cfg);
 
     const char* LastSkipReason() const { return m_skip; }
     bool AdaptiveLightingHistory() const { return m_adaptiveLightingHistory; }
@@ -54,7 +54,7 @@ private:
                          const float* toLightInView, const float* sunPx, float rayStrength);
     void DrawFullscreen(IDirect3DDevice9* dev);
     void BindTexture(IDirect3DDevice9* dev, DWORD stage, IDirect3DBaseTexture9* tex, bool linear);
-    bool RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* target,
+    bool RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDirect3DSurface9* target,
                       const D3DSURFACE_DESC& depthDesc, const FrameInputs& in, const Config& cfg);
 
     IDirect3DVertexShader9* m_vs = nullptr;

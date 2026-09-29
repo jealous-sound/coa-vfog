@@ -4,6 +4,7 @@
 #include "fog_model.h"
 #include "gpu_timing.h"
 #include "log.h"
+#include "msaa_depth.h"
 #include "noise_volume.h"
 #include "water_data.h"
 #include "water_fft.h"
@@ -64,6 +65,9 @@ extern "C" __declspec(dllimport) void __cdecl vf_test_fail_water_mask_uploads(in
 extern "C" __declspec(dllimport) int __cdecl vf_test_water_masks_uploaded();
 extern "C" __declspec(dllimport) void __cdecl vf_test_force_water_shading_variant(int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_water_shading_variant();
+extern "C" __declspec(dllimport) void __cdecl vf_test_force_depth_copy_method(int);
+extern "C" __declspec(dllimport) int __cdecl vf_test_read_scene_depth(const DepthTexel*, int, float*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_multisampling(MultisamplingStatus*);
 
 namespace
 {
@@ -240,6 +244,19 @@ struct Image
     }
 };
 
+IDirect3DSurface9* ResolvedCopy(IDirect3DDevice9* dev, IDirect3DSurface9* target, const D3DSURFACE_DESC& desc)
+{
+    IDirect3DSurface9* resolved = nullptr;
+    if (SUCCEEDED(dev->CreateRenderTarget(desc.Width, desc.Height, desc.Format, D3DMULTISAMPLE_NONE, 0, FALSE,
+                                          &resolved, nullptr)) &&
+        SUCCEEDED(dev->StretchRect(target, nullptr, resolved, nullptr, D3DTEXF_NONE)))
+        return resolved;
+    if (resolved)
+        resolved->Release();
+    target->AddRef();
+    return target;
+}
+
 Image Capture(IDirect3DDevice9* dev)
 {
     Image img;
@@ -248,6 +265,12 @@ Image Capture(IDirect3DDevice9* dev)
     dev->GetRenderTarget(0, &bb);
     D3DSURFACE_DESC desc;
     bb->GetDesc(&desc);
+    if (desc.MultiSampleType != D3DMULTISAMPLE_NONE)
+    {
+        IDirect3DSurface9* resolved = ResolvedCopy(dev, bb, desc);
+        bb->Release();
+        bb = resolved;
+    }
     dev->CreateOffscreenPlainSurface(desc.Width, desc.Height, desc.Format, D3DPOOL_SYSTEMMEM, &sys, nullptr);
     dev->GetRenderTargetData(bb, sys);
     D3DLOCKED_RECT lr;
@@ -1543,6 +1566,7 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "water_settings_checks.h"
 #include "water_fft_checks.h"
 #include "water_checks.h"
+#include "multisampling_checks.h"
 
 void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3 at,
                                    const float* proj, const D3DVIEWPORT9& world)
@@ -1615,10 +1639,13 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     if (!h.d3d)
         return 1;
 
+    Config withoutMultisampling = {};
+    withoutMultisampling.multisampling = false;
+    vf_test_set_config(&withoutMultisampling);
     D3DMULTISAMPLE_TYPE ms = D3DMULTISAMPLE_4_SAMPLES;
     Check(h.d3d->CheckDeviceMultiSampleType(0, D3DDEVTYPE_HAL, D3DFMT_X8R8G8B8, TRUE, ms, nullptr) ==
               D3DERR_NOTAVAILABLE,
-          "multisampling reported unavailable while fog is enabled");
+          "with Multisampling=0 multisampling is reported unavailable while fog is enabled");
 
     h.pp.Windowed = TRUE;
     h.pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
@@ -2043,6 +2070,8 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     ULONG devRefs = h.dev->Release();
     ULONG d3dRefs = h.d3d->Release();
     Check(devRefs == 0 && d3dRefs == 0, "wrapper reference counts reach zero");
+    multisampling_checks::CheckMultisampling(realCreate, h.window, outDir, FullPath(iniPath));
+    vf_test_set_config(&restored);
     DestroyWindow(h.window);
     CoUninitialize();
     std::printf("%s (%d failure%s)\n", g_failures ? "FAILED" : "OK", g_failures, g_failures == 1 ? "" : "s");

@@ -53,6 +53,7 @@ struct Config
     float temporal = 0.85f;
     bool underwater = false;
     bool liquidDepth = true;
+    bool multisampling = true;
     int debugView = 0;
     bool sunMarker = false;
     int logLevel = 1;

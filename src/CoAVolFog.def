@@ -41,3 +41,6 @@ EXPORTS
     vf_test_water_masks_uploaded
     vf_test_force_water_shading_variant
     vf_test_water_shading_variant
+    vf_test_force_depth_copy_method
+    vf_test_read_scene_depth
+    vf_test_multisampling

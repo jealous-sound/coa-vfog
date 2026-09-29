@@ -709,8 +709,8 @@ bool WaterRenderer::UsableTargets(IDirect3DSurface9* depthSurface, const D3DVIEW
         return Skip("surface description failed");
     if (rtDesc.Width != depthDesc.Width || rtDesc.Height != depthDesc.Height)
         return Skip("render target and depth sizes differ");
-    if (rtDesc.MultiSampleType != D3DMULTISAMPLE_NONE)
-        return Skip("multisampled render target");
+    if (!SameSampleCount(rtDesc, depthDesc))
+        return Skip("render target and depth sample counts differ");
     if (vp.Width < kMinWorldViewportSide || vp.Height < kMinWorldViewportSide || vp.X + vp.Width > depthDesc.Width ||
         vp.Y + vp.Height > depthDesc.Height)
         return Skip("world viewport outside the render target");
@@ -798,8 +798,8 @@ void WaterRenderer::RestoreClientStencil(IDirect3DDevice9* dev)
         dev->SetRenderState(kPassStencil[i].state, m_clientStencil[i]);
 }
 
-bool WaterRenderer::Begin(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* depthSurface,
-                          const FrameInputs& in, const WaterInputs& water, const Config& cfg)
+bool WaterRenderer::Begin(IDirect3DDevice9* dev, const SceneDepth& depth, const FrameInputs& in,
+                          const WaterInputs& water, const Config& cfg)
 {
     m_skip = "";
     if (m_armed)
@@ -810,7 +810,7 @@ bool WaterRenderer::Begin(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture
         return Skip("camera under water");
     if (!GlobalWaterData().Loaded())
         return Skip("no water data");
-    if (!dev || !depthTexture || !depthSurface)
+    if (!dev || !depth.texture || !depth.bound)
         return Skip("fog depth unavailable");
     if (dev->TestCooperativeLevel() != D3D_OK)
         return Skip("device not ready");
@@ -820,7 +820,7 @@ bool WaterRenderer::Begin(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture
     SaveTargets(dev);
     D3DSURFACE_DESC depthDesc = {};
     const D3DVIEWPORT9& vp = in.viewport;
-    if (!UsableTargets(depthSurface, vp, depthDesc) || !EnsureCopies(dev, m_saved.colour[0], vp.Width, vp.Height))
+    if (!UsableTargets(depth.bound, vp, depthDesc) || !EnsureCopies(dev, m_saved.colour[0], vp.Width, vp.Height))
     {
         ReleaseTargets();
         return false;
@@ -837,20 +837,21 @@ bool WaterRenderer::Begin(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture
     CaptureClientState();
     for (DWORD i = 1; i < kMaxRenderTargets; ++i)
         dev->SetRenderTarget(i, nullptr);
-    const bool copied = CopySceneColour(dev, m_saved.colour[0], vp);
+    const bool colourCopied = CopySceneColour(dev, m_saved.colour[0], vp);
+    const bool copied = colourCopied && depth.Refresh(dev);
     if (copied)
     {
         dev->SetDepthStencilSurface(nullptr);
         SetPassState(dev);
         RaiseInjectedFault(WaterFaultStage::Begin);
-        CopyLinearDepth(dev, depthTexture, m_sceneDepth);
-        ClearWaterStencil(dev, m_saved.colour[0], depthSurface, vp);
+        CopyLinearDepth(dev, depth.texture, m_sceneDepth);
+        ClearWaterStencil(dev, m_saved.colour[0], depth.bound, vp);
     }
     RestoreTargets(dev);
     if (!copied)
     {
         m_gpuTimer.Cancel();
-        return Skip("scene colour copy failed");
+        return Skip(colourCopied ? "multisampled depth copy failed" : "scene colour copy failed");
     }
     m_gpuTimer.Pause();
 
@@ -1171,7 +1172,7 @@ void WaterRenderer::ShadeClasses(IDirect3DDevice9* dev, IDirect3DSurface9* targe
     }
 }
 
-bool WaterRenderer::End(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* depthSurface)
+bool WaterRenderer::End(IDirect3DDevice9* dev, const SceneDepth& depth)
 {
     m_shadedClasses = 0;
     m_shadedClassMask = 0;
@@ -1181,7 +1182,7 @@ bool WaterRenderer::End(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, 
     RestoreClientStencil(dev);
     m_armed = false;
     m_gpuTimer.Resume();
-    const bool shaded = ShadeTaggedWater(dev, depthTexture, depthSurface);
+    const bool shaded = ShadeTaggedWater(dev, depth);
     m_gpuTimer.End();
     AddToSummary(shaded);
     LogSummaryWhenDue(dev);
@@ -1233,17 +1234,16 @@ void WaterRenderer::LogSummaryWhenDue(IDirect3DDevice9* dev)
     m_summaryWaveTiles = 0;
 }
 
-bool WaterRenderer::ShadeTaggedWater(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture,
-                                     IDirect3DSurface9* depthSurface)
+bool WaterRenderer::ShadeTaggedWater(IDirect3DDevice9* dev, const SceneDepth& depth)
 {
     if (!AnyClassDrawn())
         return Skip("no water drawn");
-    if (!dev || !depthTexture || !depthSurface || dev->TestCooperativeLevel() != D3D_OK || !m_state ||
+    if (!dev || !depth.texture || !depth.bound || dev->TestCooperativeLevel() != D3D_OK || !m_state ||
         !m_sceneColour)
         return Skip("device not ready");
     SaveTargets(dev);
     D3DSURFACE_DESC depthDesc = {};
-    if (!UsableTargets(depthSurface, m_in.viewport, depthDesc))
+    if (!UsableTargets(depth.bound, m_in.viewport, depthDesc))
     {
         ReleaseTargets();
         return false;
@@ -1254,14 +1254,19 @@ bool WaterRenderer::ShadeTaggedWater(IDirect3DDevice9* dev, IDirect3DTexture9* d
     CaptureClientState();
     for (DWORD i = 1; i < kMaxRenderTargets; ++i)
         dev->SetRenderTarget(i, nullptr);
+    if (!depth.Refresh(dev))
+    {
+        RestoreTargets(dev);
+        return Skip("multisampled depth copy failed");
+    }
     dev->SetDepthStencilSurface(nullptr);
     SetPassState(dev);
     RaiseInjectedFault(WaterFaultStage::End);
     m_wavesSimulated = wavesPrepared && SimulateWaves(dev, seconds);
     dev->SetRenderTarget(1, nullptr);
     SetPassState(dev);
-    CopyLinearDepth(dev, depthTexture, m_waterDepth);
-    ShadeClasses(dev, m_saved.colour[0], depthSurface, seconds);
+    CopyLinearDepth(dev, depth.texture, m_waterDepth);
+    ShadeClasses(dev, m_saved.colour[0], depth.bound, seconds);
     RestoreTargets(dev);
     m_lastSeconds = seconds;
     LogWaveState();

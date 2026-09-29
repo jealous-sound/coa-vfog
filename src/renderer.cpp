@@ -670,8 +670,7 @@ void Renderer::LogFrameSummary(IDirect3DDevice9* dev, long long now, const Frame
     }
 }
 
-bool Renderer::Render(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* boundDepthStencil,
-                      const FrameInputs& in, const Config& cfg)
+bool Renderer::Render(IDirect3DDevice9* dev, const SceneDepth& depth, const FrameInputs& in, const Config& cfg)
 {
     m_skip = "";
     if (dev->TestCooperativeLevel() != D3D_OK)
@@ -691,14 +690,14 @@ bool Renderer::Render(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, ID
     D3DSURFACE_DESC depthDesc = {};
     if (!saved[0])
         Skip("no render target");
-    else if (savedDepth != boundDepthStencil)
+    else if (!depth.texture || savedDepth != depth.bound)
         Skip("fog depth surface not bound");
-    else if (FAILED(saved[0]->GetDesc(&rtDesc)) || FAILED(boundDepthStencil->GetDesc(&depthDesc)))
+    else if (FAILED(saved[0]->GetDesc(&rtDesc)) || FAILED(depth.bound->GetDesc(&depthDesc)))
         Skip("surface description failed");
     else if (rtDesc.Width != depthDesc.Width || rtDesc.Height != depthDesc.Height)
         Skip("render target and depth sizes differ");
-    else if (rtDesc.MultiSampleType != D3DMULTISAMPLE_NONE)
-        Skip("multisampled render target");
+    else if (!SameSampleCount(rtDesc, depthDesc))
+        Skip("render target and depth sample counts differ");
     else
     {
         IDirect3DVertexBuffer9* stream = nullptr;
@@ -709,7 +708,7 @@ bool Renderer::Render(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, ID
         for (DWORD i = 1; i < 4; ++i)
             if (saved[i])
                 dev->SetRenderTarget(i, nullptr);
-        ok = RenderPasses(dev, depthTexture, saved[0], depthDesc, in, cfg);
+        ok = RenderPasses(dev, depth, saved[0], depthDesc, in, cfg);
         dev->SetRenderTarget(0, saved[0]);
         for (DWORD i = 1; i < 4; ++i)
             if (saved[i])
@@ -726,7 +725,7 @@ bool Renderer::Render(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, ID
     return ok;
 }
 
-bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* target,
+bool Renderer::RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDirect3DSurface9* target,
                             const D3DSURFACE_DESC& depthDesc, const FrameInputs& in, const Config& cfg)
 {
     const D3DVIEWPORT9 vp = in.viewport;
@@ -810,6 +809,12 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
 
     if (LogEnabled(LogLevel::Info))
         m_gpuTimer.Begin(dev);
+    if (!depth.Refresh(dev))
+    {
+        m_gpuTimer.Cancel();
+        return Skip("multisampled depth copy failed");
+    }
+    IDirect3DTexture9* const depthTexture = depth.texture;
     dev->SetDepthStencilSurface(nullptr);
     dev->SetVertexShader(m_vs);
     dev->SetVertexDeclaration(m_decl);
