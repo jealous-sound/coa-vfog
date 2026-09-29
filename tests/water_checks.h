@@ -100,6 +100,9 @@ constexpr double kMinReferenceSlopeDetail = 3.0;
 constexpr double kMinEdgeDetailRatio = 0.5;
 constexpr Vec3 kOccludedBoxLow = {120, -40, kBasinFloorZ};
 constexpr Vec3 kOccludedBoxHigh = {126, -34, 8};
+constexpr int kReflectionMatchTolerance = 3;
+constexpr size_t kMinWallReflectionPixels = 50;
+constexpr double kMinReflectionFogChange = 8.0;
 constexpr int kOpaqueLiquidCountWord = 1;
 constexpr int kTransparentLiquidCountWord = 5;
 
@@ -1549,6 +1552,84 @@ void CheckOccluderEdgesKeepWaveDetail(Harness& h, const Config& base)
     AssignWaterData(MakeSyntheticWaterData());
 }
 
+bool NearColour(const unsigned char* bgr, DWORD colour, int tolerance)
+{
+    for (int channel = 0; channel < 3; ++channel)
+        if (std::abs(bgr[channel] - static_cast<int>((colour >> (8 * channel)) & 0xFF)) > tolerance)
+            return false;
+    return true;
+}
+
+int ColourDistance(const unsigned char* a, const double* b)
+{
+    return static_cast<int>(std::fabs(a[0] - b[0]) + std::fabs(a[1] - b[1]) + std::fabs(a[2] - b[2]));
+}
+
+void CheckReflectionsCarryTheirSourcesFog(Harness& h, const Config& base)
+{
+    BasinClient client(h, DefaultWaterView());
+    Config clear = WaterConfig(base);
+    clear.density = 0.0f;
+    Config fogged = WaterConfig(base);
+    WaterFrame stock;
+    stock.calls = WaterCalls::None;
+    WaterFrame mask = stock;
+    mask.opaqueMask = true;
+    WaterFrame reflection;
+    WaterFrame composited;
+    composited.fogDepthView = true;
+    vf_test_set_config(&clear);
+    const WaterFrameResult unfoggedScene = client.Render(stock);
+    const WaterFrameResult water = client.Render(mask);
+    clear.waterDebugView = kReflectionDebugView;
+    vf_test_set_config(&clear);
+    const WaterFrameResult clearReflection = client.Render(reflection);
+    vf_test_set_config(&fogged);
+    const WaterFrameResult foggedScene = client.Render(composited);
+    SaveImage(g_harnessOutDir, L"water-fogged-frame", foggedScene.image);
+    fogged.waterDebugView = kReflectionDebugView;
+    vf_test_set_config(&fogged);
+    const WaterFrameResult foggedReflection = client.Render(reflection);
+    double wall[3] = {};
+    size_t wallPixels = 0;
+    for (UINT y = 0; y < water.image.h; ++y)
+        for (UINT x = 0; x < water.image.w; ++x)
+            if (NearColour(unfoggedScene.image.At(x, y), kFarWallColour, 0))
+            {
+                for (int channel = 0; channel < 3; ++channel)
+                    wall[channel] += foggedScene.image.At(x, y)[channel];
+                ++wallPixels;
+            }
+    for (double& channel : wall)
+        channel /= std::max<size_t>(wallPixels, 1);
+    size_t reflections = 0;
+    double clearDistance = 0.0;
+    double foggedDistance = 0.0;
+    double change = 0.0;
+    for (UINT y = 0; y < water.image.h; ++y)
+        for (UINT x = 0; x < water.image.w; ++x)
+        {
+            const unsigned char* before = clearReflection.image.At(x, y);
+            if (!IsMaskPixel(water.image, x, y) || !NearColour(before, kFarWallColour, kReflectionMatchTolerance))
+                continue;
+            const unsigned char* after = foggedReflection.image.At(x, y);
+            ++reflections;
+            clearDistance += ColourDistance(before, wall);
+            foggedDistance += ColourDistance(after, wall);
+            change += std::abs(after[0] - before[0]) + std::abs(after[1] - before[1]) + std::abs(after[2] - before[2]);
+        }
+    const double count = static_cast<double>(std::max<size_t>(reflections, 1));
+    std::printf("     far wall: %zu pixels, fogged %.0f %.0f %.0f; %zu water pixels reflect it, distance to the fogged "
+                "wall %.1f clear, %.1f fogged\n",
+                wallPixels, wall[2], wall[1], wall[0], reflections, clearDistance / count, foggedDistance / count);
+    Check(wallPixels > 0 && reflections >= kMinWallReflectionPixels && change / count >= kMinReflectionFogChange &&
+              foggedDistance < clearDistance,
+          "with the fog replacing the stock fog, a reflection is fogged along its reflected path toward its fogged "
+          "source");
+    const Config on = WaterConfig(base);
+    vf_test_set_config(&on);
+}
+
 void CheckResetKeepsWater(Harness& h, BasinClient& client, const Config& base)
 {
     vf_test_disable_wave_simulation(1);
@@ -1712,6 +1793,7 @@ void CheckGrazingReflectionsMissTheShore(Harness& h, const Config& base, const s
     BasinClient client(h, MakeWaterView(kGrazingEye, kGrazingTarget));
     Config reflection = WaterConfig(base);
     reflection.waterDebugView = kReflectionDebugView;
+    reflection.density = 0.0f;
     vf_test_set_config(&reflection);
     WaterFrame mask;
     mask.calls = WaterCalls::None;
@@ -1960,6 +2042,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     CheckFlatWaterHasNoCrestFoam(client, base);
     CheckShoreFoamWidthFollowsTheSlope(h, base);
     CheckOccluderEdgesKeepWaveDetail(h, base);
+    CheckReflectionsCarryTheirSourcesFog(h, base);
     CheckResetKeepsWater(h, client, base);
     SaveRealDataViews(h, base, waterDataPath, outDir);
 

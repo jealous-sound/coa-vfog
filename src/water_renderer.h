@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "engine.h"
+#include "fog_model.h"
 #include "gpu_timing.h"
 #include "water_fft.h"
 #include "water_types.h"
@@ -61,6 +62,21 @@ private:
         float x, y, z, w;
     };
 
+    struct ReflectionFogLayer
+    {
+        Float4 curve;
+        Float4 height;
+        Float4 emissive;
+        Float4 diffuse;
+        Float4 scattering;
+    };
+
+    struct ReflectionFog
+    {
+        ReflectionFogLayer layers[kFogLayers];
+        Float4 range;
+    };
+
     struct ShadingConstants
     {
         Float4 light;
@@ -85,6 +101,7 @@ private:
         Float4 depthFoamScroll;
         Float4 depthDecode;
         Float4 maskTints[kWaterShadedMaskSlots * 2];
+        ReflectionFog reflectionFog;
     };
 
     struct SavedTargets
@@ -127,6 +144,7 @@ private:
     void FillClassConstants(ShadingConstants& c, const WaterPreset& preset, WaterClass waterClass,
                             double seconds) const;
     bool ShadeTaggedWater(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* depthSurface);
+    void BuildReflectionFog();
     void AddToSummary(bool shaded);
     void LogSummaryWhenDue(IDirect3DDevice9* dev);
     void DrawFullscreen(IDirect3DDevice9* dev);
@@ -159,6 +177,7 @@ private:
     WaterInputs m_water = {};
     Config m_cfg;
     float m_common[9][4] = {};
+    ReflectionFog m_reflectionFog = {};
     DWORD m_clientStencil[kWaterStencilStates] = {};
     unsigned m_draws[kWaterClassCount] = {};
     bool m_stencilArmed = false;

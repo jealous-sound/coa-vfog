@@ -19,7 +19,7 @@
 
 namespace
 {
-constexpr UINT kWaterPixelConstants = 48;
+constexpr UINT kWaterPixelConstants = 72;
 constexpr DWORD kWaterSamplerStages = 16;
 constexpr UINT kCommonConstants = 9;
 constexpr UINT kShadingFirstConstant = 9;
@@ -54,6 +54,7 @@ constexpr double kSummarySeconds = 60.0;
 constexpr size_t kSummaryTextSize = 96;
 constexpr int kLowQuality = 1;
 constexpr int kSkyReflectionsOnlyVariant = 0;
+constexpr float kReflectionFogActive = 1.0f;
 constexpr int kFftResolutionLow = 128;
 constexpr int kFftResolution = 256;
 constexpr int kFftReferenceResolution = 256;
@@ -1004,6 +1005,8 @@ void WaterRenderer::FillClassConstants(ShadingConstants& c, const WaterPreset& p
                     ScrollOffset(seconds, 0, preset.shoreFoam[3]), ScrollOffset(seconds, 1, preset.shoreFoam[3])};
     c.depthFoamScroll = {ScrollOffset(seconds, 0, preset.depthFadeFoam[3]),
                          ScrollOffset(seconds, 1, preset.depthFadeFoam[3]), 0.0f, 0.0f};
+    if (!noSun)
+        c.reflectionFog = m_reflectionFog;
     const float packedUnit = kWaterMaxViewDepth / kPackedDepthLevels * kByteMax;
     c.depthDecode = m_packedDepth ? Float4{packedUnit * kHighByteWeight, packedUnit * kMidByteWeight, packedUnit, 0.0f}
                                   : Float4{1.0f, 0.0f, 0.0f, 0.0f};
@@ -1020,6 +1023,45 @@ void WaterRenderer::FillClassConstants(ShadingConstants& c, const WaterPreset& p
         c.maskTints[slot * 2] = {low[0], low[1], low[2], 1.0f};
         c.maskTints[slot * 2 + 1] = {high[0], high[1], high[2], 0.0f};
     }
+}
+
+void WaterRenderer::BuildReflectionFog()
+{
+    m_reflectionFog = {};
+    if (m_water.stockFogApplies)
+        return;
+    AuthoredFog authored = {};
+    const bool hasAuthored = m_cfg.dataMode == 1 &&
+                             GlobalFogData().Resolve(m_in.mapId, m_in.camPos, m_in.dayFraction, m_in.lightParams,
+                                                     authored);
+    const FogParams fog = BuildFogParams(m_in, m_cfg, hasAuthored ? &authored : nullptr);
+    const float exposure = fog.authored ? m_cfg.classicExposure : m_cfg.exposure;
+    auto linearScattered = [&fog, exposure](const float* rgb) {
+        float out[3];
+        for (int c = 0; c < 3; ++c)
+            out[c] = (fog.linear ? rgb[c] : std::pow(std::max(rgb[c], 0.0f), kDisplayGamma)) * exposure;
+        return Float4{out[0], out[1], out[2], 0.0f};
+    };
+    for (int i = 0; i < kFogLayers; ++i)
+    {
+        const FogLayer& layer = fog.layers[i];
+        const float shadow = layer.shadowed * (1.0f - fog.lightAboveHorizon);
+        float emissive[3];
+        float diffuse[3];
+        for (int c = 0; c < 3; ++c)
+        {
+            emissive[c] = layer.emissive[c] + (layer.shadowEmissive[c] - layer.emissive[c]) * shadow;
+            diffuse[c] = layer.diffuse[c] * (1.0f - shadow);
+        }
+        const float density = layer.density * (1.0f + (layer.shadowDensity - 1.0f) * shadow);
+        ReflectionFogLayer& out = m_reflectionFog.layers[i];
+        out.curve = {layer.start, density, layer.strength, layer.exponent};
+        out.height = {layer.upperHeight, layer.upperFalloff, layer.lowerHeight, layer.lowerFalloff};
+        out.emissive = linearScattered(emissive);
+        out.diffuse = linearScattered(diffuse);
+        out.scattering = {layer.g, layer.isotropic, layer.endDistance, layer.skyFalloff};
+    }
+    m_reflectionFog.range = {fog.maxDistance, fog.maxDistance, 0.0f, kReflectionFogActive};
 }
 
 void WaterRenderer::BindClassTextures(IDirect3DDevice9* dev, const WaterPreset& preset)
@@ -1166,6 +1208,7 @@ bool WaterRenderer::ShadeTaggedWater(IDirect3DDevice9* dev, IDirect3DTexture9* d
     }
     const double seconds = WaterSeconds();
     const bool wavesPrepared = PrepareWaves(dev);
+    BuildReflectionFog();
     CaptureClientState();
     for (DWORD i = 1; i < kMaxRenderTargets; ++i)
         dev->SetRenderTarget(i, nullptr);

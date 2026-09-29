@@ -24,6 +24,8 @@ float4 cFoamScroll : register(c31);
 float4 cDepthFoamScroll : register(c32);
 float4 cDepthDecode : register(c33);
 float4 cMaskTints[10] : register(c34);
+float4 cReflectionFogLayers[20] : register(c44);
+float4 cReflectionFogRange : register(c64);
 
 sampler2D sSceneColour : register(s0);
 sampler2D sSceneDepth : register(s1);
@@ -176,6 +178,21 @@ float3 MaskTintLow(int slot)
 float MaskPresent(int slot)
 {
     return cMaskTints[slot * 2].w;
+}
+
+bool ReflectionFogActive()
+{
+    return cReflectionFogRange.w > 0.5;
+}
+
+float ReflectionFogCurveRange()
+{
+    return cReflectionFogRange.x;
+}
+
+float ReflectionFogSkyEnd()
+{
+    return cReflectionFogRange.y;
 }
 
 float3 MaskTintHigh(int slot)

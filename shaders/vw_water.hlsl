@@ -53,8 +53,14 @@ float4 main(float2 pixelIndex : VPOS) : COLOR0
     float3 colour = lerp(water, foam, foamAlbedo.a);
 
     float3 R = ReflectedDirection(V, N);
-    float4 screenReflection = TraceScreenReflection(w, pixel, R);
-    float3 reflected = lerp(SkyColour(R.z), screenReflection.rgb, screenReflection.a);
+    float2 hitUv;
+    float4 screenReflection = TraceScreenReflection(w, pixel, R, hitUv);
+    float3 sky = 0;
+    [branch] if (screenReflection.a < 1)
+        sky = FoggedSkyReflection(w, R, SkyColour(R.z));
+    [branch] if (screenReflection.a > 0)
+        screenReflection.rgb = FoggedScreenReflection(w, R, screenReflection.rgb, hitUv);
+    float3 reflected = lerp(sky, screenReflection.rgb, screenReflection.a);
     float3 environment = reflected * EnvironmentBrdf(envRoughness, NoV) * ReflectionStrength();
     float3 H = normalize(V + L);
     float environmentAttenuation = 1 - FresnelSchlick(dot(H, V)) * SunVisibility();

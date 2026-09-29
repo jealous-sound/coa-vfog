@@ -14,6 +14,7 @@ struct WaterPixel
     float sceneZ;
     float3 position;
     float3 toCamera;
+    float cameraDistance;
     float columnDepth;
     float2 footprintX;
     float2 footprintY;
@@ -60,6 +61,7 @@ WaterPixel ReconstructWaterPixel(float2 pixel)
     float3 worldRay = ViewToWorldDirection(ViewRayAtUnitDepth(pixel));
     w.position = CameraPositionWorld() + worldRay * w.waterZ;
     w.toCamera = normalize(-worldRay);
+    w.cameraDistance = w.waterZ * length(worldRay);
     w.columnDepth = max(0, (w.sceneZ - w.waterZ) * -worldRay.z);
     float3 rayStepX = ViewToWorldDirection(ViewRayAtUnitDepth(pixel + float2(1, 0))) - worldRay;
     float3 rayStepY = ViewToWorldDirection(ViewRayAtUnitDepth(pixel + float2(0, 1))) - worldRay;
