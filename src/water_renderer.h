@@ -170,6 +170,9 @@ private:
     bool m_packedDepth = false;
     bool m_packedDepthForcedCopies = false;
     bool m_copyFailed = false;
+    UINT m_loggedCopyW = 0;
+    UINT m_loggedCopyH = 0;
+    bool m_loggedPackedDepth = false;
 
     SavedTargets m_saved;
     bool m_stateCaptured = false;

@@ -542,7 +542,12 @@ bool WaterRenderer::EnsureCopies(IDirect3DDevice9* dev, IDirect3DSurface9* targe
     m_copyW = w;
     m_copyH = h;
     m_packedDepthForcedCopies = g_packedDepthForced;
-    VF_LOG_INFO("water copies: %ux%u, depth %s", w, h, m_packedDepth ? "packed rgba8" : "r32f");
+    const bool newCopies = w != m_loggedCopyW || h != m_loggedCopyH || m_packedDepth != m_loggedPackedDepth;
+    m_loggedCopyW = w;
+    m_loggedCopyH = h;
+    m_loggedPackedDepth = m_packedDepth;
+    LogWrite(newCopies ? LogLevel::Info : LogLevel::Debug, "water copies: %ux%u, depth %s", w, h,
+             m_packedDepth ? "packed rgba8" : "r32f");
     return true;
 }
 
