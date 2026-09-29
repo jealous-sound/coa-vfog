@@ -25,6 +25,7 @@ enum class WaterFaultStage
 };
 
 void InjectWaterFault(WaterFaultStage stage);
+void FailWaterMaskUploads(int count);
 void ForceWaterSummary();
 
 constexpr int kWaterQualityLevels = 3;
@@ -55,6 +56,7 @@ public:
     unsigned ShadedClasses() const { return m_shadedClassMask; }
     unsigned HeldResources() const;
     int FoamMaskPool() const;
+    int UploadedMasks() const;
     const char* LastSkipReason() const { return m_skip; }
 
 private:
@@ -163,7 +165,9 @@ private:
     IDirect3DTexture9* m_flat = nullptr;
     std::vector<IDirect3DTexture9*> m_masks;
     bool m_masksUploaded = false;
+    int m_maskRetryPasses = 0;
     uint32_t m_maskRevision = 0;
+    uint32_t m_loggedMaskRevision = 0;
     bool m_masksLogged = false;
     int m_loggedMaskUploads = 0;
     UINT m_copyW = 0;

@@ -60,6 +60,8 @@ extern "C" __declspec(dllimport) int __cdecl vf_test_water_status(const char**);
 extern "C" __declspec(dllimport) const void* __cdecl vf_test_water_pass_thunk(uintptr_t);
 extern "C" __declspec(dllimport) void __cdecl vf_test_water_pass_begin_reuses_argument_slot(int);
 extern "C" __declspec(dllimport) void __cdecl vf_test_record_fog_frame(int, int, const char*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_fail_water_mask_uploads(int);
+extern "C" __declspec(dllimport) int __cdecl vf_test_water_masks_uploaded();
 
 namespace
 {

@@ -107,6 +107,7 @@ constexpr double kMinReflectionFogChange = 8.0;
 constexpr int kOpaqueLiquidCountWord = 1;
 constexpr int kTransparentLiquidCountWord = 5;
 constexpr int kTransparentLiquidPass = 1;
+constexpr int kMaxMaskRetryPasses = 120;
 constexpr Vec3 kLowEye = {225, 0, 0.3f};
 constexpr Vec3 kLowEyeTarget = {225, 100, 0.3f};
 constexpr uint32_t kBlackSky = 0xFF000000;
@@ -1513,6 +1514,33 @@ void CheckFaultedFirstBeginReleasesItsResources(BasinClient& client, const Confi
           "created at the frame end");
 }
 
+void CheckFailedFoamMaskUploadsRetry(BasinClient& client, const Config& base)
+{
+    const Config on = WaterConfig(base);
+    vf_test_set_config(&on);
+    const SyntheticWaterData data = MakeSyntheticWaterData();
+    const int maskCount = static_cast<int>(data.maskInfo.size());
+    const bool assigned = AssignWaterData(data);
+    vf_test_fail_water_mask_uploads(1);
+    WaterFrame frame;
+    const WaterFrameResult failed = client.Render(frame);
+    const int afterFailure = vf_test_water_masks_uploaded();
+    int passes = 0;
+    int uploaded = afterFailure;
+    while (uploaded < maskCount && passes < kMaxMaskRetryPasses)
+    {
+        client.Render(frame);
+        ++passes;
+        uploaded = vf_test_water_masks_uploaded();
+    }
+    vf_test_fail_water_mask_uploads(0);
+    std::printf("     foam masks: %d of %d after a failed upload, %d after %d more water passes\n", afterFailure,
+                maskCount, uploaded, passes);
+    Check(assigned && failed.began && afterFailure == maskCount - 1 && passes > 1 && uploaded == maskCount,
+          "a foam mask whose upload failed is uploaded again a few water passes later instead of staying flat "
+          "until the next Reset");
+}
+
 SyntheticWaterData WaveFoamOnlyLake()
 {
     SyntheticWaterData data = MakeSyntheticWaterData();
@@ -2303,6 +2331,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     CheckWaterStatusListsTheShadedClasses(client, base);
     CheckWaterOffReleasesResources(client, base);
     CheckFaultedFirstBeginReleasesItsResources(client, base);
+    CheckFailedFoamMaskUploadsRetry(client, base);
     CheckFlatWaterHasNoCrestFoam(client, base);
     CheckShoreFoamWidthFollowsTheSlope(h, base);
     CheckOccluderEdgesKeepWaveDetail(h, base);

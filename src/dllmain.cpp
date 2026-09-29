@@ -258,3 +258,13 @@ extern "C" void __cdecl vf_test_record_fog_frame(int rendered, int cameraUnderLi
 {
     RecordHookedFogFrame(rendered != 0, cameraUnderLiquid != 0, skip);
 }
+
+extern "C" void __cdecl vf_test_fail_water_mask_uploads(int count)
+{
+    FailWaterMaskUploads(count);
+}
+
+extern "C" int __cdecl vf_test_water_masks_uploaded()
+{
+    return UploadedWaterMasks(LatestFogDevice());
+}

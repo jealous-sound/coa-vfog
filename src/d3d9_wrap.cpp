@@ -948,3 +948,8 @@ int WaterFoamMaskPool(FogDevice* device)
 {
     return device ? device->Water().FoamMaskPool() : -1;
 }
+
+int UploadedWaterMasks(FogDevice* device)
+{
+    return device ? device->Water().UploadedMasks() : 0;
+}

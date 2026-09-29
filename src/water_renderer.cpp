@@ -54,6 +54,7 @@ constexpr double kSummarySeconds = 60.0;
 constexpr size_t kSummaryTextSize = 96;
 constexpr int kLowQuality = 1;
 constexpr int kSkyReflectionsOnlyVariant = 0;
+constexpr int kMaskUploadRetryPasses = 60;
 constexpr float kReflectionFogActive = 1.0f;
 constexpr int kFftResolutionLow = 128;
 constexpr int kFftResolution = 256;
@@ -113,6 +114,7 @@ double g_secondsOverride = -1.0;
 bool g_waveSimulationDisabled = false;
 bool g_packedDepthForced = false;
 WaterFaultStage g_injectedFault = WaterFaultStage::None;
+int g_failingMaskUploads = 0;
 bool g_summaryForced = false;
 
 void RaiseInjectedFault(WaterFaultStage stage)
@@ -319,6 +321,11 @@ IDirect3DTexture9* CreateMaskStaging(IDirect3DDevice9* dev, const WaterMaskLevel
 
 IDirect3DTexture9* CreateMaskTexture(IDirect3DDevice9* dev, const WaterMaskLevels& mask)
 {
+    if (g_failingMaskUploads > 0)
+    {
+        --g_failingMaskUploads;
+        return nullptr;
+    }
     const UINT levels = static_cast<UINT>(mask.levels.size());
     const UINT size = mask.info.size;
     for (D3DFORMAT format : {D3DFMT_L8, D3DFMT_A8R8G8B8})
@@ -368,6 +375,11 @@ void InjectWaterFault(WaterFaultStage stage)
     g_injectedFault = stage;
 }
 
+void FailWaterMaskUploads(int count)
+{
+    g_failingMaskUploads = count;
+}
+
 void ForceWaterSummary()
 {
     g_summaryForced = true;
@@ -415,6 +427,7 @@ void WaterRenderer::ReleaseMasks()
         SafeRelease(mask);
     m_masks.clear();
     m_masksUploaded = false;
+    m_maskRetryPasses = 0;
 }
 
 bool WaterRenderer::Skip(const char* reason)
@@ -574,23 +587,34 @@ bool WaterRenderer::EnsureFlatTexture(IDirect3DDevice9* dev)
 void WaterRenderer::EnsureMasks(IDirect3DDevice9* dev)
 {
     const WaterData& data = GlobalWaterData();
-    if (m_masksUploaded && m_maskRevision == data.Revision())
-        return;
-    ReleaseMasks();
-    int uploaded = 0;
-    for (const WaterMaskLevels& mask : data.Masks())
+    if (m_maskRevision != data.Revision() || m_masks.size() != data.Masks().size())
     {
-        IDirect3DTexture9* texture = CreateMaskTexture(dev, mask);
-        uploaded += texture ? 1 : 0;
-        m_masks.push_back(texture);
+        ReleaseMasks();
+        m_masks.assign(data.Masks().size(), nullptr);
+        m_maskRevision = data.Revision();
     }
-    m_masksUploaded = true;
-    const bool newData = !m_masksLogged || m_maskRevision != data.Revision() || uploaded != m_loggedMaskUploads;
-    m_maskRevision = data.Revision();
+    if (m_masksUploaded)
+        return;
+    if (m_maskRetryPasses > 0)
+    {
+        --m_maskRetryPasses;
+        return;
+    }
+    int uploaded = 0;
+    for (size_t i = 0; i < m_masks.size(); ++i)
+    {
+        if (!m_masks[i])
+            m_masks[i] = CreateMaskTexture(dev, data.Masks()[i]);
+        uploaded += m_masks[i] ? 1 : 0;
+    }
+    m_masksUploaded = uploaded == static_cast<int>(m_masks.size());
+    m_maskRetryPasses = m_masksUploaded ? 0 : kMaskUploadRetryPasses;
+    const bool newData = !m_masksLogged || m_loggedMaskRevision != data.Revision() || uploaded != m_loggedMaskUploads;
+    m_loggedMaskRevision = data.Revision();
     m_masksLogged = true;
     m_loggedMaskUploads = uploaded;
-    LogWrite(newData ? LogLevel::Info : LogLevel::Debug, "water foam masks uploaded: %d of %d", uploaded,
-             static_cast<int>(data.Masks().size()));
+    LogWrite(newData ? LogLevel::Info : LogLevel::Debug, "water foam masks uploaded: %d of %d%s", uploaded,
+             static_cast<int>(m_masks.size()), m_masksUploaded ? "" : "; retrying the others later");
 }
 
 unsigned WaterRenderer::HeldResources() const
@@ -615,6 +639,13 @@ int WaterRenderer::FoamMaskPool() const
             return static_cast<int>(desc.Pool);
     }
     return -1;
+}
+
+int WaterRenderer::UploadedMasks() const
+{
+    return static_cast<int>(std::count_if(m_masks.begin(), m_masks.end(), [](IDirect3DTexture9* mask) {
+        return mask != nullptr;
+    }));
 }
 
 IDirect3DTexture9* WaterRenderer::MaskTexture(int32_t index) const

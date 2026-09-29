@@ -37,3 +37,5 @@ EXPORTS
     vf_test_water_pass_thunk
     vf_test_water_pass_begin_reuses_argument_slot
     vf_test_record_fog_frame
+    vf_test_fail_water_mask_uploads
+    vf_test_water_masks_uploaded
