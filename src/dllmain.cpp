@@ -268,3 +268,13 @@ extern "C" int __cdecl vf_test_water_masks_uploaded()
 {
     return UploadedWaterMasks(LatestFogDevice());
 }
+
+extern "C" void __cdecl vf_test_force_water_shading_variant(int variant)
+{
+    ForceWaterShadingVariant(variant);
+}
+
+extern "C" int __cdecl vf_test_water_shading_variant()
+{
+    return LastWaterShadingVariant(LatestFogDevice());
+}

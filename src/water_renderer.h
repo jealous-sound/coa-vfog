@@ -26,6 +26,7 @@ enum class WaterFaultStage
 
 void InjectWaterFault(WaterFaultStage stage);
 void FailWaterMaskUploads(int count);
+void ForceWaterShadingVariant(int variant);
 void ForceWaterSummary();
 
 constexpr int kWaterQualityLevels = 3;
@@ -57,6 +58,7 @@ public:
     unsigned HeldResources() const;
     int FoamMaskPool() const;
     int UploadedMasks() const;
+    int LastShadingVariant() const { return m_shadingVariant; }
     const char* LastSkipReason() const { return m_skip; }
 
 private:
@@ -194,6 +196,7 @@ private:
     bool m_wavesAttempted = false;
     uint32_t m_waveTiles = 0;
     WaterFftSettings m_waveSettings = {};
+    int m_shadingVariant = -1;
     int m_shadedClasses = 0;
     unsigned m_shadedClassMask = 0;
     GpuTimer m_gpuTimer{"water"};

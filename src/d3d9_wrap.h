@@ -42,3 +42,4 @@ unsigned HeldWaterResources(FogDevice* device);
 bool WaterPassArmed(FogDevice* device);
 int WaterFoamMaskPool(FogDevice* device);
 int UploadedWaterMasks(FogDevice* device);
+int LastWaterShadingVariant(FogDevice* device);

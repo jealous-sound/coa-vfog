@@ -115,6 +115,7 @@ bool g_waveSimulationDisabled = false;
 bool g_packedDepthForced = false;
 WaterFaultStage g_injectedFault = WaterFaultStage::None;
 int g_failingMaskUploads = 0;
+int g_forcedShadingVariant = -1;
 bool g_summaryForced = false;
 
 void RaiseInjectedFault(WaterFaultStage stage)
@@ -378,6 +379,11 @@ void InjectWaterFault(WaterFaultStage stage)
 void FailWaterMaskUploads(int count)
 {
     g_failingMaskUploads = count;
+}
+
+void ForceWaterShadingVariant(int variant)
+{
+    g_forcedShadingVariant = variant;
 }
 
 void ForceWaterSummary()
@@ -1135,7 +1141,10 @@ void WaterRenderer::ShadeClasses(IDirect3DDevice9* dev, IDirect3DSurface9* targe
     dev->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_KEEP);
     dev->SetRenderState(D3DRS_STENCILMASK, kStencilAllBits);
     dev->SetRenderState(D3DRS_STENCILWRITEMASK, 0);
-    dev->SetPixelShader(m_shade[ShadingVariant(m_cfg)]);
+    m_shadingVariant = g_forcedShadingVariant >= 0 && g_forcedShadingVariant < kWaterQualityLevels
+                           ? g_forcedShadingVariant
+                           : ShadingVariant(m_cfg);
+    dev->SetPixelShader(m_shade[m_shadingVariant]);
     dev->SetPixelShaderConstantF(0, &m_common[0][0], kCommonConstants);
     BindPointSampler(dev, kSceneColourStage, m_sceneColour, D3DTADDRESS_MIRROR);
     BindPointSampler(dev, kSceneDepthStage, m_sceneDepth, D3DTADDRESS_MIRROR);

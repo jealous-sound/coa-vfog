@@ -108,6 +108,9 @@ constexpr int kOpaqueLiquidCountWord = 1;
 constexpr int kTransparentLiquidCountWord = 5;
 constexpr int kTransparentLiquidPass = 1;
 constexpr int kMaxMaskRetryPasses = 120;
+constexpr int kSkyReflectionsOnlyVariant = 0;
+constexpr int kNoForcedVariant = -1;
+constexpr int kReflectingQualities[] = {2, 3};
 constexpr Vec3 kLowEye = {225, 0, 0.3f};
 constexpr Vec3 kLowEyeTarget = {225, 100, 0.3f};
 constexpr uint32_t kBlackSky = 0xFF000000;
@@ -1331,6 +1334,41 @@ void CheckClassesShadeSeparately(BasinClient& client, const Config& base, const 
           "each drawn class is shaded by its own stencil-tested pass; a class without a preset keeps its water");
 }
 
+void CheckReflectionsOffSelectTheSkyOnlyVariant(BasinClient& client, const Config& base)
+{
+    WaterFrame frame;
+    bool selected = true;
+    bool unchanged = true;
+    for (int quality : kReflectingQualities)
+    {
+        Config cfg = WaterConfig(base);
+        cfg.waterQuality = quality;
+        cfg.waterReflections = 1.0f;
+        vf_test_set_config(&cfg);
+        const bool reflected = client.Render(frame).began;
+        const int reflecting = vf_test_water_shading_variant();
+        cfg.waterReflections = 0.0f;
+        vf_test_set_config(&cfg);
+        const WaterFrameResult skyOnly = client.Render(frame);
+        const int withoutReflections = vf_test_water_shading_variant();
+        vf_test_force_water_shading_variant(reflecting);
+        const WaterFrameResult traced = client.Render(frame);
+        vf_test_force_water_shading_variant(kNoForcedVariant);
+        const bool same = SameImage(skyOnly.image, traced.image);
+        std::printf("     WaterQuality %d: variant %d with reflections, %d without; image with the quality variant "
+                    "unchanged %d\n",
+                    quality, reflecting, withoutReflections, same);
+        selected = selected && reflected && skyOnly.began && reflecting == quality - 1 &&
+                   withoutReflections == kSkyReflectionsOnlyVariant;
+        unchanged = unchanged && traced.began && same;
+    }
+    Check(selected, "WaterReflections=0 selects the variant without screen-space reflections at WaterQuality 2 and 3 "
+                    "(the harness shows the selection, not the in-game saving)");
+    Check(unchanged, "without reflections the sky-only variant shades the same image as the quality variant");
+    const Config on = WaterConfig(base);
+    vf_test_set_config(&on);
+}
+
 void CheckFlatFallback(BasinClient& client, const Config& base, const Image& stock, const std::wstring& outDir)
 {
     vf_test_disable_wave_simulation(1);
@@ -2318,6 +2356,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     CheckUntaggedLiquidKeepsItsColour(client, base);
     CheckClassesShadeSeparately(client, base, outDir);
     CheckFlatFallback(client, base, stock.image, outDir);
+    CheckReflectionsOffSelectTheSkyOnlyVariant(client, base);
     CheckStockFogOnWater(h, base);
     CheckStockFoggedCopyIsFoggedOnce(h, base);
     CheckInteriorIgnoresSun(h, base);
