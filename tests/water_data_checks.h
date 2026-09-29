@@ -326,8 +326,9 @@ void CheckPresets(const WaterData& data)
               Near4(ocean->waveFoam, 0.9f, -0.02f, 0.0f, 0.0f) &&
               Near4(ocean->waveFoamScaling, 5.0f, 12.0f, 20.0f, 0.0f) &&
               Near4(lake->flow, 1.1f, 0.03f, 0.001f, -0.146f) && Near4(interior->flow, 1.1f, 0.03f, 0.01f, -0.146f) &&
-              Near4(lake->roughness, 0.5f, 0.013f, 1.0f, 0.0f),
-          "intensities, foam, flow and roughness follow the H2a Float[] mapping");
+              Near4(lake->roughness, 0.03f, 0.013f, 1.0f, 0.0f),
+          "intensities, foam, flow and roughness follow the H2a Float[] mapping, "
+          "with the sun roughness from Float[27]");
 }
 
 void CheckTilesAndMasks(const WaterData& data)
