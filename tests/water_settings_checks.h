@@ -323,6 +323,14 @@ void CheckWaterLogPolicy()
     Check(failure.write && failure.level == LogLevel::Info && !sameFailure.write && log.SkipsLogged() == 50 &&
               failuresLogged == 49,
           "idle states leave the water's own 50-line skip budget to real failures");
+    WaterStatusLog intermittent;
+    const WaterLogLine first = intermittent.Skip("the water pass did not finish");
+    intermittent.Idle("no water in view");
+    const WaterLogLine returned = intermittent.Skip("the water pass did not finish");
+    const WaterLogLine persisting = intermittent.Skip("the water pass did not finish");
+    Check(first.write && returned.write && returned.level == LogLevel::Info && !persisting.write &&
+              intermittent.SkipsLogged() == 2,
+          "a water failure that returns after idle frames is logged again; one that persists is logged once");
 }
 
 size_t DllLogSize()

@@ -22,6 +22,7 @@ bool WaterStatusLog::IdleStateSeen(const char* state)
 
 WaterLogLine WaterStatusLog::Idle(const char* state)
 {
+    m_lastSkip = "";
     if (SameText(state, m_lastIdle))
         return {false, LogLevel::Debug};
     m_lastIdle = state;
