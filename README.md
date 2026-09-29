@@ -68,6 +68,17 @@ yields slopes, slope variance and a persistent foam state per tile. The shading 
 unknown sun lookup table is replaced by a GGX lobe and its reflection probe by a screen-space march against the
 pre-water copies. Frames without queued water skip the pass entirely.
 
+**Antialiasing.** D3D9 textures cannot be multisampled, so with the game's Multisampling option the depth the
+passes read is a copy. `CheckDeviceMultiSampleType` offers the game's sample counts only while `Multisampling=1`
+and a copy method exists: `NvAPI_D3D9_StretchRectEx` on native NVIDIA D3D9 (the system `d3d9.dll` and
+`nvapi.dll`), or the driver's `RESZ` resolve where `CheckDeviceFormat` reports it (AMD, Intel, DXVK reporting an
+AMD GPU). When the device is created or reset multisampled, the DLL clears the game's depth to two known values,
+copies it and reads the copy back, twice with the values swapped, before the game sees the device; if that fails
+the device is created or reset single-sampled as before and the log says why. Each frame the depth is copied
+before the water pass arms, after the water surfaces and before the fog; the copy holds one sample per pixel. The
+scene-colour copies become resolves of the multisampled back buffer, and the water's stencil tags and shading are
+tested per sample, so water edges are antialiased too.
+
 **View distance.** Ascension's Extensions.dll detours the far-clip clamp (`0x780770`) and caps maps 0, 1, 530
 and 571 at 791.66 yd; the engine allows 1583.33 and instances use it. With `FarClipMax` set, the DLL's calls
 to the clamp lift that cap. Terrain loading, the chunk pool, the WDL horizon and the fog follow the far clip;
@@ -127,10 +138,12 @@ rates from fields 4–9. The water is tuned by eye against this mapping, not mat
 - **D3D9.** The client resolves `Direct3DCreate9` through the delay-loaded `GetProcAddress` slot `[0xB2ED98]`.
   The DLL points that slot at a filter that returns a wrapped `IDirect3D9`. No d3d9 code is patched, so DXVK or
   other `d3d9.dll` builds keep working underneath.
-- **Depth.** The wrapper creates the device without auto depth and binds an `INTZ` texture as the depth-stencil,
-  which the client caches as its world depth. MSAA is reported unavailable and forced off, and
-  `D3DCREATE_PUREDEVICE` is removed. The shaders read depth through the captured world viewport's range and
-  treat anything deeper as beyond the far clip.
+- **Depth.** The shaders read depth from an `INTZ` texture through the captured world viewport's range and treat
+  anything deeper as beyond the far clip; `D3DCREATE_PUREDEVICE` is removed. Without multisampling the wrapper
+  creates the device without auto depth and binds the `INTZ` texture as the depth-stencil, which the client caches
+  as its world depth. When the game asks for multisampling and a depth copy passes its self-test (see
+  Antialiasing), the device keeps the game's own parameters, a multisampled back buffer and automatic depth, and
+  the `INTZ` texture becomes an unbound copy that is refreshed before every pass that reads it.
 - **Hooks.** Five 5-byte call displacements: the world render call (`0x4FB03D`, stock-fog override and restore),
   after the opaque M2 pass (`0x4F911D`, captures camera inputs), the liquid surface pass (`0x4F9170`, forces
   depth writes), world-name text (`0x7E5818`, suppresses depth writes), and before the frame effects
@@ -195,6 +208,27 @@ Engine notes behind the code:
   and WDL passes restore (`0x7F0CB3`, `0x796466`). The distant WDL terrain draws into `[0.998, 0.999]` with its
   own viewport and projection (`0x7960EB`); the sky viewport is set at `0x7F0A79` and the sky writes no depth,
   so depth at or above max(deepest world depth, 0.99903) is sky.
+- Multisampling. The Video options' multisample list (`0x54F1B0`, calling the Gx enumeration `0x682B00` at
+  `0x54F2C1`) comes, for D3D9, from `0x68A170`, which creates its `IDirect3D9` through the wrapped slot and calls
+  `CheckDeviceMultiSampleType` (`+0x2C`, adapter 0, HAL, windowed FALSE) for the display format (`0x68A2B9`) and
+  the depth format (`0x68A2DE`) with each count of the table `0xAD8CE8` = {0, 2, 4, …, 16}; a failure drops the
+  entry (`jl 0x68A3F7`), which is why the list offered only 1x while the wrapper refused every count. The
+  present-parameter builder `0x68E250` sets `MultiSampleType` to the chosen count when it is above 1 (`0x68E3BB`),
+  `MultiSampleQuality` to (levels − 1)·`gxMultisampleQuality` from the device's own `CheckDeviceMultiSampleType`
+  (`0x68E3DC`–`0x68E41E`) and `D3DPRESENTFLAG_LOCKABLE_BACKBUFFER` only without multisampling (`0x68E42D`);
+  `CreateDevice` is called at `0x68F4DE` with flags `0x22` or `0x52`. The `gxMultisample` CVar (registered at
+  `0x76A8FA`) is clamped to 1..16 by its callback `0x769610`, stored at `0xCABCF8`, and prints
+  "set pending gxRestart". Whether that restart resets or recreates the device is not established, so both
+  `CreateDevice` and `Reset` choose between the copied and the bound `INTZ` depth.
+- Depth copy. On an RTX 2060 Max-Q (driver 566.36, 32-bit process) `CheckDeviceFormat` does not report `RESZ`,
+  the `POINTSIZE` resolve leaves `INTZ` unchanged and `StretchRect` from a D24S8 surface into `INTZ` is rejected,
+  multisampled or not. `NvAPI_D3D9_StretchRectEx` copies 2x, 4x and 8x D24S8 exactly into a registered `INTZ`
+  texture, inside or outside a scene and with any filter, taking one sample at silhouettes; it cost about 0.15 ms
+  at 2560×1440 4x. `NvAPI_D3D9_RegisterResource` adds no reference and `Reset` succeeds with the resources
+  registered. The functions come from `nvapi_QueryInterface` with the IDs of NVIDIA's public NVAPI headers:
+  `0x0150E828` Initialize, `0xA064BDFC` RegisterResource, `0xBB2B17AA` UnregisterResource, `0x22DE03AA`
+  StretchRectEx. `StretchRect` from the multisampled back buffer (whole, a sub-rectangle, a quarter-size linear
+  copy) resolves it, and a stencil-EQUAL full-screen pass on multisampled colour and depth tests each sample.
 - Liquid depth. While writes are forced on, the wrapper records the client's own `D3DRS_ZWRITEENABLE` requests
   and re-applies the last one afterwards, so the client's render-state cache stays accurate.
 - World-name text. `0x7E5818` (`E8 23 76 ED FF`) calls `0x6BCE40`, a cdecl wrapper that takes the font batch
@@ -331,7 +365,10 @@ integrals at every quality, temporal filtering and upsampling, point lights and 
 depth overrides, fog-data validation, the GPU timer and depth probe, the settings window and INI saving, and
 `Reset`. The water suites check the water data and its loader, the FFT against a double-precision reference, the
 liquid classification, the water pass driven through the hook entry points (state restoration, stencil tagging,
-optics against a CPU reference, fault recovery) and the water settings. They do not establish in-game appearance or
+optics against a CPU reference, fault recovery) and the water settings. The multisampling suite creates a 4x
+device through the wrapper: the sample counts offered to the game, the kept back buffer and depth, the fog and
+water on the copied depth against the drawn depth and a single-sampled frame, `Reset` 4x→1x→4x, and the fallbacks
+(`Multisampling=0`, no copy method, a failing self-test). They do not establish in-game appearance or
 performance. It writes `before.png`, `after.png`,
 `overlay.png` and the debug views to `build/harness-out`.
 
@@ -369,6 +406,12 @@ time it is classified; idle states (no water in view, camera under water) are lo
 `LogLevel=2`. Each settled change from the settings window, an INI reload or Revert is logged as one line, for
 example `settings: WaterFoam 1 -> 1.5, WaterWind 2 -> 4`.
 
+Each device creation logs the adapter (description, vendor and device IDs, driver version), the sample count
+the game requested and the one used, and either the depth copy method with its self-test result or why
+multisampling is off (`Multisampling=0`, the game's option at 1x, no copy method on this driver, a failed
+self-test); `Reset` logs the same. The first time the game's Video options ask for a sample count, the log says
+whether multisampling is offered or hidden and why.
+
 The depth probe logs raw depth, distance and fog opacity at 25 points on frame 60, then every 60 s up to five
 times (every 30 s without limit at `LogLevel=2`); its rows are read back on a later frame. The first reason a
 fog draw is skipped is logged as `fog skipped: <reason>`; a camera under water is logged once as `fog idle`.
@@ -403,6 +446,7 @@ describe every key. In the game, `Ctrl+F7` opens the same settings in a window (
 | `Temporal` | 0.85 | History weight, 0 = off |
 | `Underwater` | 0 | Keep the effect under water |
 | `LiquidDepth` | 1 | Water surfaces write depth so fog uses their distance (always while modern water is drawn) |
+| `Multisampling` | 1 | Keep the game's Multisampling when its depth can be copied; 0 = off as before (next reset) |
 | `DebugView` | 0 | 1 radiance, 2 transmittance, 3 linear depth |
 | `SunMarker` | 0 | Red dot where the light direction projects |
 | `LogLevel` | 1 | 0 errors, 1 info (frame summary with the fog's GPU time, depth probe; see Log), 2 debug |
@@ -447,6 +491,13 @@ client's LUT grading is not reproduced, so colours still differ from Classic.
   through doorways may differ.
 - The `gxApi d3d9ex` path is not wrapped (fog and the settings window stay off there). The settings window also
   needs a fog device, so it is missing when INTZ depth is unsupported.
+- Multisampling is harness-checked only, with NVAPI on the RTX 2060; how the client restarts its display after a
+  Multisampling change, the in-game cost and the look need an owner test. The `RESZ` path (AMD, Intel, DXVK
+  reporting AMD) has not run on hardware; its self-test decides. DXVK on NVIDIA reports NVIDIA without an NVAPI
+  depth copy and stays single-sampled. The depth copy holds one sample per pixel, so the water shades a
+  partly covered edge pixel with that sample's depth. Multisampling does not smooth alpha-tested leaves and grass
+  (alpha-to-coverage is a follow-up), and without a copy method no post-process antialiasing replaces it (SMAA is
+  a follow-up).
 - The distance fog (`FarFog`, maps without Classic data) has no modern counterpart: it stands in for the stock
   fog up to the 3.3.5 far clip, which is far shorter than the modern client's.
 - `FarClipMax` raises memory use (about four times the loaded terrain in a 32-bit process); Ascension's reason
