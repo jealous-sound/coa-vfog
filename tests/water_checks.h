@@ -42,6 +42,10 @@ constexpr int kInteriorClass = static_cast<int>(WaterClass::Interior);
 constexpr float kNearStockFogStart = 5.0f;
 constexpr float kNearStockFogEnd = 20.0f;
 constexpr uint32_t kStockFogColour = 0xFFC08040;
+constexpr uint32_t kShoreStockFogColour = 0xFF40A0FF;
+constexpr float kShoreStockFogStart = 0.0f;
+constexpr float kShoreStockFogEnd = 300.0f;
+constexpr float kFoggedCopyTolerance = 3.0f / 255.0f;
 constexpr uint32_t kOtherSunColour = 0xFF4060FF;
 constexpr uint32_t kSunsetDirectColour = 0xFFFF7400;
 constexpr uint32_t kSunsetSpriteColour = 0xFFFFE7B6;
@@ -295,6 +299,7 @@ struct WaterView
     D3DVIEWPORT9 world;
     FrameInputs in;
     WaterInputs water;
+    bool sceneStockFogged = false;
 };
 
 WaterInputs SyntheticWaterInputs()
@@ -568,12 +573,31 @@ private:
         dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
         dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
         dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
-        dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+        ApplySceneStockFog();
         dev->SetTexture(0, nullptr);
         SelectDiffuseColour();
         dev->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
         dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, static_cast<UINT>(m_scene.size() / 3), m_scene.data(),
                              sizeof(SceneVertex));
+    }
+
+    void ApplySceneStockFog()
+    {
+        IDirect3DDevice9* dev = m_h.dev;
+        dev->SetRenderState(D3DRS_FOGENABLE, m_v.sceneStockFogged ? TRUE : FALSE);
+        if (!m_v.sceneStockFogged)
+            return;
+        const float start = m_v.in.fogStart;
+        const float end = m_v.in.fogEnd;
+        DWORD startBits = 0;
+        DWORD endBits = 0;
+        std::memcpy(&startBits, &start, sizeof(startBits));
+        std::memcpy(&endBits, &end, sizeof(endBits));
+        dev->SetRenderState(D3DRS_FOGCOLOR, m_v.in.fogColor);
+        dev->SetRenderState(D3DRS_FOGVERTEXMODE, D3DFOG_NONE);
+        dev->SetRenderState(D3DRS_FOGTABLEMODE, D3DFOG_LINEAR);
+        dev->SetRenderState(D3DRS_FOGSTART, startBits);
+        dev->SetRenderState(D3DRS_FOGEND, endBits);
     }
 
     void SelectDiffuseColour()
@@ -1439,6 +1463,55 @@ void CheckStockFogOnWater(Harness& h, const Config& base)
           "where the client's stock fog applies, water beyond its end takes the stock fog colour");
 }
 
+float StockFogVisibilityAt(float viewZ)
+{
+    return std::fmin(std::fmax((kShoreStockFogEnd - viewZ) / (kShoreStockFogEnd - kShoreStockFogStart), 0.0f), 1.0f);
+}
+
+void CheckStockFoggedCopyIsFoggedOnce(Harness& h, const Config& base)
+{
+    SyntheticWaterData data = MakeSyntheticWaterData();
+    for (WaterPreset& preset : data.presets)
+        Set4(preset.scatteringIntensities, 0.0f, 0.0f, 0.0f, 0.0f);
+    const bool assigned = AssignWaterData(data);
+    const Config optics = OpticsOnlyConfig(base);
+    vf_test_set_config(&optics);
+    WaterView view = DefaultWaterView();
+    view.water.stockFogApplies = true;
+    view.sceneStockFogged = true;
+    view.in.fogStart = kShoreStockFogStart;
+    view.in.fogEnd = kShoreStockFogEnd;
+    view.in.fogColor = kShoreStockFogColour;
+    BasinClient client(h, view);
+    WaterFrame frame;
+    const WaterFrameResult fogged = client.Render(frame);
+    const std::vector<AbsorptionSample> samples = FlatFloorSamples(view);
+    const WaterPreset& lake = data.presets[0];
+    float worst = samples.empty() ? 1.0f : 0.0f;
+    for (const AbsorptionSample& s : samples)
+    {
+        const unsigned char* got = fogged.image.At(s.x, s.y);
+        const float waterVisibility = StockFogVisibilityAt(s.waterZ);
+        for (int channel = 0; channel < 3; ++channel)
+        {
+            const int rgb = 2 - channel;
+            const auto floor = static_cast<unsigned char>((kFloorColour >> (8 * channel)) & 0xFF);
+            const float fogEncoded = ((kShoreStockFogColour >> (8 * channel)) & 0xFF) / 255.0f;
+            const float path = s.floorZ - s.waterZ;
+            const float water = Encode(Decode(floor) * std::exp(-lake.absorption[rgb] * lake.absorption[3] * path));
+            const float expected = fogEncoded + waterVisibility * (water - fogEncoded);
+            worst = std::fmax(worst, std::fabs(got[channel] / 255.0f - expected));
+        }
+    }
+    std::printf("     stock-fogged scene copy: %zu samples, worst error %.2f/255 against fogging the water once\n",
+                samples.size(), worst * 255.0f);
+    Check(assigned && fogged.began && !samples.empty() && worst <= kFoggedCopyTolerance,
+          "where the client's stock fog is in the scene copy, refracted water is fogged once, at the water surface");
+    const Config on = WaterConfig(base);
+    vf_test_set_config(&on);
+    AssignWaterData(MakeSyntheticWaterData());
+}
+
 void CheckInteriorIgnoresSun(Harness& h, const Config& base)
 {
     const Config on = WaterConfig(base);
@@ -1738,6 +1811,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     CheckClassesShadeSeparately(client, base, outDir);
     CheckFlatFallback(client, base, stock.image, outDir);
     CheckStockFogOnWater(h, base);
+    CheckStockFoggedCopyIsFoggedOnce(h, base);
     CheckInteriorIgnoresSun(h, base);
     CheckWaterFollowsTheDirectLight(h, base);
     CheckGrazingReflectionsMissTheShore(h, base, outDir);

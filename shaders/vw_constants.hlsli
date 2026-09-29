@@ -93,6 +93,16 @@ float StockFogVisibility(float viewZ)
     return saturate((cStockFog.x - viewZ) * cStockFog.y);
 }
 
+static const float kMinStockFogVisibility = 0.05;
+
+float3 WithoutStockFog(float3 encoded, float viewZ)
+{
+    [branch] if (!StockFogApplies())
+        return encoded;
+    float visibility = StockFogVisibility(viewZ);
+    return saturate((encoded - StockFogColour() * (1 - visibility)) / max(visibility, kMinStockFogVisibility));
+}
+
 float3 AbsorptionPerYard()
 {
     return cAbsorption.rgb;

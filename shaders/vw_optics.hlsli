@@ -18,6 +18,7 @@ static const float kMinVisibilityDenominator = 1e-5;
 
 struct Refraction
 {
+    float3 copied;
     float3 scene;
     float pathDepth;
 };
@@ -44,9 +45,12 @@ Refraction RefractScene(WaterPixel w, float2 slope)
 {
     float2 refractedUv = w.uv + slope * kRefractionUvPerSlopeYard * min(kMaxRefractionDepth, w.sceneZ - w.waterZ);
     float refractedZ = CopiedViewDepth(sSceneDepth, refractedUv);
-    float2 colourUv = refractedZ < w.waterZ ? w.uv : refractedUv;
+    bool unrefracted = refractedZ < w.waterZ;
+    float2 colourUv = unrefracted ? w.uv : refractedUv;
+    float colourZ = unrefracted ? w.sceneZ : refractedZ;
     Refraction r;
-    r.scene = GammaToLinear(tex2Dlod(sSceneColour, float4(colourUv, 0, 0)).rgb);
+    r.copied = tex2Dlod(sSceneColour, float4(colourUv, 0, 0)).rgb;
+    r.scene = GammaToLinear(WithoutStockFog(r.copied, colourZ));
     r.pathDepth = max(0, max(refractedZ, w.sceneZ) - w.waterZ);
     return r;
 }

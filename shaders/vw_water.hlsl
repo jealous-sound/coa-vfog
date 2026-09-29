@@ -60,12 +60,12 @@ float4 main(float2 pixelIndex : VPOS) : COLOR0
     float environmentAttenuation = 1 - FresnelSchlick(dot(H, V)) * SunVisibility();
     float3 sunSpecular = SunVisibility() * SunColour() * SpecularStrength() * SunGlint(sunRoughness, N, V, L);
     colour += sunSpecular + environmentAttenuation * environment;
-    colour = lerp(refraction.scene, colour, saturate(kShoreFadePerYard * refraction.pathDepth));
 
     [branch] if (WaterDebugView() > 0.5)
         return float4(DebugColour(N, foamAlbedo, transmittance, reflected), 1);
     float3 encoded = LinearToGamma(colour);
     [branch] if (StockFogApplies())
         encoded = lerp(StockFogColour(), encoded, StockFogVisibility(w.waterZ));
+    encoded = lerp(refraction.copied, encoded, saturate(kShoreFadePerYard * refraction.pathDepth));
     return float4(encoded, 1);
 }
