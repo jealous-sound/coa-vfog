@@ -21,16 +21,27 @@ set(SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
 set(SHADER_OUT ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${SHADER_OUT})
 
-file(GLOB SHADER_INCLUDES CONFIGURE_DEPENDS ${SHADER_DIR}/*.hlsli)
+set(VF_INCLUDES ${SHADER_DIR}/vf_common.hlsli ${SHADER_DIR}/vf_integrate.hlsli
+                ${SHADER_DIR}/vf_local_lights.hlsli ${SHADER_DIR}/vf_density_variation.hlsli)
+set(VW_FFT_INCLUDES ${SHADER_DIR}/vw_fft_common.hlsli)
+set(VW_INCLUDES ${SHADER_DIR}/vf_common.hlsli ${SHADER_DIR}/vw_constants.hlsli ${SHADER_DIR}/vw_surface.hlsli
+                ${SHADER_DIR}/vw_optics.hlsli ${SHADER_DIR}/vw_reflection.hlsli)
 
 set(SHADER_HEADERS)
 function(vf_shader name source profile)
+    if(source MATCHES "^vw_fft_")
+        set(includes ${VW_FFT_INCLUDES})
+    elseif(source MATCHES "^vw_")
+        set(includes ${VW_INCLUDES})
+    else()
+        set(includes ${VF_INCLUDES})
+    endif()
     set(out ${SHADER_OUT}/${name}.h)
     add_custom_command(
         OUTPUT ${out}
         COMMAND "${FXC}" /nologo /O3 /T ${profile} /E main /Vn g_${name} ${ARGN}
                 /Fh ${out} /Fc ${SHADER_OUT}/${name}.asm ${SHADER_DIR}/${source}
-        DEPENDS ${SHADER_DIR}/${source} ${SHADER_INCLUDES}
+        DEPENDS ${SHADER_DIR}/${source} ${includes}
         COMMENT "fxc ${name}"
         VERBATIM)
     set(SHADER_HEADERS ${SHADER_HEADERS} ${out} PARENT_SCOPE)
