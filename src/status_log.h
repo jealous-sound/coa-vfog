@@ -2,19 +2,19 @@
 
 #include "log.h"
 
-struct WaterLogLine
+struct StatusLogLine
 {
     bool write;
     LogLevel level;
 };
 
-class WaterStatusLog
+class StatusLog
 {
 public:
     static constexpr unsigned kMaxSkipsLogged = 50;
 
-    WaterLogLine Idle(const char* state);
-    WaterLogLine Skip(const char* reason);
+    StatusLogLine Idle(const char* state);
+    StatusLogLine Skip(const char* reason);
     void Drawn();
     unsigned SkipsLogged() const { return m_skipsLogged; }
 

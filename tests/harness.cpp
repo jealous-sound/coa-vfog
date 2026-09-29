@@ -8,7 +8,7 @@
 #include "water_data.h"
 #include "water_fft.h"
 #include "water_spectrum.h"
-#include "water_status.h"
+#include "status_log.h"
 
 #include <windows.h>
 #include <d3d9.h>

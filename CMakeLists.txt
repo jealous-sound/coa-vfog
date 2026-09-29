@@ -108,11 +108,11 @@ add_library(CoAVolFog SHARED
     src/overlay.cpp
     src/renderer.cpp
     src/settings_panel.cpp
+    src/status_log.cpp
     src/water_data.cpp
     src/water_fft.cpp
     src/water_renderer.cpp
     src/water_spectrum.cpp
-    src/water_status.cpp
     src/CoAVolFog.def)
 add_dependencies(CoAVolFog vf_shaders)
 target_include_directories(CoAVolFog PRIVATE src ${SHADER_OUT})
@@ -126,7 +126,7 @@ target_compile_definitions(version PRIVATE WIN32_LEAN_AND_MEAN)
 
 add_executable(vfog_harness tests/harness.cpp src/config.cpp src/engine_lights.cpp
                src/fog_data.cpp src/fog_model.cpp src/gpu_timing.cpp src/log.cpp src/noise_volume.cpp
-               src/water_data.cpp src/water_spectrum.cpp src/water_fft.cpp src/water_status.cpp)
+               src/water_data.cpp src/water_spectrum.cpp src/water_fft.cpp src/status_log.cpp)
 target_include_directories(vfog_harness PRIVATE src ${SHADER_OUT})
 target_compile_definitions(vfog_harness PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(vfog_harness PRIVATE CoAVolFog user32 ole32 windowscodecs)

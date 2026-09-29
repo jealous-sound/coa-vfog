@@ -1,4 +1,4 @@
-#include "water_status.h"
+#include "status_log.h"
 
 #include <cstring>
 
@@ -10,7 +10,7 @@ bool SameText(const char* a, const char* b)
 }
 }
 
-bool WaterStatusLog::IdleStateSeen(const char* state)
+bool StatusLog::IdleStateSeen(const char* state)
 {
     for (int i = 0; i < m_seenIdleStateCount; ++i)
         if (SameText(m_seenIdleStates[i], state))
@@ -20,7 +20,7 @@ bool WaterStatusLog::IdleStateSeen(const char* state)
     return false;
 }
 
-WaterLogLine WaterStatusLog::Idle(const char* state)
+StatusLogLine StatusLog::Idle(const char* state)
 {
     m_lastSkip = "";
     if (SameText(state, m_lastIdle))
@@ -29,7 +29,7 @@ WaterLogLine WaterStatusLog::Idle(const char* state)
     return {true, IdleStateSeen(state) ? LogLevel::Debug : LogLevel::Info};
 }
 
-WaterLogLine WaterStatusLog::Skip(const char* reason)
+StatusLogLine StatusLog::Skip(const char* reason)
 {
     m_lastIdle = "";
     if (SameText(reason, m_lastSkip))
@@ -41,7 +41,7 @@ WaterLogLine WaterStatusLog::Skip(const char* reason)
     return {true, LogLevel::Info};
 }
 
-void WaterStatusLog::Drawn()
+void StatusLog::Drawn()
 {
     m_lastIdle = "";
     m_lastSkip = "";

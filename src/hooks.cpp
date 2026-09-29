@@ -5,7 +5,7 @@
 #include "engine.h"
 #include "log.h"
 #include "water_classify.h"
-#include "water_status.h"
+#include "status_log.h"
 
 #include <windows.h>
 
@@ -58,7 +58,7 @@ FogDevice* g_waterResourcesDevice = nullptr;
 bool g_waterPassRanThisFrame = false;
 unsigned g_waterClassesThisPass = 0;
 WaterFrameStatus g_waterStatus = {false, "waiting for the world to render"};
-WaterStatusLog g_waterLog;
+StatusLog g_waterLog;
 unsigned g_drawnWaterClassesTextMask = 0;
 char g_drawnWaterClassesText[kDrawnWaterClassesTextSize] = "";
 
@@ -268,7 +268,7 @@ int GuardFilter(unsigned code, const char* where)
 void RecordWaterSkip(const char* reason)
 {
     g_waterStatus = {false, reason};
-    const WaterLogLine line = g_waterLog.Skip(reason);
+    const StatusLogLine line = g_waterLog.Skip(reason);
     if (line.write)
         LogWrite(line.level, "water skipped: %s", reason);
 }
@@ -276,7 +276,7 @@ void RecordWaterSkip(const char* reason)
 void RecordWaterIdle(const char* state)
 {
     g_waterStatus = {false, state};
-    const WaterLogLine line = g_waterLog.Idle(state);
+    const StatusLogLine line = g_waterLog.Idle(state);
     if (line.write)
         LogWrite(line.level, "water idle: %s%s", state,
                  line.level == LogLevel::Info ? " (repeats are logged at LogLevel 2)" : "");
