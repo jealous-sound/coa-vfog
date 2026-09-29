@@ -83,6 +83,14 @@ constexpr unsigned kAllWaterResources = 0x7;
 constexpr int kFoamClockSteps = 20;
 constexpr double kFoamClockStep = 0.1;
 constexpr int kFoamCoverageDebugView = 2;
+constexpr float kBeachWaterlineX = kBasinFarX - (kLandZ - kWaterSurfaceZ) * (kBasinFarX - kBeachStartX) /
+                                                    (kLandZ - kBasinFloorZ);
+constexpr float kBeachRisePerYard = (kLandZ - kBasinFloorZ) / (kBasinFarX - kBeachStartX);
+constexpr float kShoreFoamFadeDepth = 0.8f;
+constexpr float kNearShoreDepth = 0.03f;
+constexpr float kMidShoreDepth = 0.25f;
+constexpr BYTE kNoFoamCoverage = 0;
+constexpr BYTE kVisibleFoamCoverage = 16;
 constexpr int kOpaqueLiquidCountWord = 1;
 constexpr int kTransparentLiquidCountWord = 5;
 
@@ -1414,6 +1422,52 @@ void CheckFlatWaterHasNoCrestFoam(BasinClient& client, const Config& base)
     AssignWaterData(MakeSyntheticWaterData());
 }
 
+std::pair<UINT, UINT> WaterSurfacePixel(const WaterView& v, float x, float y)
+{
+    const Vec3 d = Sub(Add({x, y, kWaterSurfaceZ}, kGameLikeWorldOffset), v.eye);
+    const float* m = v.view;
+    const float vx = d.x * m[0] + d.y * m[4] + d.z * m[8];
+    const float vy = d.x * m[1] + d.y * m[5] + d.z * m[9];
+    const float vz = d.x * m[2] + d.y * m[6] + d.z * m[10];
+    const float ndcX = vx / vz * v.proj[0] + v.proj[8];
+    const float ndcY = vy / vz * v.proj[5] + v.proj[9];
+    return {static_cast<UINT>((ndcX * 0.5f + 0.5f) * v.world.Width),
+            static_cast<UINT>((0.5f - ndcY * 0.5f) * v.world.Height)};
+}
+
+void CheckShoreFoamWidthFollowsTheSlope(Harness& h, const Config& base)
+{
+    SyntheticWaterData data = MakeSyntheticWaterData();
+    WaterPreset& lake = data.presets[0];
+    Set4(lake.depthFadeFoam, 0.0f, 0.0f, 0.0f, 0.0f);
+    Set4(lake.waveFoam, 0.0f, 0.0f, 0.0f, 0.0f);
+    Set4(lake.shoreFoam, 1.0f, 18.0f, kShoreFoamFadeDepth, 0.0f);
+    lake.masks[static_cast<int>(WaterMaskSlot::ShoreFoam)] = 0;
+    const bool assigned = AssignWaterData(data);
+    Config coverage = WaterConfig(base);
+    coverage.waterDebugView = kFoamCoverageDebugView;
+    vf_test_set_config(&coverage);
+    vf_test_disable_wave_simulation(1);
+    const WaterView view = MakeWaterView({360, 0, 40}, {398, 0, -3});
+    BasinClient client(h, view);
+    WaterFrame frame;
+    const WaterFrameResult result = client.Render(frame);
+    vf_test_disable_wave_simulation(0);
+    const auto nearShore = WaterSurfacePixel(view, kBeachWaterlineX - kNearShoreDepth / kBeachRisePerYard, 0.0f);
+    const auto midShore = WaterSurfacePixel(view, kBeachWaterlineX - kMidShoreDepth / kBeachRisePerYard, 0.0f);
+    const BYTE nearCoverage = result.image.At(nearShore.first, nearShore.second)[1];
+    const BYTE midCoverage = result.image.At(midShore.first, midShore.second)[1];
+    std::printf("     shore foam coverage: %u at %.2f yd of water (pixel %u,%u), %u at %.2f yd (pixel %u,%u)\n",
+                nearCoverage, kNearShoreDepth, nearShore.first, nearShore.second, midCoverage, kMidShoreDepth,
+                midShore.first, midShore.second);
+    Check(assigned && result.began && nearCoverage >= kVisibleFoamCoverage && midCoverage <= kNoFoamCoverage,
+          "shore foam fades over the estimated distance from the shore (about four times the water depth), not over "
+          "the vertical depth");
+    const Config on = WaterConfig(base);
+    vf_test_set_config(&on);
+    AssignWaterData(MakeSyntheticWaterData());
+}
+
 void CheckResetKeepsWater(Harness& h, BasinClient& client, const Config& base)
 {
     vf_test_disable_wave_simulation(1);
@@ -1822,6 +1876,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     CheckFaultInsideThePassRestoresTheDevice(h, client, base);
     CheckWaterOffReleasesResources(client, base);
     CheckFlatWaterHasNoCrestFoam(client, base);
+    CheckShoreFoamWidthFollowsTheSlope(h, base);
     CheckResetKeepsWater(h, client, base);
     SaveRealDataViews(h, base, waterDataPath, outDir);
 

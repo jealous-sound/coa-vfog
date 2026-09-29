@@ -128,6 +128,11 @@ float WaveFoamIntensity()
     return cWaveFoam.x;
 }
 
+float ShoreDistancePerDepth()
+{
+    return cShoreFoam.w;
+}
+
 float SunRoughnessParameter()
 {
     return cSurfaceResponse.x;

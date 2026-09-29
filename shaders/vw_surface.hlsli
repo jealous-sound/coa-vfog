@@ -132,7 +132,7 @@ float4 FoamAlbedo(WaterPixel w, WaveState waves)
     float2 dx = ddx(adtUv);
     float2 dy = ddy(adtUv);
     float f = max(waves.foam.x, 0);
-    float shoreWeight = cShoreFoam.x * FoamFade(w.columnDepth, cShoreFoam.z);
+    float shoreWeight = cShoreFoam.x * FoamFade(w.columnDepth * ShoreDistancePerDepth(), cShoreFoam.z);
     float depthWeight = cDepthFadeFoam.x * FoamFade(w.sceneZ - w.waterZ, cDepthFadeFoam.z);
     float4 foam = 0;
     [branch] if (f * WaveFoamIntensity() > 0)

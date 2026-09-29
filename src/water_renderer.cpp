@@ -47,6 +47,7 @@ constexpr float kSunVisibilityHalfWidth = 0.1f;
 constexpr float kWaterF0 = 0.02f;
 constexpr int kSchlickExponent = 5;
 constexpr float kMinClarity = 0.01f;
+constexpr float kShoreDistancePerDepth = 4.0f;
 constexpr float kMinStockFogRange = 1e-3f;
 constexpr double kMaxFoamStepSeconds = 0.1;
 constexpr double kSummarySeconds = 60.0;
@@ -979,7 +980,8 @@ void WaterRenderer::FillClassConstants(ShadingConstants& c, const WaterPreset& p
     const float foam = std::max(m_cfg.waterFoam, 0.0f);
     c.depthFadeFoam = {std::max(preset.depthFadeFoam[0], 0.0f) * foam, preset.depthFadeFoam[1],
                        preset.depthFadeFoam[2], 0.0f};
-    c.shoreFoam = {std::max(preset.shoreFoam[0], 0.0f) * foam, preset.shoreFoam[1], preset.shoreFoam[2], 0.0f};
+    c.shoreFoam = {std::max(preset.shoreFoam[0], 0.0f) * foam, preset.shoreFoam[1], preset.shoreFoam[2],
+                   kShoreDistancePerDepth};
     c.waveFoam = {std::max(preset.waveFoam[0], 0.0f) * foam, 0.0f, 0.0f, 0.0f};
     c.waveFoamScaling = {preset.waveFoamScaling[0], preset.waveFoamScaling[1], preset.waveFoamScaling[2], 0.0f};
     c.surfaceResponse = {preset.roughness[0], preset.roughness[1], preset.roughness[2] * m_cfg.waterReflections,
