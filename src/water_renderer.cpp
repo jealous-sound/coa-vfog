@@ -785,6 +785,16 @@ WaterRippleStats WaterRenderer::RippleStats() const
     return stats;
 }
 
+WaterRippleShading WaterRenderer::RippleShading() const
+{
+    WaterRippleShading shading;
+    shading.map = m_ripplesShaded ? m_ripples.Map() : nullptr;
+    std::memcpy(shading.window, &m_rippleWindow, sizeof(shading.window));
+    std::memcpy(shading.shape, &m_rippleShape, sizeof(shading.shape));
+    std::memcpy(shading.fade, &m_rippleFade, sizeof(shading.fade));
+    return shading;
+}
+
 void WaterRenderer::SaveTargets(IDirect3DDevice9* dev)
 {
     ReleaseTargets();

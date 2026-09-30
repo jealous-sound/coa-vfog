@@ -171,12 +171,12 @@ int ChannelsOf(D3DFORMAT format)
     return format == D3DFMT_G16R16F ? 2 : 4;
 }
 
-bool ReadRipples(IDirect3DDevice9* dev, const WaterRipples& ripples, RippleState& out)
+bool ReadRippleMap(IDirect3DDevice9* dev, IDirect3DTexture9* map, RippleState& out)
 {
     IDirect3DSurface9* surface = nullptr;
     IDirect3DSurface9* copy = nullptr;
     D3DSURFACE_DESC desc = {};
-    bool read = ripples.Map() && SUCCEEDED(ripples.Map()->GetSurfaceLevel(0, &surface)) &&
+    bool read = map && SUCCEEDED(map->GetSurfaceLevel(0, &surface)) &&
                 SUCCEEDED(surface->GetDesc(&desc)) &&
                 SUCCEEDED(dev->CreateOffscreenPlainSurface(desc.Width, desc.Height, desc.Format, D3DPOOL_SYSTEMMEM,
                                                            &copy, nullptr)) &&
@@ -204,6 +204,11 @@ bool ReadRipples(IDirect3DDevice9* dev, const WaterRipples& ripples, RippleState
     if (surface)
         surface->Release();
     return read;
+}
+
+bool ReadRipples(IDirect3DDevice9* dev, const WaterRipples& ripples, RippleState& out)
+{
+    return ReadRippleMap(dev, ripples.Map(), out);
 }
 
 bool UploadRipples(IDirect3DDevice9* dev, const WaterRipples& ripples, const RippleState& state)

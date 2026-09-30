@@ -285,6 +285,11 @@ extern "C" void __cdecl vf_test_water_ripple_stats(WaterRippleStats* out)
     ReadWaterRippleStats(LatestFogDevice(), *out);
 }
 
+extern "C" void __cdecl vf_test_water_ripple_shading(WaterRippleShading* out)
+{
+    ReadWaterRippleShading(LatestFogDevice(), *out);
+}
+
 extern "C" unsigned __cdecl vf_test_water_contact_reads()
 {
     return TestWaterContactReads();

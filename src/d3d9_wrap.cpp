@@ -968,3 +968,8 @@ void ReadWaterRippleStats(FogDevice* device, WaterRippleStats& out)
 {
     out = device ? device->Water().RippleStats() : WaterRippleStats();
 }
+
+void ReadWaterRippleShading(FogDevice* device, WaterRippleShading& out)
+{
+    out = device ? device->Water().RippleShading() : WaterRippleShading();
+}

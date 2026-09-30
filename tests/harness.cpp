@@ -67,6 +67,7 @@ extern "C" __declspec(dllimport) int __cdecl vf_test_water_masks_uploaded(int*);
 extern "C" __declspec(dllimport) void __cdecl vf_test_force_water_shading_variant(int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_water_shading_variant();
 extern "C" __declspec(dllimport) void __cdecl vf_test_water_ripple_stats(WaterRippleStats*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_water_ripple_shading(WaterRippleShading*);
 extern "C" __declspec(dllimport) unsigned __cdecl vf_test_water_contact_reads();
 
 namespace

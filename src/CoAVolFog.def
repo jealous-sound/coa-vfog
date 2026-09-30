@@ -42,4 +42,5 @@ EXPORTS
     vf_test_force_water_shading_variant
     vf_test_water_shading_variant
     vf_test_water_ripple_stats
+    vf_test_water_ripple_shading
     vf_test_water_contact_reads

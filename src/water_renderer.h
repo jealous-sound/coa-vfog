@@ -64,6 +64,7 @@ public:
     int UploadedMasks() const;
     int RequiredMasks() const { return static_cast<int>(m_foamMasks.size()); }
     WaterRippleStats RippleStats() const;
+    WaterRippleShading RippleShading() const;
     int LastShadingVariant() const { return m_shadingVariant; }
     const char* LastSkipReason() const { return m_skip; }
 

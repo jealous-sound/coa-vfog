@@ -34,6 +34,14 @@ struct WaterRippleStats
     uint32_t restarts = 0;
 };
 
+struct WaterRippleShading
+{
+    IDirect3DTexture9* map = nullptr;
+    float window[4] = {};
+    float shape[4] = {};
+    float fade[4] = {};
+};
+
 struct WaterRippleWindow
 {
     float origin[2] = {};

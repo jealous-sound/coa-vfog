@@ -23,6 +23,20 @@ constexpr int kRippleSummaryFrames = 60;
 constexpr BYTE kFlatRippleGrey = 127;
 constexpr unsigned kRippleMapsHeld = 0x8;
 constexpr int kRippleGreyTolerance = 2;
+constexpr float kSlopeCheckGain = 2.0f;
+constexpr double kSlopeCheckStepFraction = 0.3;
+constexpr double kForeverRippleSlopeScale = 3.0;
+constexpr double kRippleFullDetailTexels = 2.0;
+constexpr double kRippleDetailFadeTexels = 2.0;
+constexpr double kMinRayRise = 1e-4;
+constexpr float kDepthCopyPrecision = 1e-3f;
+constexpr double kMaxNormalLevels = 1.0;
+constexpr double kMinTiltLevels = 8.0;
+constexpr size_t kMinTiltedPixels = 50;
+constexpr double kMinDistinctWeight = 0.1;
+constexpr BYTE kFlatNormalLow = 127;
+constexpr BYTE kFlatNormalHigh = 128;
+constexpr BYTE kFlatNormalUp = 255;
 
 WaterContact BasinContact(uint64_t guid, float x, float y, float depth)
 {
@@ -171,6 +185,178 @@ void CheckRipplesChangeNormalsOnlyWhereTheyAre(BasinClient& client, const Config
                 ++displaced;
     Check(heights.began && displaced >= kMinRipplePixels,
           "WaterDebugView 6 shows the ripple height around the unit's path");
+}
+
+struct RippleShadingReference
+{
+    WaterRippleShading constants;
+    water_ripple_checks::RippleState map;
+
+    double Height(double u, double v) const
+    {
+        const double s = u * map.texels - 0.5;
+        const double t = v * map.texels - 0.5;
+        const int x = static_cast<int>(std::floor(s));
+        const int y = static_cast<int>(std::floor(t));
+        const double fx = s - x;
+        const double fy = t - y;
+        return (1.0 - fy) * ((1.0 - fx) * Texel(x, y) + fx * Texel(x + 1, y)) +
+               fy * ((1.0 - fx) * Texel(x, y + 1) + fx * Texel(x + 1, y + 1));
+    }
+
+private:
+    double Texel(int x, int y) const
+    {
+        x = std::clamp(x, 0, map.texels - 1);
+        y = std::clamp(y, 0, map.texels - 1);
+        const double weight = constants.shape[0];
+        return (1.0 - weight) * map.G(x, y) + weight * map.R(x, y);
+    }
+};
+
+double FootprintTexels(const WaterView& v, const WaterRippleShading& c, UINT x, UINT y, Vec3 ray, float depth)
+{
+    const double rise = std::min(static_cast<double>(ray.z), -kMinRayRise);
+    double longest = 0.0;
+    for (const Vec3& next : {PixelRay(v, x + 1.5f, y + 0.5f), PixelRay(v, x + 0.5f, y + 1.5f)})
+    {
+        const Vec3 step = Sub(next, ray);
+        const double fx = depth * (step.x - ray.x * step.z / rise);
+        const double fy = depth * (step.y - ray.y * step.z / rise);
+        longest = std::max(longest, std::sqrt(fx * fx + fy * fy));
+    }
+    return longest / c.fade[2];
+}
+
+double RippleCoverageAt(const WaterView& v, const WaterRippleShading& c, UINT x, UINT y, Vec3 ray, float depth,
+                        double u, double w)
+{
+    const double fromCentre = std::max(std::fabs(u - 0.5), std::fabs(w - 0.5)) * c.shape[2];
+    const double window = std::clamp((c.fade[0] - fromCentre) * c.fade[1], 0.0, 1.0);
+    const double footprint = FootprintTexels(v, c, x, y, ray, depth);
+    return window * std::clamp(1.0 - (footprint - kRippleFullDetailTexels) / kRippleDetailFadeTexels, 0.0, 1.0);
+}
+
+bool ExpectedRippleNormal(const WaterView& v, const RippleShadingReference& r, UINT x, UINT y, float depthScale,
+                          double normal[3])
+{
+    const Vec3 ray = PixelRay(v, x + 0.5f, y + 0.5f);
+    if (ray.z >= 0.0f)
+        return false;
+    const float depth = ViewDepthOfPlane(v, ray, kWaterSurfaceZ) * depthScale;
+    const WaterRippleShading& c = r.constants;
+    const double u = (static_cast<double>(v.eye.x + ray.x * depth) - c.window[0]) * c.window[2];
+    const double w = (static_cast<double>(v.eye.y + ray.y * depth) - c.window[1]) * c.window[2];
+    const double coverage = RippleCoverageAt(v, c, x, y, ray, depth, u, w);
+    double slope[2] = {};
+    if (c.shape[1] > 0.0f && coverage > 0.0)
+    {
+        const double step = c.window[3];
+        const double height = r.Height(u, w);
+        const double dx = r.Height(u + step, w) - height;
+        const double dy = r.Height(u, w + step) - height;
+        const double gain = kForeverRippleSlopeScale * c.shape[1] * coverage / std::sqrt((1 + dx * dx) * (1 + dy * dy));
+        slope[0] = dx * gain;
+        slope[1] = dy * gain;
+    }
+    const double length = std::sqrt(slope[0] * slope[0] + slope[1] * slope[1] + 1.0);
+    normal[0] = -slope[0] / length;
+    normal[1] = -slope[1] / length;
+    normal[2] = 1.0 / length;
+    return true;
+}
+
+bool FlatWaterNormal(const Image& image, UINT x, UINT y)
+{
+    const BYTE* p = image.At(x, y);
+    return p[0] == kFlatNormalUp && p[1] >= kFlatNormalLow && p[1] <= kFlatNormalHigh && p[2] >= kFlatNormalLow &&
+           p[2] <= kFlatNormalHigh;
+}
+
+struct NormalComparison
+{
+    size_t compared = 0;
+    size_t tilted = 0;
+    double worst = 0.0;
+};
+
+struct NormalRange
+{
+    double low[3] = {255.0, 255.0, 255.0};
+    double high[3] = {};
+    double tilt = 0.0;
+};
+
+bool ExpectedNormalRange(const WaterView& v, const RippleShadingReference& r, UINT x, UINT y, NormalRange& range)
+{
+    for (float depthScale : {1.0f - kDepthCopyPrecision, 1.0f, 1.0f + kDepthCopyPrecision})
+    {
+        double normal[3];
+        if (!ExpectedRippleNormal(v, r, x, y, depthScale, normal))
+            return false;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            const double level = 255.0 * (0.5 + 0.5 * normal[axis]);
+            range.low[axis] = std::min(range.low[axis], level);
+            range.high[axis] = std::max(range.high[axis], level);
+        }
+        if (depthScale == 1.0f)
+            range.tilt = 127.5 * std::max(std::fabs(normal[0]), std::fabs(normal[1]));
+    }
+    return true;
+}
+
+NormalComparison CompareRippleNormals(const WaterView& v, const RippleShadingReference& r, const Image& calm,
+                                      const Image& rippled)
+{
+    NormalComparison c;
+    for (UINT y = 0; y < rippled.h; ++y)
+        for (UINT x = 0; x < rippled.w; ++x)
+        {
+            NormalRange range;
+            if (!NearRipplePath(v, x, y) || !FlatWaterNormal(calm, x, y) || !ExpectedNormalRange(v, r, x, y, range))
+                continue;
+            const BYTE* p = rippled.At(x, y);
+            const BYTE shaded[3] = {p[2], p[1], p[0]};
+            for (int axis = 0; axis < 3; ++axis)
+                c.worst = std::max({c.worst, range.low[axis] - shaded[axis], shaded[axis] - range.high[axis]});
+            ++c.compared;
+            c.tilted += range.tilt >= kMinTiltLevels ? 1 : 0;
+        }
+    return c;
+}
+
+void CheckRippleSlopeFollowsForever(Harness& h, BasinClient& client, const Config& base)
+{
+    const WaterView view = client.View();
+    Config normals = RippleConfig(base, 0.0f);
+    normals.waterDebugView = kNormalDebugView;
+    vf_test_set_config(&normals);
+    const WaterFrameResult calm = RenderRippleFrame(client, view, kRippleStart, {});
+    normals.waterRipples = kSlopeCheckGain;
+    vf_test_set_config(&normals);
+    const double start = kRippleStart + kRippleGap;
+    RunUnitThroughWater(client, view, start);
+    const double between = start + kRippleFrames * kRippleFrame + kSlopeCheckStepFraction * kWaterRippleStepSeconds;
+    const WaterFrameResult rippled = RenderRippleFrame(client, view, between, {});
+    RippleShadingReference reference;
+    vf_test_water_ripple_shading(&reference.constants);
+    const bool read = water_ripple_checks::ReadRippleMap(h.dev, reference.constants.map, reference.map);
+    const NormalComparison c = CompareRippleNormals(view, reference, calm.image, rippled.image);
+    const double weight = reference.constants.shape[0];
+    std::printf("     ripple slope at step fraction %.2f and WaterRipples %.1f: %zu water pixels near the path against "
+                "the 7552035 formula over view depths within %.1f%%, %zu tilted by %.0f+ levels, worst %.2f/255 "
+                "outside it\n",
+                weight, reference.constants.shape[1], c.compared, kDepthCopyPrecision * 100.0f, c.tilted,
+                kMinTiltLevels, c.worst);
+    Check(calm.began && rippled.began && read && std::fabs(weight - 0.5) >= kMinDistinctWeight &&
+              weight >= kMinDistinctWeight && weight <= 1.0 - kMinDistinctWeight &&
+              reference.constants.shape[1] == kSlopeCheckGain && c.tilted >= kMinTiltedPixels &&
+              c.worst <= kMaxNormalLevels,
+          "the shaded ripple normals follow Forever's one-map slope: lerp(G, R, w) between steps, forward differences, "
+          "(dx, dy)/sqrt((1 + dx^2)(1 + dy^2)) times 3 WaterRipples and the fade, to within the precision of the water "
+          "depth copy");
+    ReleaseRipples(client, base, between + kRippleGap);
 }
 
 void CheckRipplesOffRenderAsBefore(BasinClient& client, const Config& base)
@@ -352,6 +538,7 @@ void CheckWaterRipplePass(Harness& h, const std::wstring& outDir)
     BasinClient client(h, MakeWaterView(kRippleEye, kRippleEyeTarget));
     Check(AssignWaterData(MakeSyntheticWaterData()), "synthetic water data assigned for the ripple pass");
     CheckRipplesChangeNormalsOnlyWhereTheyAre(client, base, outDir);
+    CheckRippleSlopeFollowsForever(h, client, base);
     CheckRipplesOffRenderAsBefore(client, base);
     CheckRippleResets(h, client, base);
     CheckRippleSummaryAndCost(h, client, base);
