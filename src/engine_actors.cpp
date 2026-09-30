@@ -162,7 +162,7 @@ bool LayoutMatchesUnsafe()
         if (std::memcmp(reinterpret_cast<const void*>(guard.address), guard.bytes, guard.size) != 0)
         {
             VF_LOG_ERROR("water contacts: the client's %s at 0x%08X differs from the 12340 client; ripples get no "
-                         "contacts",
+                         "contacts and the client's splash and wake sprites stay",
                          guard.name, static_cast<unsigned>(guard.address));
             return false;
         }
@@ -324,12 +324,17 @@ bool CaptureWaterContactsFrom(uintptr_t objectManager, const float centre[3], Wa
     return valid;
 }
 
+bool WaterContactsSupported()
+{
+    static const bool supported = LayoutMatches();
+    return supported;
+}
+
 bool CaptureWaterContacts(const float centre[3], WaterContactFrame& out)
 {
     out = {};
-    static const bool supported = LayoutMatches();
     uintptr_t manager = 0;
-    if (!supported || !ValidCentre(centre) || !ReadObjectManager(manager))
+    if (!WaterContactsSupported() || !ValidCentre(centre) || !ReadObjectManager(manager))
         return false;
     if (!CaptureWaterContactsFrom(manager, centre, out))
         return false;

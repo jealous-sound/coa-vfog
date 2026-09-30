@@ -266,9 +266,9 @@ void CheckVisibleUnitWalk()
     const bool noManager = engine::CaptureWaterContactsFrom(0, centre, noManagerFrame);
     const bool live = engine::CaptureWaterContacts(centre, liveFrame);
     Check(!changedCaptured && changedFrame.count == 0 && noManager && noManagerFrame.count == 0 && !live &&
-              liveFrame.count == 0,
+              liveFrame.count == 0 && !engine::WaterContactsSupported(),
           "a manager with another list link offset is rejected, no manager (before login) is an empty frame, and the "
-          "live capture refuses the harness image");
+          "live capture refuses the harness image and reports itself unsupported");
 }
 
 WaterContact ContactAt(uint64_t guid, float x, float y, float depth)

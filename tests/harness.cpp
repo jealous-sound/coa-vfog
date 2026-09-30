@@ -70,6 +70,8 @@ extern "C" __declspec(dllimport) int __cdecl vf_test_water_shading_variant();
 extern "C" __declspec(dllimport) void __cdecl vf_test_water_ripple_stats(WaterRippleStats*);
 extern "C" __declspec(dllimport) void __cdecl vf_test_water_ripple_shading(WaterRippleShading*);
 extern "C" __declspec(dllimport) unsigned __cdecl vf_test_water_contact_reads();
+extern "C" __declspec(dllimport) void __cdecl vf_test_refuse_water_contacts(int);
+extern "C" __declspec(dllimport) void __cdecl vf_test_inject_water_ripple_fault(int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_bind_client_ripple_gate(volatile int32_t*, uintptr_t,
                                                                              const unsigned char*, size_t);
 extern "C" __declspec(dllimport) void __cdecl vf_test_update_client_ripple_sprites(int, int, double);

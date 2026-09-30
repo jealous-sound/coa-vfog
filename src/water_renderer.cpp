@@ -468,6 +468,7 @@ void WaterRenderer::ReleaseDefaultPool()
     m_ripples.ReleaseDefaultPool();
     m_contacts.Reset();
     m_lastRippleSeconds = -1.0;
+    m_ripplesAvailable = true;
 }
 
 void WaterRenderer::ReleaseAll()
@@ -1093,6 +1094,7 @@ void WaterRenderer::ReleaseRipples()
     m_ripples.ReleaseAll();
     m_contacts.Reset();
     m_lastRippleSeconds = -1.0;
+    m_ripplesAvailable = true;
 }
 
 bool WaterRenderer::SimulateRipples(IDirect3DDevice9* dev, double seconds)
@@ -1108,10 +1110,15 @@ bool WaterRenderer::SimulateRipples(IDirect3DDevice9* dev, double seconds)
     m_rippleMapId = m_in.mapId;
     m_contacts.Update(m_water.contacts, seconds);
     m_summaryContacts = std::max(m_summaryContacts, m_contacts.Contacts());
+    const bool supported = m_ripples.Supported(dev);
     if (!m_ripples.Running() && !m_contacts.Emitting())
+    {
+        m_ripplesAvailable = m_ripplesAvailable && supported;
         return false;
+    }
     const int texels = m_cfg.waterQuality == kLowQuality ? kWaterRippleTexelsLow : kWaterRippleTexels;
-    if (!m_ripples.Prepare(dev, texels))
+    m_ripplesAvailable = m_ripples.Prepare(dev, texels);
+    if (!m_ripplesAvailable)
     {
         const char* failure = m_ripples.LastFailure();
         if (std::strcmp(failure, m_loggedRippleFailure) != 0)

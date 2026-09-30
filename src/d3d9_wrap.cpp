@@ -823,6 +823,7 @@ WaterPassEnd FogDevice::EndWater()
     end.skipReason = end.shaded ? "" : m_water.LastSkipReason();
     end.flatWaves = end.shaded && !m_water.WavesSimulated();
     end.shadedClasses = end.shaded ? m_water.ShadedClasses() : 0u;
+    end.ripplesAvailable = m_water.RipplesAvailable();
     return end;
 }
 

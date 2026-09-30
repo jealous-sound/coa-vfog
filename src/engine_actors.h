@@ -34,5 +34,6 @@ namespace engine
 {
 bool SelectWaterContact(WaterContactFrame& frame, const WaterContact& contact, const float centre[3]);
 bool CaptureWaterContactsFrom(uintptr_t objectManager, const float centre[3], WaterContactFrame& out);
+bool WaterContactsSupported();
 bool CaptureWaterContacts(const float centre[3], WaterContactFrame& out);
 }

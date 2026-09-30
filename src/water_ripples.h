@@ -15,6 +15,15 @@ constexpr int kWaterRippleTexelsLow = 256;
 constexpr int kWaterRippleTexels = 512;
 constexpr uint32_t kWaterRippleQuietSteps = 450;
 
+enum class WaterRippleFault
+{
+    None,
+    Unsupported,
+    MapCreation,
+};
+
+void InjectWaterRippleFault(WaterRippleFault fault);
+
 struct WaterRippleSchedule
 {
     int steps = 0;
@@ -59,6 +68,7 @@ public:
     void ReleaseAll();
     void Restart();
 
+    bool Supported(IDirect3DDevice9* dev);
     bool Prepare(IDirect3DDevice9* dev, int texels);
     WaterRippleSchedule Schedule(double seconds);
     void Step(IDirect3DDevice9* dev, const float centre[2], const WaterRippleDisturbance* disturbances,

@@ -107,10 +107,13 @@ and ripple events:
 - *Client sprites.* The client draws its own ripples as flat `splash.blp` discs and `wake.blp` V trails after the
   water (`0x79D5E0`). With `WaterClientSplashes=0`, at the end of every frame whose modern water was shaded with
   `WaterRipples` above 0, the DLL holds the client's `waterRipples` value at 0, so no new sprites are made and the
-  live ones run out within 0.7 s. It remembers the value it replaced and any non-zero value set meanwhile (for example
-  `/console waterRipples 1`) and puts it back at once when a setting ends the hold, the water is turned off or stops
-  after a fault, after 1 s without shaded water (camera under water, no water in view), and when the device is
-  released or the DLL unloads.
+  live ones run out within 0.7 s. It holds the value only while rings can be made: not when the unit walk is refused
+  (a client whose object-manager bytes differ from the 12340 image) or the ripple map is unavailable (no filterable
+  16-bit floating-point render target, a ripple shader the device rejects, or a failed map creation, which is
+  retried when a unit next makes a ring). It remembers the value it replaced and any non-zero value set meanwhile
+  (for example `/console waterRipples 1`) and puts it back at once when a setting ends the hold, the rings become
+  unavailable, the water is turned off or stops after a fault, after 1 s without shaded water (camera under water,
+  no water in view), and when the device is released or the DLL unloads.
 - *Shading.* The shading ports the one-map slope of Forever's PBR prepass (7552035): the height `lerp(G, R, w)`,
   forward differences not divided by the texel, `(dx, dy)/√((1 + dx²)(1 + dy²))`, times 3·`WaterRipples`·fade.
   Forever takes `w` from its host, whose packing is not recovered; here it is the fraction of the next 30 Hz step
@@ -467,9 +470,9 @@ optics against a CPU reference, fault recovery), the water settings, the packed 
 synthetic object-manager images, the contact tracker's rings against a harness copy of the client's ripple clock,
 the ripple simulation against a CPU reference, the ripples in the water pass, whose normals are compared with the
 7552035 slope evaluated on the CPU, the rings' visibility in shaded water with the real data, and the hold on the
-client's sprite value, driven through the hooks on a synthetic value and code image. They do not establish in-game
-appearance or performance. It writes `before.png`, `after.png`, `overlay.png` and the debug views to
-`build/harness-out`.
+client's sprite value, driven through the hooks on a synthetic value and code image, with the unit walk refused and
+the ripple map unsupported or failing. They do not establish in-game appearance or performance. It writes
+`before.png`, `after.png`, `overlay.png` and the debug views to `build/harness-out`.
 
 `vfog_harness --scene harbour <dir> --data data/fogdata.bin` renders the logged in-game frame at the
 Stormwind harbour (sunset, far clip 791.6 yd) with ideal depth and with the client's depth range, and

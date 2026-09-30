@@ -15,6 +15,14 @@ constexpr double kSpriteFrame = 1.0 / 60.0;
 constexpr double kShortDive = 0.5;
 constexpr double kLongDive = 1.5;
 constexpr size_t kFlippedGuard = 2;
+constexpr uint64_t kWaderGuid = 7;
+constexpr float kWaderX = 65.0f;
+constexpr float kWaderY = 0.0f;
+constexpr uint32_t kWaderForwardFlag = 0x1;
+constexpr uint32_t kWaderClockMs = 3600000;
+constexpr int kNoRippleFault = 0;
+constexpr int kUnsupportedRipples = 1;
+constexpr int kFailingRippleMaps = 2;
 
 volatile int32_t g_gate = kClientDefault;
 
@@ -54,13 +62,16 @@ struct SpriteFrames
     Config cfg;
     double seconds = kSpriteStart;
 
-    int32_t After(const Config& settings, bool underWater = false)
+    uint32_t emitted = 0;
+
+    int32_t After(const Config& settings, bool underWater = false, const WaterContactFrame& contacts = {})
     {
         cfg = settings;
         vf_test_set_config(&cfg);
         vf_test_set_water_seconds(seconds);
         WaterView view = client.View();
         view.in.inLiquid = underWater;
+        view.water.contacts = contacts;
         client.UseView(view);
         WaterFrame hooked;
         hooked.calls = WaterCalls::Hooks;
@@ -73,6 +84,20 @@ struct SpriteFrames
     {
         seconds += gap;
         return After(cfg, underWater);
+    }
+
+    int32_t Wading(const Config& settings, int frames)
+    {
+        int32_t gate = g_gate;
+        for (int i = 0; i < frames; ++i)
+        {
+            WaterContact wader =
+                water_checks::BasinContact(kWaderGuid, kWaderX, kWaderY, water_checks::kRippleWadingDepth);
+            wader.movementFlags = kWaderForwardFlag;
+            wader.nextRippleMs = kWaderClockMs + ++emitted;
+            gate = After(settings, false, water_checks::ContactsOf({wader}));
+        }
+        return gate;
     }
 };
 
@@ -122,6 +147,56 @@ void CheckUnderwaterGrace(SpriteFrames& frames, const Config& on)
           "the value stays held while the camera is under water for less than a second and comes back after it");
 }
 
+void CheckRefusedCaptureKeepsTheSprites(SpriteFrames& frames, const Config& on)
+{
+    const Config hide = With(on, true, 1.0f, false);
+    const int32_t held = frames.After(hide);
+    vf_test_refuse_water_contacts(1);
+    const int32_t refused = frames.After(hide);
+    const int32_t stillRefused = frames.After(hide);
+    vf_test_refuse_water_contacts(0);
+    const int32_t heldAgain = frames.After(hide);
+    std::printf("     unit walk refused: waterRipples %d while held, %d and %d refused, %d with the walk back\n",
+                held, refused, stillRefused, heldAgain);
+    Check(held == 0 && refused == kPlayerChoice && stillRefused == kPlayerChoice && heldAgain == 0,
+          "when the client's units cannot be read no rings replace the client's sprites, so its waterRipples value is "
+          "put back at the end of that frame and left alone until the walk is supported again");
+}
+
+void CheckUnavailableRipplesKeepTheSprites(SpriteFrames& frames, const Config& on)
+{
+    const Config hide = With(on, true, 1.0f, false);
+    const Config released = With(on, true, 0.0f, false);
+    frames.After(released);
+    vf_test_inject_water_ripple_fault(kUnsupportedRipples);
+    const int32_t unsupported = frames.After(hide);
+    const int32_t unsupportedWading = frames.Wading(hide, 2);
+    frames.After(released);
+    vf_test_inject_water_ripple_fault(kNoRippleFault);
+    const int32_t supported = frames.After(hide);
+    std::printf("     ripple map unsupported: waterRipples %d without units, %d with a wader; %d once supported\n",
+                unsupported, unsupportedWading, supported);
+    Check(unsupported == kPlayerChoice && unsupportedWading == kPlayerChoice && supported == 0,
+          "a device without a usable ripple map leaves the client's waterRipples value alone, before and while a "
+          "unit wades");
+
+    frames.After(released);
+    vf_test_inject_water_ripple_fault(kFailingRippleMaps);
+    const int32_t beforeRings = frames.Wading(hide, 1);
+    const int32_t failing = frames.Wading(hide, 1);
+    const int32_t stillFailing = frames.Wading(hide, 1);
+    const int32_t failingDry = frames.After(hide);
+    vf_test_inject_water_ripple_fault(kNoRippleFault);
+    const int32_t retried = frames.Wading(hide, 1);
+    std::printf("     ripple map creation failing: waterRipples %d before the first ring, %d and %d with rings, %d "
+                "without units; %d once created\n",
+                beforeRings, failing, stillFailing, failingDry, retried);
+    Check(beforeRings == 0 && failing == kPlayerChoice && stillFailing == kPlayerChoice &&
+              failingDry == kPlayerChoice && retried == 0,
+          "a failed ripple map creation puts the client's waterRipples value back at the end of that frame and the "
+          "hold resumes once the map is created");
+}
+
 void CheckGuardMismatchLeavesTheGate(SpriteFrames& frames, const Config& on, SyntheticClientCode code)
 {
     size_t count = 0;
@@ -149,6 +224,8 @@ void CheckClientSprites(Harness& h)
           "the sprite gate binds to a client image whose ripple code matches, and WaterClientSplashes defaults to 0");
     CheckSettingsHoldAndRestoreTheGate(frames, on);
     CheckUnderwaterGrace(frames, on);
+    CheckRefusedCaptureKeepsTheSprites(frames, on);
+    CheckUnavailableRipplesKeepTheSprites(frames, on);
     CheckGuardMismatchLeavesTheGate(frames, on, code);
     vf_test_bind_client_ripple_gate(nullptr, 0, nullptr, 0);
     vf_test_set_water_seconds(water_checks::kRealTime);

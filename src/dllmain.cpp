@@ -298,6 +298,16 @@ extern "C" unsigned __cdecl vf_test_water_contact_reads()
     return TestWaterContactReads();
 }
 
+extern "C" void __cdecl vf_test_refuse_water_contacts(int refused)
+{
+    RefuseTestWaterContacts(refused != 0);
+}
+
+extern "C" void __cdecl vf_test_inject_water_ripple_fault(int fault)
+{
+    InjectWaterRippleFault(static_cast<WaterRippleFault>(fault));
+}
+
 extern "C" int __cdecl vf_test_bind_client_ripple_gate(volatile int32_t* gate, uintptr_t codeBase,
                                                        const unsigned char* code, size_t codeSize)
 {

@@ -33,6 +33,7 @@ struct WaterPassEnd
     const char* skipReason = "no fog device";
     bool flatWaves = false;
     unsigned shadedClasses = 0;
+    bool ripplesAvailable = false;
 };
 
 WaterPassEnd EndWaterPass(FogDevice* device);

@@ -18,6 +18,7 @@ constexpr UINT kStepConstant = 0;
 constexpr UINT kFirstSegmentConstant = 1;
 constexpr UINT kFirstShapeConstant = kFirstSegmentConstant + kMaxWaterRippleDisturbances;
 constexpr float kMaxWindowCentreYards = 100000.0f;
+constexpr const char* kWithheldByHarness = "ripple support withheld by the harness";
 constexpr float kFullscreenTriangle[3][4] = {
     {-1.0f, -1.0f, 0.0f, 1.0f}, {-1.0f, 3.0f, 0.0f, 1.0f}, {3.0f, -1.0f, 0.0f, 1.0f}};
 
@@ -48,6 +49,8 @@ const SamplerSetting kPointClampSampler[] = {
     {D3DSAMP_MIPFILTER, D3DTEXF_NONE},     {D3DSAMP_SRGBTEXTURE, FALSE},
     {D3DSAMP_MAXMIPLEVEL, 0},              {D3DSAMP_MIPMAPLODBIAS, 0},
 };
+
+WaterRippleFault g_injectedRippleFault = WaterRippleFault::None;
 
 template <typename T>
 void SafeRelease(T*& p)
@@ -95,6 +98,11 @@ bool OutsideWindow(const float from[2], const float to[2], float radius, int tex
             return true;
     return false;
 }
+}
+
+void InjectWaterRippleFault(WaterRippleFault fault)
+{
+    g_injectedRippleFault = fault;
 }
 
 WaterRipples::~WaterRipples()
@@ -164,7 +172,9 @@ bool WaterRipples::CheckCapabilities(IDirect3DDevice9* dev)
         }
     d3d->Release();
     const char* unsupported = nullptr;
-    if (caps.PixelShaderVersion < D3DPS_VERSION(3, 0) || caps.VertexShaderVersion < D3DVS_VERSION(3, 0))
+    if (g_injectedRippleFault == WaterRippleFault::Unsupported)
+        unsupported = kWithheldByHarness;
+    else if (caps.PixelShaderVersion < D3DPS_VERSION(3, 0) || caps.VertexShaderVersion < D3DVS_VERSION(3, 0))
         unsupported = "shader model 3 unavailable";
     else if (m_format == D3DFMT_UNKNOWN)
         unsupported = "no filterable 16-bit floating-point render targets";
@@ -210,7 +220,8 @@ bool WaterRipples::EnsureMaps(IDirect3DDevice9* dev, int texels)
     ReleaseDefaultPool();
     const UINT side = static_cast<UINT>(texels);
     for (IDirect3DTexture9*& map : m_maps)
-        if (FAILED(dev->CreateTexture(side, side, 1, D3DUSAGE_RENDERTARGET, m_format, D3DPOOL_DEFAULT, &map,
+        if (g_injectedRippleFault == WaterRippleFault::MapCreation ||
+            FAILED(dev->CreateTexture(side, side, 1, D3DUSAGE_RENDERTARGET, m_format, D3DPOOL_DEFAULT, &map,
                                       nullptr)))
         {
             map = nullptr;
@@ -221,14 +232,21 @@ bool WaterRipples::EnsureMaps(IDirect3DDevice9* dev, int texels)
     return true;
 }
 
-bool WaterRipples::Prepare(IDirect3DDevice9* dev, int texels)
+bool WaterRipples::Supported(IDirect3DDevice9* dev)
 {
     if (dev != m_device)
     {
         ReleaseAll();
         m_device = dev;
     }
-    if (m_unsupported)
+    if (!m_unsupported && !m_capabilitiesChecked)
+        CheckCapabilities(dev);
+    return !m_unsupported;
+}
+
+bool WaterRipples::Prepare(IDirect3DDevice9* dev, int texels)
+{
+    if (!Supported(dev))
         return false;
     m_failure = "";
     if (texels != kWaterRippleTexels && texels != kWaterRippleTexelsLow)

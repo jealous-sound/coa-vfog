@@ -66,6 +66,7 @@ public:
     int RequiredMasks() const { return static_cast<int>(m_foamMasks.size()); }
     WaterRippleStats RippleStats() const;
     WaterRippleShading RippleShading() const;
+    bool RipplesAvailable() const { return m_ripplesAvailable; }
     int LastShadingVariant() const { return m_shadingVariant; }
     const char* LastSkipReason() const { return m_skip; }
 
@@ -246,6 +247,7 @@ private:
     double m_lastRippleSeconds = -1.0;
     uint32_t m_rippleRestarts = 0;
     bool m_ripplesShaded = false;
+    bool m_ripplesAvailable = true;
     const char* m_loggedRippleFailure = "";
     const char* m_loggedWaveState = "";
     bool m_waveStateLogged = false;
