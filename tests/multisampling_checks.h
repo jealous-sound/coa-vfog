@@ -797,8 +797,11 @@ void CheckMultisamplingSetting(const std::wstring& outDir, const std::wstring& s
     const std::vector<std::string> lines = water_settings_checks::IniLines(ReadText(shippedIni));
     const std::string text = ReadText(shippedIni);
     Check(shipped.Get().multisampling && std::count(lines.begin(), lines.end(), std::string("Multisampling=1")) == 1 &&
-              text.find("; 1 = keep the game's Multisampling video option") != std::string::npos,
-          "the shipped INI keeps the game's multisampling (Multisampling=1) and documents the key");
+              text.find("; 1 = keep the game's Multisampling video option") != std::string::npos &&
+              text.find("so turning this on") != std::string::npos &&
+              text.find("; takes effect after restarting the game") != std::string::npos,
+          "the shipped INI keeps the game's multisampling (Multisampling=1), documents the key and says that "
+          "turning it on needs a restart of the game");
 
     const std::wstring savedIni = FullPath(outDir + L"\\multisampling.ini");
     CopyFileW(shippedIni.c_str(), savedIni.c_str(), FALSE);

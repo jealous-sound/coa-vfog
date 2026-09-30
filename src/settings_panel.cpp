@@ -219,8 +219,9 @@ bool DrawAntialiasing(Config& c)
     return Toggle("Keep the game's multisampling", c.multisampling,
                   "Keep the game's Multisampling video option (smooth edges) when the graphics driver can copy its "
                   "depth for the fog and water: NVIDIA through NVAPI, AMD and Intel through RESZ. Off: multisampling "
-                  "stays off. Applies the next time the game resets its display, for example after changing "
-                  "Multisampling in its Video options");
+                  "stays off. The game lists its Multisampling choices once per start, so turning this on takes "
+                  "effect after restarting the game; turning it off applies the next time the game resets its "
+                  "display, for example after changing Multisampling or the resolution in its Video options");
 }
 
 bool DrawWater(Config& c)

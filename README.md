@@ -359,10 +359,11 @@ Engine notes behind the code:
 
 `Ctrl+F7` (`OverlayKey`) shows and hides a Dear ImGui window over the game. On laptops whose F-keys send media
 keys by default, hold Fn (the log names the key that arrived). The window edits every setting below except
-`Enable`, `EngineHooks`, `Overlay` and `OverlayKey`, and the next frame uses the change. **Save** writes the
-settings changed in the window back to `CoAVolFog.ini`, keeping the comments and every other line; settings not
-changed in the window keep what the file holds. **Revert** reloads the file, and a hand edit of the file also
-replaces unsaved changes. The window shows whether the fog drew in the last frame, or why it did not.
+`Enable`, `EngineHooks`, `Overlay` and `OverlayKey`, and the next frame uses the change, except `Multisampling`
+(see Settings). **Save** writes the settings changed in the window back to `CoAVolFog.ini`, keeping the comments
+and every other line; settings not changed in the window keep what the file holds. **Revert** reloads the file,
+and a hand edit of the file also replaces unsaved changes. The window shows whether the fog drew in the last
+frame, or why it did not, and whether the game's multisampling is kept, or why it is off.
 
 While the window is open, clicks and the wheel go to it only while the cursor is over it or a drag started on
 it, and keys only while one of its text fields is active (Ctrl+click on a slider). The hotkey never reaches the
@@ -483,7 +484,7 @@ describe every key. In the game, `Ctrl+F7` opens the same settings in a window (
 | `Temporal` | 0.85 | History weight, 0 = off |
 | `Underwater` | 0 | Keep the effect under water |
 | `LiquidDepth` | 1 | Water surfaces write depth so fog uses their distance (always while modern water is drawn) |
-| `Multisampling` | 1 | Keep the game's Multisampling when its depth can be copied; 0 = off as before (next reset) |
+| `Multisampling` | 1 | Keep the game's Multisampling when its depth can be copied; 0 = off as before (see below) |
 | `DebugView` | 0 | 1 radiance, 2 transmittance, 3 linear depth |
 | `SunMarker` | 0 | Red dot where the light direction projects |
 | `LogLevel` | 1 | 0 errors, 1 info (frame summary with the fog's GPU time, depth probe; see Log), 2 debug |
@@ -499,6 +500,10 @@ describe every key. In the game, `Ctrl+F7` opens the same settings in a window (
 
 Turning `FarClipMax` on from 0 needs a restart; other changes, including 0, apply at the next `farclip` change,
 map load or zone change, where raising it shows a loading screen.
+
+Turning `Multisampling` on from 0 also needs a restart: the game builds its Video options' Multisampling list
+once per start (see Engine inputs), and with 0 that list holds only 1x. Turning it off applies the next time the
+game resets or recreates its display, for example after changing Multisampling or the resolution.
 
 ## Status and limits
 
