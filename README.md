@@ -473,10 +473,12 @@ liquid classification, the water pass driven through the hook entry points (stat
 optics against a CPU reference, fault recovery), the water settings, the packed foam masks, the unit walk on
 synthetic object-manager images, the contact tracker's rings against a harness copy of the client's ripple clock,
 the ripple simulation against a CPU reference, the ripples in the water pass, whose normals are compared with the
-7552035 slope evaluated on the CPU, the rings' visibility in shaded water with the real data, and the hold on the
-client's sprite value, driven through the hooks on a synthetic value and code image, with the unit walk refused and
-the ripple map unsupported or failing. They do not establish in-game appearance or performance. It writes
-`before.png`, `after.png`, `overlay.png` and the debug views to `build/harness-out`.
+7552035 slope evaluated on the CPU (within the depth-copy precision, but for at most 0.5% of the pixels, up to
+6/255 off where the GPU's bilinear weights meet fresh impulses), the rings' visibility in shaded water with the
+real data, and the hold on the client's sprite value, driven through the hooks on a synthetic value and code image,
+with the unit walk refused and the ripple map unsupported or failing. They do not establish in-game appearance or
+performance. It writes `before.png`, `after.png`, `overlay.png` and the debug views to
+`build/harness-out`.
 
 `vfog_harness --scene harbour <dir> --data data/fogdata.bin` renders the logged in-game frame at the
 Stormwind harbour (sunset, far clip 791.6 yd) with ideal depth and with the client's depth range, and

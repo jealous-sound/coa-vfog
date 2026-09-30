@@ -374,7 +374,8 @@ void CheckRippleSlopeFollowsForever(Harness& h, BasinClient& client, const Confi
               c.outliers <= kMaxOutlierShare * c.compared && c.worst <= kMaxOutlierNormalLevels,
           "the shaded ripple normals follow Forever's one-map slope: lerp(G, R, w) between steps, forward differences, "
           "(dx, dy)/sqrt((1 + dx^2)(1 + dy^2)) times 3 WaterRipples and the fade, to within the precision of the water "
-          "depth copy");
+          "depth copy except at most 0.5% of the compared pixels, none more than 6/255 off (the GPU's bilinear "
+          "weight precision next to fresh impulses)");
     ReleaseRipples(client, base, between + kRippleGap);
 }
 
