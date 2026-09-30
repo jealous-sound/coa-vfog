@@ -2494,7 +2494,8 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath, const Ha
 
         AuthoredFog authored = {};
         bool resolved = classic.Resolve(kEasternKingdoms, in.camPos, in.dayFraction, in.lightParams, authored);
-        FogParams fog = BuildFogParams(in, shippedCfg, resolved ? &authored : nullptr);
+        const FogParams drawn = BuildFogParams(in, shippedCfg, resolved ? &authored : nullptr);
+        const FogParams fog = WithMeanNoise(drawn);
         float sunV[3];
         TransformDirection(in.toLight, view, sunV);
         std::printf("\nview %ls: %s (azimuth %.1f, pitch %.1f; sun view-space %.3f %.3f %.3f, refZ %.1f, "
@@ -2504,6 +2505,9 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath, const Ha
         std::printf("  %-31s %6s %6s %6s %13s %6s %15s %15s %15s %15s %6s  %s\n", "probe", "px", "py", "dist",
                     "viewZ/shader", "alpha", "fog rgb", "fog rgb / a", "before", "after", "cpu a",
                     "cpu tau L0 L1 L2 L3");
+        if (AnyLayerNoise(drawn))
+            std::printf("  cpu a and tau take the authored noise at its mean density; the GPU samples the noise, so "
+                        "probes differ where it is patchy\n");
         for (const HarbourProbe& p : kHarbourProbes)
         {
             Vec3 d = ProbeOffsetFromEye(p, hv.baseAzimuth, sunAz, sunEl);

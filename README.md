@@ -131,8 +131,9 @@ modern renderer.
 
 **Phase normalisation.** The authored intensities suggest that the modern client's Henyey–Greenstein lookup is
 energy-normalised, while the phase here peaks at 1 toward the light (inferred, confidence about 0.65; the lookup table
-is not in the kit). The intensity falls as g falls: evenly scattering rows (g = 0) have a median of 12, about 4π, and
-in the 370 rows with g = 0 and intensity 12 the emissive colour equals the diffuse one, which an energy-normalised
+is not in the kit). The intensity rises as g falls: over the client-selected rows its median is 1 for g 0.65–0.85, 2
+for 0.35–0.65, 4 for 0.05–0.35 and 12, about 4π, for evenly scattering rows (g < 0.05; rows above 0.85 have 2), and in
+334 of the 370 rows with g = 0 and intensity 12 the emissive colour equals the diffuse one, which an energy-normalised
 phase turns into equal scattered and emitted light. `ClassicPhase=1` multiplies the Classic layers' sun and moon
 scattering by the ratio of the two phases, `k(g) = (1+g)/(4π(1−g)²)`, capped at g = 0.95 (k = 62) because a few rows
 reach g = 1. With k(0) = 0.080 the horizon band of the evenly scattering far wall is about 12 times dimmer; the near
@@ -175,17 +176,16 @@ blend would sweep the haze through 11 tiles. Scaled about the camera, fog 300 yd
 marked off, with `ClassicNoise=0`, or marked as the mean if the noise volume could not be created), tiles, drift and
 fade colour.
 
-The modern client's noise texture (`t_perlinNoise3D`) is not in the kit, so the volume is ours: a 64³ tileable
-gradient (Perlin) noise with detail layers of 4, 8 and 16 lattice cells per tile at gain 0.5, quantised about its
-median so the S-curve splits it evenly. Its features are about a quarter of a tile, 75 yd in the Eastern Kingdoms
-storm's 300-yd tiles and 1250 yd at Hyjal. The DLL builds it when it installs its hooks at load, in about 6 ms (each
-row sums its lattice gradients once), so the first frame with noise only uploads it. The march samples the noise once per step at the step's sample point for all
-three layers, as the modern client evaluates each froxel once, and the point lights scatter off the same noisy
-density. Where the noise is not sampled a noisy layer takes its mean, density ×(1 − alpha/2) with the emission
-weighted by where fog remains: in the water's reflection fog, which is integrated analytically, in the check of
-whether the Classic layers hide the far clip, and in the lit composite's full-resolution march at silhouettes, which
-has no temp register to spare in ps_3_0. Frames without noise use the shader variants without it, at their previous
-cost.
+The modern client's noise texture (`t_perlinNoise3D`) is not in the kit, so the volume is ours: a 64³ tileable gradient
+(Perlin) noise with detail layers of 4, 8 and 16 lattice cells per tile at gain 0.5, quantised about its median so the
+S-curve splits it evenly. Its features are about a quarter of a tile, 75 yd in the Eastern Kingdoms storm's 300-yd tiles
+and 1250 yd at Hyjal. The DLL builds it when it installs its hooks at load, in about 6 ms (each row sums its lattice
+gradients once), so the first frame with noise only uploads it. The march samples the noise once per step at the step's
+sample point for all three layers, as the modern client evaluates each froxel once, and the point lights scatter off the
+same noisy density. Where the noise is not sampled a noisy layer takes its mean, density ×(1 − alpha/2) with the
+emission weighted by where fog remains: in the water's reflection fog, which is integrated analytically, in the check of
+whether the Classic layers hide the far clip, and in the lit composite's full-resolution march at silhouettes, which has
+no temp register to spare in ps_3_0. Frames without noise use the shader variants without it, at their previous cost.
 
 `fogdata.bin` format 4 holds, after a header of counts: the lights (id, map, position, falloff, eight light params
 slots); every light params a light references, with its `LightParams.Glow` and the range of its fog keys (none for
@@ -460,8 +460,10 @@ to `build/harness-out`.
 `vfog_harness --scene harbour <dir> --data data/fogdata.bin` renders the logged in-game frame at the
 Stormwind harbour (sunset, far clip 791.6 yd) with ideal depth and with the client's depth range, and
 prints fog opacity and colour at probe points next to a CPU integration. `--classic-phase 1` renders it with
-`ClassicPhase=1` and `--storm 1` in a full storm. The DLL reads the `fogdata.bin` beside it, so a new file must be
-copied there as well as named with `--data`.
+`ClassicPhase=1` and `--storm 1` in a full storm. The CPU integration takes layers with authored noise at their mean
+density, while the GPU samples the noise, so in a storm a single probe's opacity differs from the CPU column where the
+noise is patchy (by up to about 0.2 in the harbour's storm probes). The DLL reads the `fogdata.bin` beside it, so a
+new file must be copied there as well as named with `--data`.
 
 `vfog_harness --scene performance` times the fog passes at 1920×1080 at each quality on one street: derived
 layers with no point lights, eight flood lights or eight street lamps, Classic layers at the harbour with and
