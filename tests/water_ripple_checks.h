@@ -692,6 +692,8 @@ void CheckQuietSimulationStops(IDirect3DDevice9* dev)
 void ReportStepCost(IDirect3DDevice9* dev)
 {
     water_fft_checks::WarmUpGpuClocks(dev);
+    if (FAILED(dev->BeginScene()))
+        return;
     for (int texels : {kWaterRippleTexelsLow, kWaterRippleTexels})
         for (int disturbances : kTimedDisturbances)
         {
@@ -721,6 +723,7 @@ void ReportStepCost(IDirect3DDevice9* dev)
             std::printf("     ripple step %d x %d with %d disturbances: median %.4f ms GPU (%zu timed steps)\n",
                         texels, texels, disturbances, water_fft_checks::Median(times), times.size());
         }
+    dev->EndScene();
 }
 
 void CheckWaterRipples(IDirect3DDevice9* dev)
@@ -748,8 +751,8 @@ void CheckWaterRipples(IDirect3DDevice9* dev)
         CheckRecentringKeepsRipplesInPlace(dev);
         CheckSimulationFrameRateIndependence(dev);
         CheckQuietSimulationStops(dev);
-        ReportStepCost(dev);
         dev->EndScene();
+        ReportStepCost(dev);
     }
     if (state)
     {
