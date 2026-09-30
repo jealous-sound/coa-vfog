@@ -161,11 +161,16 @@ float DensityVariationAlongRay(MarchRay ray, float distanceAlongRay)
     return DensityVariation(CameraPositionWorld() + ray.directionWorld * distanceAlongRay);
 }
 
+float WeightedVariation(float variation, float weight)
+{
+    return kSamplesAuthoredNoise ? lerp(1, variation, weight) : variation;
+}
+
 float DensityProfile(FogLayer layer, MarchRay ray, float distanceAlongRay, float variation)
 {
     float density = DistanceCurve(layer, distanceAlongRay) *
                     HeightProfile(layer, ray.cameraHeight + ray.heightPerYard * distanceAlongRay);
-    return density * lerp(1, variation, layer.densityVariation);
+    return layer.densityVariation > 0 ? density * WeightedVariation(variation, layer.densityVariation) : density;
 }
 
 #include "vf_local_lights.hlsli"
@@ -207,7 +212,7 @@ void AccumulateLayer(FogLayer layer, int layerIndex, float noiseDensity, float c
     float heightProfile = HeightProfile(layer, sampleHeight);
     float variation = 1;
     [branch] if (layer.densityVariation > 0 && cDensityVariation.x > 0)
-        variation = lerp(1, LayerVariation(stepVariation, ray, sampleDistance), layer.densityVariation);
+        variation = WeightedVariation(LayerVariation(stepVariation, ray, sampleDistance), layer.densityVariation);
     float directLight = 1 - shadow;
     float layerOpticalDepth = layer.density * skyDensityScale * layerLength * distanceCurve * heightProfile *
                               shadowDensityScale * variation * noiseDensity;
