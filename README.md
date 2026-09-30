@@ -446,8 +446,8 @@ Every 60 s the water adds `water gpu 1.24 ms (median of 3500 frames, 0 skipped),
 (7 tiles), ripples 512 at 0.125 yd, 30 Hz, up to 3 contacts, 0 steps dropped`: its GPU time without the client's
 own water draws, ripple steps included; `ripples idle` means no unit disturbed the water, `ripples off` that
 `WaterRipples` is 0. `water:` lines name each liquid type the first time it is classified; idle states (no water in
-view, camera under water) are logged once and repeats only at `LogLevel=2`. Each settled change from the settings window, an INI reload or Revert is logged as one line, for
-example `settings: WaterFoam 1 -> 1.5, WaterWind 2 -> 4`.
+view, camera under water) are logged once and repeats only at `LogLevel=2`. Each settled change from the settings
+window, an INI reload or Revert is logged as one line, for example `settings: WaterFoam 1 -> 1.5, WaterWind 2 -> 4`.
 
 The depth probe logs raw depth, distance and fog opacity at 25 points on frame 60, then every 60 s up to five
 times (every 30 s without limit at `LogLevel=2`); its rows are read back on a later frame. The first reason a
@@ -546,8 +546,9 @@ client's LUT grading is not reproduced, so colours still differ from Classic.
   water call) still draw on top. The footstep spray `0x723A50` (its spell-visual call at `0x723CD1`,
   `E8 CA 56 FD FF`, for depths below half the height) is not hooked; hooking it would give footsteps their
   animation cadence and is a possible later addition. Game objects (boats, bobbers) make no ripples, one map
-  serves every water level inside the window, and FP16 render-target writes on the test GPU truncate, which damps
-  ripples slightly more than the recurrence (about 6% of the amplitude over 2 s).
+  serves every water level inside the window, the window follows the camera target (which can leave the player in
+  free-look or vehicle views), and FP16 render-target writes on the test GPU truncate, which damps ripples slightly
+  more than the recurrence (about 6% of the amplitude over 2 s).
 - The zone lights' edge fade distance is chosen here: their `TransitionType` is 0 in every row and the modern
   client's transition rule is not known.
 
