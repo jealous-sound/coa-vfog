@@ -1073,7 +1073,7 @@ void WaterRenderer::BuildReflectionFog()
     const bool hasAuthored = m_cfg.dataMode == 1 &&
                              GlobalFogData().Resolve(m_in.mapId, m_in.camPos, m_in.dayFraction, m_in.lightParams,
                                                      authored);
-    const FogParams fog = BuildFogParams(m_in, m_cfg, hasAuthored ? &authored : nullptr);
+    const FogParams fog = WithMeanNoise(BuildFogParams(m_in, m_cfg, hasAuthored ? &authored : nullptr));
     const float exposure = fog.authored ? m_cfg.classicExposure : m_cfg.exposure;
     auto linearScattered = [&fog, exposure](const float* rgb) {
         float out[3];

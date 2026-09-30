@@ -14,9 +14,18 @@
 #include "ps_lit_march_high.h"
 #include "ps_lit_march_low.h"
 #include "ps_lit_march_mid.h"
+#include "ps_lit_noisy_march_high.h"
+#include "ps_lit_noisy_march_low.h"
+#include "ps_lit_noisy_march_mid.h"
 #include "ps_march_high.h"
 #include "ps_march_low.h"
 #include "ps_march_mid.h"
+#include "ps_noisy_composite_high.h"
+#include "ps_noisy_composite_low.h"
+#include "ps_noisy_composite_mid.h"
+#include "ps_noisy_march_high.h"
+#include "ps_noisy_march_low.h"
+#include "ps_noisy_march_mid.h"
 #include "ps_probe.h"
 #include "ps_ray_blur.h"
 #include "ps_ray_mask.h"
@@ -33,7 +42,10 @@
 namespace
 {
 constexpr UINT kPixelConstants = 99;
-constexpr DWORD kStages = 10;
+constexpr DWORD kStages = 11;
+constexpr UINT kLayerNoiseRegister = 36;
+constexpr DWORD kAuthoredNoiseStage = 10;
+constexpr double kMaxNoiseStepSeconds = 0.25;
 constexpr UINT kRayScale = 4;
 constexpr float kMinViewportDepthExtent = 0.01f;
 constexpr float kDeepestWorldDepthInFullRangeViewport = 0.9999995f;
@@ -241,6 +253,7 @@ void Renderer::ReleaseDefaultPool()
     SafeRelease(m_sceneCopy);
     SafeRelease(m_localLightData);
     SafeRelease(m_densityNoise);
+    SafeRelease(m_authoredNoise);
     DropPendingDepthProbe();
     SafeRelease(m_probeTarget);
     SafeRelease(m_probeReadback);
@@ -265,9 +278,15 @@ void Renderer::ReleaseAll()
         SafeRelease(ps);
     for (auto*& ps : m_litMarch)
         SafeRelease(ps);
+    for (auto*& ps : m_noisyMarch)
+        SafeRelease(ps);
+    for (auto*& ps : m_litNoisyMarch)
+        SafeRelease(ps);
     SafeRelease(m_temporal);
     SafeRelease(m_historyDepthShader);
     for (auto*& ps : m_composite)
+        SafeRelease(ps);
+    for (auto*& ps : m_noisyComposite)
         SafeRelease(ps);
     for (auto*& ps : m_litComposite)
         SafeRelease(ps);
@@ -333,11 +352,20 @@ bool Renderer::EnsureShaders(IDirect3DDevice9* dev)
         {"ps_lit_march_low", g_ps_lit_march_low, &m_litMarch[0]},
         {"ps_lit_march_mid", g_ps_lit_march_mid, &m_litMarch[1]},
         {"ps_lit_march_high", g_ps_lit_march_high, &m_litMarch[2]},
+        {"ps_noisy_march_low", g_ps_noisy_march_low, &m_noisyMarch[0]},
+        {"ps_noisy_march_mid", g_ps_noisy_march_mid, &m_noisyMarch[1]},
+        {"ps_noisy_march_high", g_ps_noisy_march_high, &m_noisyMarch[2]},
+        {"ps_lit_noisy_march_low", g_ps_lit_noisy_march_low, &m_litNoisyMarch[0]},
+        {"ps_lit_noisy_march_mid", g_ps_lit_noisy_march_mid, &m_litNoisyMarch[1]},
+        {"ps_lit_noisy_march_high", g_ps_lit_noisy_march_high, &m_litNoisyMarch[2]},
         {"ps_temporal", g_ps_temporal, &m_temporal},
         {"ps_history_depth", g_ps_history_depth, &m_historyDepthShader},
         {"ps_composite_low", g_ps_composite_low, &m_composite[0]},
         {"ps_composite_mid", g_ps_composite_mid, &m_composite[1]},
         {"ps_composite_high", g_ps_composite_high, &m_composite[2]},
+        {"ps_noisy_composite_low", g_ps_noisy_composite_low, &m_noisyComposite[0]},
+        {"ps_noisy_composite_mid", g_ps_noisy_composite_mid, &m_noisyComposite[1]},
+        {"ps_noisy_composite_high", g_ps_noisy_composite_high, &m_noisyComposite[2]},
         {"ps_lit_composite_low", g_ps_lit_composite_low, &m_litComposite[0]},
         {"ps_lit_composite_mid", g_ps_lit_composite_mid, &m_litComposite[1]},
         {"ps_lit_composite_high", g_ps_lit_composite_high, &m_litComposite[2]},
@@ -612,6 +640,36 @@ void Renderer::BindTexture(IDirect3DDevice9* dev, DWORD stage, IDirect3DBaseText
     dev->SetSamplerState(stage, D3DSAMP_MAXMIPLEVEL, 0);
 }
 
+void Renderer::BindWrappedVolume(IDirect3DDevice9* dev, DWORD stage, IDirect3DVolumeTexture9* volume)
+{
+    BindTexture(dev, stage, volume, true);
+    dev->SetSamplerState(stage, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+    dev->SetSamplerState(stage, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+    dev->SetSamplerState(stage, D3DSAMP_ADDRESSW, D3DTADDRESS_WRAP);
+}
+
+FogParams Renderer::DrawableFog(IDirect3DDevice9* dev, const FogParams& fog)
+{
+    if (!AnyLayerNoise(fog))
+        return fog;
+    if (!m_authoredNoise && !CreateAuthoredNoise(dev, &m_authoredNoise))
+        return WithMeanNoise(fog);
+    return fog;
+}
+
+void Renderer::UploadLayerNoise(IDirect3DDevice9* dev, const FogParams& fog, long long now)
+{
+    const double elapsed = m_noiseTicks ? std::min(TickSeconds(now - m_noiseTicks), kMaxNoiseStepSeconds) : 0.0;
+    m_noiseTicks = now;
+    m_noiseScroll.Advance(fog, elapsed);
+    LayerNoiseRegisters registers[kSceneLayers];
+    m_noiseScroll.Registers(fog, registers);
+    static_assert(sizeof(registers) == 4 * kSceneLayers * sizeof(Float4), "noise registers of the scene layers");
+    dev->SetPixelShaderConstantF(kLayerNoiseRegister, &registers[0].octaveOffsetAndInverseTile[0][0],
+                                 4 * kSceneLayers);
+    BindWrappedVolume(dev, kAuthoredNoiseStage, m_authoredNoise);
+}
+
 IDirect3DTexture9* Renderer::FilterWithHistory(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture,
                                                const float* viewToPreviousClip, bool historyValid,
                                                float historyWeight)
@@ -774,7 +832,8 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     AuthoredFog authored = {};
     const bool hasAuthored =
         cfg.dataMode == 1 && GlobalFogData().Resolve(in.mapId, in.camPos, in.dayFraction, in.lightParams, authored);
-    const FogParams fog = BuildFogParams(in, cfg, hasAuthored ? &authored : nullptr);
+    const FogParams fog = DrawableFog(dev, BuildFogParams(in, cfg, hasAuthored ? &authored : nullptr));
+    const bool samplesNoise = AnyLayerNoise(fog);
     LogLightChange(in, authored, hasAuthored);
     const float* proj = in.glProjection;
     const WorldDepthMapping worldDepth = MapWorldDepth(proj, vp);
@@ -905,15 +964,15 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     }
     const Float4 localControl = {static_cast<float>(pointLightCount), marchLightLimit, 0.0f, 0.0f};
     const bool marchesLocalLights = pointLightCount > 0;
-    dev->SetPixelShader((marchesLocalLights ? m_litMarch : m_march)[std::clamp(cfg.quality, 1, 3) - 1]);
+    IDirect3DPixelShader9* const* marches = marchesLocalLights ? (samplesNoise ? m_litNoisyMarch : m_litMarch)
+                                                               : (samplesNoise ? m_noisyMarch : m_march);
+    dev->SetPixelShader(marches[std::clamp(cfg.quality, 1, 3) - 1]);
     dev->SetPixelShaderConstantF(53, &localControl.x, 1);
     BindTexture(dev, 8, m_localLightData, false);
     if (cfg.noiseAmount > 0.0f && !m_densityNoise)
         CreateDensityNoise(dev, &m_densityNoise);
-    BindTexture(dev, 9, m_densityNoise, true);
-    dev->SetSamplerState(9, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
-    dev->SetSamplerState(9, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
-    dev->SetSamplerState(9, D3DSAMP_ADDRESSW, D3DTADDRESS_WRAP);
+    BindWrappedVolume(dev, 9, m_densityNoise);
+    UploadLayerNoise(dev, fog, now);
     const double windPeriod = static_cast<double>(kDensityNoiseSize) / std::max(cfg.noiseScale, 0.001f);
     const Float4 variation = {m_densityNoise ? cfg.noiseAmount : 0.0f, cfg.noiseScale,
                               static_cast<float>(std::fmod(TickSeconds(now) * cfg.noiseWindSpeed, windPeriod)), 0.0f};
@@ -921,7 +980,8 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     BindTexture(dev, 0, depthTexture, false);
     DrawFullscreen(dev);
 
-    m_adaptiveLightingHistory = pointLightCount > 0 || m_prevLocalLightCount > 0 || cfg.noiseAmount > 0.0f;
+    m_adaptiveLightingHistory =
+        pointLightCount > 0 || m_prevLocalLightCount > 0 || cfg.noiseAmount > 0.0f || samplesNoise;
     const bool temporalFiltering = cfg.temporal > 0.0f;
     IDirect3DTexture9* const fogResult =
         temporalFiltering ? FilterWithHistory(dev, depthTexture, reproj, historyValid, cfg.temporal) : m_marchTarget;
@@ -990,10 +1050,13 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     dev->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD);
     dev->SetRenderState(D3DRS_COLORWRITEENABLE,
                         D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
-    dev->SetPixelShader((marchesLocalLights ? m_litComposite : m_composite)[cfg.quality - 1]);
+    IDirect3DPixelShader9* const* composites =
+        marchesLocalLights ? m_litComposite : (samplesNoise ? m_noisyComposite : m_composite);
+    dev->SetPixelShader(composites[cfg.quality - 1]);
     dev->SetPixelShaderConstantF(9, &celestialLight.x, 1);
     dev->SetPixelShaderConstantF(11, &march.x, 1);
-    dev->SetPixelShaderConstantF(12, &fog.layers[0].start, 6 * kFogLayers);
+    const FogParams compositeMarchFog = marchesLocalLights ? WithMeanNoise(fog) : fog;
+    dev->SetPixelShaderConstantF(12, &compositeMarchFog.layers[0].start, 6 * kFogLayers);
     const Float4 composite[3] = {
         {fog.authored ? cfg.classicExposure : cfg.exposure, rays && sceneBlend ? rayStrength : 0.0f,
          static_cast<float>(cfg.debugView), blendMode},

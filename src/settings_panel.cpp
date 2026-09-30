@@ -143,6 +143,10 @@ bool DrawDensity(Config& c)
                       "Larger values make smaller mist patches", ImGuiSliderFlags_Logarithmic);
     changed |= Slider("Mist drift", c.noiseWindSpeed, 0.0f, 10.0f, "%.2f yd/s",
                       "Speed of drifting mist; 0 keeps it stationary");
+    changed |= Toggle("Classic fog noise", c.classicNoise,
+                      "Drifting fog banks where the Classic layers carry the modern client's noise, mostly in storms; "
+                      "it thins those layers to about half their density on average. Off: the density variation "
+                      "above applies to them instead");
     return changed;
 }
 

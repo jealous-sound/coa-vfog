@@ -3,11 +3,10 @@
 #include "config.h"
 #include "engine.h"
 #include "fog_data.h"
+#include "fog_model.h"
 #include "gpu_timing.h"
 
 #include <d3d9.h>
-
-struct FogParams;
 
 class Renderer
 {
@@ -54,6 +53,9 @@ private:
                          const float* viewToWorld, const float* toLightInView, const float* sunPx, float rayStrength);
     void DrawFullscreen(IDirect3DDevice9* dev);
     void BindTexture(IDirect3DDevice9* dev, DWORD stage, IDirect3DBaseTexture9* tex, bool linear);
+    void BindWrappedVolume(IDirect3DDevice9* dev, DWORD stage, IDirect3DVolumeTexture9* volume);
+    FogParams DrawableFog(IDirect3DDevice9* dev, const FogParams& fog);
+    void UploadLayerNoise(IDirect3DDevice9* dev, const FogParams& fog, long long now);
     bool RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* target,
                       const D3DSURFACE_DESC& depthDesc, const FrameInputs& in, const Config& cfg);
 
@@ -61,9 +63,12 @@ private:
     IDirect3DDevice9* m_unsupportedShaderDevice = nullptr;
     IDirect3DPixelShader9* m_march[3] = {};
     IDirect3DPixelShader9* m_litMarch[3] = {};
+    IDirect3DPixelShader9* m_noisyMarch[3] = {};
+    IDirect3DPixelShader9* m_litNoisyMarch[3] = {};
     IDirect3DPixelShader9* m_temporal = nullptr;
     IDirect3DPixelShader9* m_historyDepthShader = nullptr;
     IDirect3DPixelShader9* m_composite[3] = {};
+    IDirect3DPixelShader9* m_noisyComposite[3] = {};
     IDirect3DPixelShader9* m_litComposite[3] = {};
     IDirect3DPixelShader9* m_rayMask = nullptr;
     IDirect3DPixelShader9* m_rayBlur = nullptr;
@@ -78,6 +83,9 @@ private:
     IDirect3DTexture9* m_sceneCopy = nullptr;
     IDirect3DTexture9* m_localLightData = nullptr;
     IDirect3DVolumeTexture9* m_densityNoise = nullptr;
+    IDirect3DVolumeTexture9* m_authoredNoise = nullptr;
+    AuthoredNoiseScroll m_noiseScroll;
+    long long m_noiseTicks = 0;
     IDirect3DTexture9* m_probeTarget = nullptr;
     IDirect3DSurface9* m_probeReadback = nullptr;
     IDirect3DQuery9* m_probeCopied = nullptr;

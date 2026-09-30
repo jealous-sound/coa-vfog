@@ -268,7 +268,7 @@ Image Capture(IDirect3DDevice9* dev)
     return img;
 }
 
-constexpr DWORD kFogPassTextureStages = 10;
+constexpr DWORD kFogPassTextureStages = 11;
 constexpr UINT kFogPassPixelConstants = 99;
 
 struct Sentinel
@@ -1531,6 +1531,7 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "fog_integration_checks.h"
 #include "local_lights_checks.h"
 #include "noise_variation_checks.h"
+#include "authored_noise_checks.h"
 #include "march_layer_checks.h"
 #include "local_light_gpu_checks.h"
 #include "silhouette_quality_checks.h"
@@ -1590,6 +1591,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckThinClassicFogAtHyjalMidnight(classic);
     CheckFogThinsIntoFoglessClassicLight(classic);
     authored_fog::CheckAuthoredFogExtras(classic);
+    authored_noise::CheckAuthoredNoise(classic);
 
     CreateDirectoryW(outDir.c_str(), nullptr);
     g_harnessLog = FullPath(outDir + L"\\harness.log");
@@ -1670,6 +1672,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckLocalLightInputs();
     CheckInteriorFogInputs();
     CheckNoiseVariation(h.dev);
+    authored_noise::CheckAuthoredNoiseOnTheGpu(h.dev);
     march_layers::CheckUnrolledMarchMatchesLoopedMarch(h.dev);
     local_light_gpu::CheckLocalLightIntegration(h.dev);
     silhouette_quality::CheckSilhouettes(h.dev);
@@ -2036,6 +2039,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
 
     runtime_cost::CheckDisabledTemporalSkipsHistoryPasses(h, eye, at, proj, resized);
     CheckRendererSwitchesLitShaders(h);
+    authored_noise::CheckRendererDrawsStormNoise(h);
     runtime_cost::CheckDepthProbeAndGpuTimeLog(h, eye, at);
     runtime_cost::CheckGpuTimerRetriesTransientCreationFailures(h.dev);
     runtime_cost::CheckGpuTimerReportsUnsupportedBeforeFirstSummary(h.dev);

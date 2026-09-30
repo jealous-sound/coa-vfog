@@ -82,7 +82,7 @@ const BoolSetting kBoolSettings[] = {
     {"GlowCompensation", &Config::glowCompensation}, {"LocalLights", &Config::localLights},
     {"InteriorAware", &Config::interiorAware},       {"Underwater", &Config::underwater},
     {"LiquidDepth", &Config::liquidDepth},           {"SunMarker", &Config::sunMarker},
-    {"Water", &Config::water},
+    {"Water", &Config::water},                       {"ClassicNoise", &Config::classicNoise},
 };
 
 template <typename Visit>

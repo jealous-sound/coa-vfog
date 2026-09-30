@@ -22,9 +22,11 @@ wave spectra and foam textures.
   linear and quadratic attenuation. Light/ray intersections preserve small light volumes between march samples.
 - **Interior transitions**: the camera's native WMO blend reduces outdoor layers and sunlight while preserving
   the interior's native fog colour and range.
+- **Authored noise**: drifting fog banks where the Classic layers carry the modern client's noise, mostly in
+  storms (see Classic fog data).
 - **Density variation**: a two-octave field anchored in world space modulates the scene layers around their
   authored mean and drifts along world +X; the distance fog stays smooth so it cannot uncover the far clip. This
-  is an artistic control, not a reconstruction of Classic's authored noise.
+  is an artistic control; layers with authored noise use that instead.
 - **God rays** (optional): a radial blur of the bright sky around the sun.
 - **Modern water** on lakes, rivers, the sea and indoor pools: FFT waves from Forever's wave tiles, refraction,
   depth absorption and in-scattering, foam on wave crests, along shores and in shallow water, a sun or moon glint,
@@ -35,7 +37,8 @@ wave spectra and foam textures.
 
 The march runs at quarter or half resolution (`Quality`). Each step integrates only its overlap with a layer's
 start and end distances, so thin layers and partial boundary steps stay consistent across quality levels. The
-march and composite use shader variants with light code only while a point light is uploaded.
+march and composite use shader variants with light code only while a point light is uploaded, and with noise
+sampling only while a Classic layer carries authored noise.
 
 With `Temporal` above 0, samples vary between frames and a temporal filter accumulates them. It rejects history
 from a different surface depth or depth class (world, distant terrain, sky) and lowers its weight where animated
@@ -93,19 +96,72 @@ column numbers valid. 70009 re-authored 18 light params that lights on 3.3.5 map
 Westfall, Loch Modan, Durotar, Mulgore, the Barrens and the Eastern Kingdoms storm slot) and deselected the third layer
 of the Un'Goro storm; the 152 params with fog that no 69876 light references cannot be placed and are left out.
 
-The converter keeps the fog rows the Classic client selects (flag bit 3) at their layer index (0–2). At run
-time the DLL blends the Classic lights around the camera: spheres at full weight inside the falloff start and
-linear to the falloff end, the rest to the zone light whose outline holds the camera (fading in over 100 yd,
-innermost outline on top), and otherwise to the map's global light. Each light uses the condition slot the
-client uses for its stock lighting: the slot a screen effect forces (the ghost effect forces slot 4, death),
+The converter keeps the fog rows the Classic client selects (flag 0x8), the lowest row ID at each layer index
+(0–2). The other flags are 0x1 shadowed, 0x2 heights relative to the camera and 0x4 authored noise; flag values are
+written in hex here, and the GPU flags above 0x4 are packed by the modern client's CPU. At run time the DLL
+blends the Classic lights around the camera: spheres at full weight inside the falloff start and linear to the
+falloff end, the rest to the zone light whose outline holds the camera (fading in over 100 yd, innermost outline on
+top), and otherwise to the map's global light. Each light uses the condition slot the client uses for its stock
+lighting: the slot a screen effect forces (the ghost effect forces slot 4, death),
 otherwise clear weather (slot 0) blended toward storm (slot 2) by the client's storm weight. The two time keys
 around the current time are interpolated and layers are paired by their Classic layer index.
 
-Then the Classic transforms apply: density ×0.01, heights relative to the player when flag bit 1 is set, shadow
-colour and density for flag bit 0 while the light is below the horizon, `1 + strength·((d − start)/range)^exponent`
-over the `MaxDistance` fog range, and scatter intensities up to 10 in linear light. The sun scattering is scaled
-by the client's direct-light luminance over Classic's, capped at 1, which keeps the fog consistent with the older
-client's darker lighting; this is a compatibility calibration, not a reproduction of the modern renderer.
+Then the Classic transforms apply:
+
+- Density and both height falloffs ×0.01, as the modern client's interior fog shader scales them; each height term
+  is `min(1, exp(...))`, full density between the lower and upper height.
+- With flag 0x2 the heights are relative to a reference near the player: the lower of the camera and its target,
+  minus a yard. The modern interior layers add the camera height instead; the global layers' CPU offset is not in the
+  kit, so which height the modern client uses there is inferred.
+- With flag 0x1, while the sun or moon is below the horizon, the shadow emissive colour and density multiplier;
+  this is the modern shader's form with its shadow term equal to the light's height above the horizon.
+- The distance curve `1 + strength·((d − start)/range)^exponent`, with `MaxDistance` as the range; the modern client
+  uses its fog volume depth, whose value is not in the kit.
+- The authored scatter intensity (0–50 in the data) times a Henyey–Greenstein phase normalised to 1 toward the
+  light, in linear light, plus the emissive colour.
+
+The sun scattering is scaled by the client's direct-light luminance over Classic's, capped at 1, which keeps the fog
+consistent with the older client's darker lighting; this is a compatibility calibration, not a reproduction of the
+modern renderer.
+
+**Authored noise.** Layers with flag 0x4 modulate their density as the modern global fog kernel does (shader
+6674335, variant 002). Two octaves sample a tileable 3D noise volume at `frac((p − offset_i)·inverseTile_i)`. Their
+average over the octaves present passes through a fixed S-curve of contrast 20 about 0.5, `x < ½ ? x²(k+1)/(x+k/2) :
+1 − (1−x)²(k+1)/((1−x)+k/2)` with `k = −19/18`. The curve is blended by alpha, `f = lerp(1, curve, alpha)`; the
+density is multiplied by `f`, and after the shadow colour the emission moves toward the fade colour by `1 − f`. The
+noise only thins: at alpha 1 the curve is nearly a threshold and a layer keeps about half its mean density, so
+layers with noise, mostly storm fog, become patchier and thinner than before. The artistic density variation does not
+apply to them. Through the placed lights the noise reaches 270 layers in 27 light params, most of them storm slots
+(106 Kalimdor and 30 Eastern Kingdoms storm lights), plus a few clear-weather ones such as Hyjal's haze.
+
+The column mapping is inferred (confidence in brackets) and lives in one place, `FogData::UnpackNoise`:
+
+- c4, the fade colour (0.6): set on 187 of the 648 noise rows and on 15 rows without noise, so assigned by
+  elimination among the four colour columns.
+- c16–18 and c19–21, the scroll directions of octaves 0 and 1 (0.7), used unnormalised; lengths √3 and √2 are common.
+- c27[i], octave i's scale in hundreds of yards (0.45): a tile of the volume spans `100·c27` yd, as the interior
+  form's `0.01/noiseScale` implies, and an octave is present when its scale is above 0. The DB2 arrays hold one
+  property per octave, which favours this reading over (scale, speed) pairs per octave.
+- c28[i], octave i's drift speed in yd/s (0.45); the time unit of the modern shader is not in the kit.
+- c24 is carried raw and unused: it is 0 or 1, constant within each light params and 0 on 21 of the 64 noise
+  presets, so it does not behave like a per-layer alpha.
+
+Alpha is the share of a layer's blend weight that carries the noise, so the noise fades in over key, light and weather
+blends; the octave weights and the noise parameters are averaged over the contributions that carry them. The scroll
+offset accumulates direction × speed × elapsed seconds on the CPU in double precision, since the modern shader
+subtracts a CPU offset, and is uploaded wrapped by whole tiles. The frame summary logs each noisy layer's share,
+tiles, drift and fade colour, and `ClassicNoise=0` turns the noise off.
+
+The modern client's noise texture (`t_perlinNoise3D`) is not in the kit, so the volume is ours: a 64³ tileable
+gradient (Perlin) noise with detail layers of 4, 8 and 16 lattice cells per tile at gain 0.5, quantised about its
+median so the S-curve splits it evenly. Its features are about a quarter of a tile, 75 yd in the Eastern Kingdoms
+storm's 300-yd tiles and 1250 yd at Hyjal. The march samples the noise once per step at the step's sample point for all
+three layers, as the modern client evaluates each froxel once, and the point lights scatter off the same noisy
+density. Where the noise is not sampled a noisy layer takes its mean, density ×(1 − alpha/2) with the emission
+weighted by where fog remains: in the water's reflection fog, which is integrated analytically, in the check of
+whether the Classic layers hide the far clip, and in the lit composite's full-resolution march at silhouettes, which
+has no temp register to spare in ps_3_0. Frames without noise use the shader variants without it, at their previous
+cost.
 
 Classic data applies on maps where any Classic light has fog, wherever Classic lights hold at least half of the
 blend weight. A light without fog in the active slot counts with zero density, so the fog thins smoothly into it
@@ -362,14 +418,15 @@ ctest --test-dir build -C Release --output-on-failure
 This runs the comment check and `vfog_harness`, which creates a real D3D9 device through the wrapper with the
 client's flags (`0x52`, auto depth D24S8), renders a Z-up test scene with the client's projection convention,
 and runs the fog passes through the same entry the hook uses. Its checks, in `tests/`, cover the device wrapper
-and state restoration, depth and sky handling, Classic light blending and slot selection, the march against CPU
-integrals at every quality, temporal filtering and upsampling, point lights and interiors, the text and liquid
-depth overrides, fog-data validation, the GPU timer and depth probe, the settings window and INI saving, and
-`Reset`. The water suites check the water data and its loader, the FFT against a double-precision reference, the
-liquid classification, the water pass driven through the hook entry points (state restoration, stencil tagging,
-optics against a CPU reference, fault recovery) and the water settings. They do not establish in-game appearance or
-performance. It writes `before.png`, `after.png`,
-`overlay.png` and the debug views to `build/harness-out`.
+and state restoration, depth and sky handling, Classic light blending and slot selection, the authored noise, glow
+and grading the Classic data resolves, the march against CPU integrals at every quality, the authored noise against
+the modern curve and a CPU sample of the noise volume, temporal filtering and upsampling, point lights and
+interiors, the text and liquid depth overrides, fog-data validation, the GPU timer and depth probe, the settings
+window and INI saving, and `Reset`. The water suites check the water data and its loader, the FFT against a
+double-precision reference, the liquid classification, the water pass driven through the hook entry points (state
+restoration, stencil tagging, optics against a CPU reference, fault recovery) and the water settings. They do not
+establish in-game appearance or performance. It writes `before.png`, `after.png`, `overlay.png` and the debug views
+to `build/harness-out`.
 
 `vfog_harness --scene harbour <dir> --data data/fogdata.bin` renders the logged in-game frame at the
 Stormwind harbour (sunset, far clip 791.6 yd) with ideal depth and with the client's depth range, and
@@ -377,9 +434,10 @@ prints fog opacity and colour at probe points next to a CPU integration.
 
 `vfog_harness --scene performance` times the fog passes at 1920×1080 at each quality on one street: derived
 layers with no point lights, eight flood lights or eight street lamps, Classic layers at the harbour with and
-without the lamps (skipped if `fogdata.bin` beside `CoAVolFog.dll` does not resolve the harbour), and the shipped
-`LogLevel=1`. It prints `quality,case,point_lights,median_ms,p95_ms` of GPU time; this is a controlled renderer
-cost, not a game frame-rate test.
+without the lamps, the same in a full storm, whose near layer carries authored noise (both skipped if `fogdata.bin`
+beside `CoAVolFog.dll` does not resolve the harbour), and the shipped `LogLevel=1`. It prints
+`quality,case,point_lights,median_ms,p95_ms` of GPU time; this is a controlled renderer cost, not a game frame-rate
+test.
 
 ## Install
 
@@ -425,6 +483,7 @@ describe every key. In the game, `Ctrl+F7` opens the same settings in a window (
 | `NoiseAmount` | 0.15 | World-space density variation, 0..1; 0 disables it |
 | `NoiseScale` | 0.025 | Inverse feature size of the variation |
 | `NoiseWindSpeed` | 0.5 | Drift of the variation along world +X in yd/s |
+| `ClassicNoise` | 1 | The modern client's authored noise on the Classic layers that carry it (mostly storms); 0 = off |
 | `StockFog` | 1 | 1 replaces the stock fog with the distance fog, 0 keeps it |
 | `DataMode` | 1 | 1 Classic layers where available, 0 derived layers everywhere |
 | `ColorSpace` | 1 | 1 scatter and blend in linear light with a highlight roll-off, 0 gamma |
