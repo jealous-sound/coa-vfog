@@ -380,7 +380,8 @@ prints fog opacity and colour at probe points next to a CPU integration.
 layers with no point lights, eight flood lights or eight street lamps, Classic layers at the harbour with and
 without the lamps (skipped if `fogdata.bin` beside `CoAVolFog.dll` does not resolve the harbour), and the shipped
 `LogLevel=1`. It prints `quality,case,point_lights,median_ms,p95_ms` of GPU time; this is a controlled renderer
-cost, not a game frame-rate test.
+cost, not a game frame-rate test. `--samples 4` creates the device with 4x multisampling, as the game's option
+would, so the times include the depth copies; the first lines say whether multisampling was kept.
 
 ## Install
 

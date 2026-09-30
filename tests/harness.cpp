@@ -2593,8 +2593,11 @@ int wmain(int argc, wchar_t** argv)
     std::string waterData = "waterdata.bin";
     std::wstring ini = L"CoAVolFog.ini";
     std::wstring scene;
+    D3DMULTISAMPLE_TYPE samples = D3DMULTISAMPLE_NONE;
     for (int i = 1; i + 1 < argc; ++i)
     {
+        if (std::wcscmp(argv[i], L"--samples") == 0 && _wtoi(argv[i + 1]) > 1)
+            samples = static_cast<D3DMULTISAMPLE_TYPE>(_wtoi(argv[i + 1]));
         if (std::wcscmp(argv[i], L"--out") == 0)
             out = argv[i + 1];
         if (std::wcscmp(argv[i], L"--data") == 0)
@@ -2621,7 +2624,7 @@ int wmain(int argc, wchar_t** argv)
     if (scene == L"harbour")
         return RunHarbour(out, data);
     if (scene == L"performance")
-        return RunPerformance();
+        return RunPerformance(samples);
     if (!scene.empty())
     {
         std::printf("unknown scene %ls (known: harbour, performance)\n", scene.c_str());
