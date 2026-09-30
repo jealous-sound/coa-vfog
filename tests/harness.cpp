@@ -17,9 +17,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -1766,6 +1768,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     h.CreateEngineObjects();
     CheckFogIntegration(h.dev);
     CheckLocalLightInputs();
+    CheckPointLightTableCapture();
     CheckHdrLocalLightColours();
     CheckInteriorFogInputs();
     CheckNoiseVariation(h.dev);

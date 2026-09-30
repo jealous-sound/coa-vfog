@@ -464,7 +464,8 @@ Engine notes behind the code:
   `+0x68`; removal `0x834AB0` and the setters `0x835690`/`0x8356F0` maintain the links. Registration skips a
   disabled light (`0x834C79`, `83 7E 60 00`), and the enable setter `0x8356F0` stores its argument at `+0x60`, then
   registers the light again (`0x835716`) or unlinks it (`0x835720`–`0x835740`), so the table holds only enabled
-  lights and the capture treats a disabled entry as a damaged table. Animated M2 positions
+  lights. The capture rejects a table with a disabled or non-point entry and says so in the log (see Log), so a
+  captured light's `enabled` value is never 0 by construction. Animated M2 positions
   are already transformed to world space before the setter (`0x828AF4`). The diffuse already includes the
   animated intensity and model scale (`0x8305B9`–`0x8305FE`) and is uploaded unchanged (`0x835527`,
   `0x6A462F`). The attenuation is uploaded as `D3DLIGHT9::Attenuation0/1/2` (`0x835539`, `0x6A46AC`) with the
@@ -481,7 +482,9 @@ Engine notes behind the code:
   and the instruction bytes at `0x4F90EC`, `0x834C8D`, `0x834D3C`, `0x835539`, `0x7A11B0`, `0x7A11C7`,
   `0x7AEA83` and `0x7F1931`. Reads are SEH-guarded with pointer, span and count limits (512 nodes per bucket,
   8192 in total, links checked against their owner); no client references survive the capture, and invalid
-  inputs give an empty result. `LocalLights=0` skips the point-light walk.
+  inputs give an empty result with the reason: client code that differs, a camera out of range, a damaged table, a
+  disabled or non-point light in it, a table changed during the walk, a read fault or rejected interior groups
+  (which also drop the frame's point lights). `LocalLights=0` skips the point-light walk.
 - Water pass. `0x77F020` jumps to `0x790A80`, which calls the liquid renderer `0x8A2240` at `0x790AA2`
   (`E8 99 17 11 00`) with ECX = `[0xCD8610]` (`0x790A91`), the camera `0xCD8F5C` and pass 1 (`0x790A9B`, `6A 01`);
   it is a thiscall that returns with `ret 8` (`0x8A2376`). The same `0x77F020` runs from `0x4F9170` (camera above
@@ -612,8 +615,12 @@ lights: none uploaded`; a set that changes every frame, such as flickering light
 logged. `LogLevel=2` adds a line per light with what the capture read and what the fog uploads: `local light 0: at
 (x y z), 20.0 yd; diffuse (65.9 255 255), attenuation 0 0.7 0.03, enabled 1; uploaded (12.99 255 255), reach 200.0
 yd`. Raising the level to 2 in the settings window or the INI writes these lines for the set already logged at level
-1, without waiting for it to change. An owner test near a campfire and near a bright doodad checks the static findings in the game: every M2 light is
-expected to carry the attenuation 0, 0.7, 0.03, and a diffuse above 1 where the model's light intensity exceeds 1.
+1, without waiting for it to change. When the capture rejects the client's light table, the first frame with each
+reason logs it once, for example `local lights: capture rejected (disabled light in the table), first on frame 812`;
+the frame summary's `local points` field and a settled `local lights: none uploaded, capture rejected (...)` line
+name it too, so a rejected table is not mistaken for an area without lights. An owner test near a campfire and near
+a bright doodad checks the static findings in the game: every M2 light is expected to carry the attenuation 0, 0.7,
+0.03, and a diffuse above 1 where the model's light intensity exceeds 1; no `capture rejected` line is expected.
 
 Every 60 s the water adds `water gpu 1.24 ms (median of 3500 frames, 0 skipped), classes lake+ocean, waves 256
 (7 tiles)`: its GPU time without the client's own water draws. `water:` lines name each liquid type the first

@@ -84,11 +84,114 @@ void CheckLocalLightInputs()
         unsupported.interiorBlend = 1.0f;
         const bool captured = engine::CaptureLocalLightInputs(camera, withPointLights, {}, unsupported);
         clearedBoth = clearedBoth && !captured && unsupported.pointLightCount == 0 &&
-                      !unsupported.cameraInterior && unsupported.interiorBlend == 0.0f;
+                      !unsupported.cameraInterior && unsupported.interiorBlend == 0.0f &&
+                      unsupported.capture == LocalLightCapture::UnsupportedClient;
     }
     Check(clearedBoth,
-          "native local-light acquisition rejects the harness image and clears stale inputs whether or not the "
-          "point-light walk is requested (the walk skip itself needs the client image)");
+          "native local-light acquisition rejects the harness image as an unsupported client and clears stale inputs "
+          "whether or not the point-light walk is requested (the walk skip itself needs the client image)");
+}
+
+struct TablePointLight
+{
+    uintptr_t scene = 0;
+    uint32_t frameStamp = 0;
+    uint32_t type = 1;
+    float position[3] = {};
+    float viewPosition[3] = {};
+    float direction[3] = {};
+    float ambient[3] = {};
+    float color[3] = {1.0f, 0.5f, 0.25f};
+    float specular[3] = {};
+    float attenuation[3] = {0.0f, 0.7f, 0.03f};
+    uint32_t enabled = 1;
+    uintptr_t previousLink = 0;
+    uintptr_t next = 0;
+};
+
+static_assert(sizeof(TablePointLight) == 0x6C && offsetof(TablePointLight, color) == 0x3C &&
+                  offsetof(TablePointLight, enabled) == 0x60 && offsetof(TablePointLight, next) == 0x68,
+              "the table fixture follows the client's point-light layout recorded in README");
+
+constexpr size_t kSceneBucketsWord = 0x24 / sizeof(uintptr_t);
+constexpr size_t kTableBucketCount = 4096;
+constexpr size_t kLitBucket = 1234;
+
+struct PointLightTable
+{
+    uintptr_t sceneSlot = 0;
+    uintptr_t scene[kSceneBucketsWord + 1] = {};
+    uintptr_t buckets[kTableBucketCount] = {};
+    TablePointLight lights[2];
+};
+
+void LinkPointLightTable(PointLightTable& table)
+{
+    table.sceneSlot = reinterpret_cast<uintptr_t>(table.scene);
+    table.scene[kSceneBucketsWord] = reinterpret_cast<uintptr_t>(table.buckets);
+    uintptr_t* link = &table.buckets[kLitBucket];
+    float x = 10.0f;
+    for (TablePointLight& light : table.lights)
+    {
+        light = {};
+        light.position[0] = x;
+        x += 10.0f;
+        light.scene = table.sceneSlot;
+        light.previousLink = reinterpret_cast<uintptr_t>(link);
+        *link = reinterpret_cast<uintptr_t>(&light);
+        link = &light.next;
+    }
+}
+
+LocalLightCapture CaptureTable(PointLightTable& table, LocalLightInputs& out)
+{
+    const float camera[3] = {};
+    return engine::CapturePointLightTable(reinterpret_cast<uintptr_t>(&table.sceneSlot), camera, {}, out);
+}
+
+bool RejectedWith(PointLightTable& table, LocalLightCapture expected)
+{
+    LocalLightInputs out;
+    out.pointLightCount = 1;
+    return CaptureTable(table, out) == expected && out.capture == expected && out.pointLightCount == 0;
+}
+
+void CheckPointLightTableCapture()
+{
+    auto table = std::make_unique<PointLightTable>();
+    LinkPointLightTable(*table);
+    LocalLightInputs walked;
+    const LocalLightCapture captured = CaptureTable(*table, walked);
+    Check(captured == LocalLightCapture::Captured && walked.capture == LocalLightCapture::Captured &&
+              walked.pointLightCount == 2 &&
+              walked.pointLights[0].nativeId == reinterpret_cast<uintptr_t>(&table->lights[0]) &&
+              walked.pointLights[1].nativeId == reinterpret_cast<uintptr_t>(&table->lights[1]) &&
+              walked.pointLights[1].enabled == 1 && walked.pointLights[1].attenuation[2] == 0.03f,
+          "the point-light walk captures every enabled point light of a linked table with its address and inputs");
+
+    table->lights[1].enabled = 0;
+    const bool disabled = RejectedWith(*table, LocalLightCapture::DisabledLight);
+    LinkPointLightTable(*table);
+    table->lights[1].type = 0;
+    const bool nonPoint = RejectedWith(*table, LocalLightCapture::NonPointLight);
+    LinkPointLightTable(*table);
+    table->lights[1].previousLink = reinterpret_cast<uintptr_t>(&table->buckets[kLitBucket]);
+    const bool damaged = RejectedWith(*table, LocalLightCapture::DamagedTable);
+    Check(disabled && nonPoint && damaged,
+          "the point-light walk names why it rejects a table: a disabled light, a non-point light or a broken link, "
+          "and keeps no lights from it");
+
+    void* unmapped = VirtualAlloc(nullptr, 65536, MEM_RESERVE, PAGE_NOACCESS);
+    LinkPointLightTable(*table);
+    table->sceneSlot = reinterpret_cast<uintptr_t>(unmapped);
+    const bool fault = unmapped && RejectedWith(*table, LocalLightCapture::ReadFault);
+    if (unmapped)
+        VirtualFree(unmapped, 0, MEM_RELEASE);
+    table->sceneSlot = 0;
+    LocalLightInputs noScene;
+    const bool empty = CaptureTable(*table, noScene) == LocalLightCapture::Captured && noScene.pointLightCount == 0;
+    Check(fault && empty,
+          "a scene pointer into unmapped memory is a read fault, and no scene is an empty capture, not a rejection");
 }
 
 constexpr float kStatueGreen = 255.0f;

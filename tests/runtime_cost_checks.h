@@ -238,6 +238,7 @@ void CheckFrameSummaryLogsClassicExtras(Harness& h)
 }
 
 constexpr int kFramesPastLightSetSettling = 40;
+constexpr float kFarClipStepThatLogsASummary = 100.0f;
 constexpr float kLoggedLightAttenuation[3] = {0.0f, 0.7f, 0.03f};
 
 size_t CountOf(const std::string& text, const char* fragment)
@@ -364,6 +365,26 @@ void CheckLocalLightLogLines(Harness& h)
         frame(empty);
     Check(rendered && CountOf(LogWrittenSince(emptyStart), "local lights: none uploaded") == 1,
           "the log says when the last point light stops being uploaded");
+
+    FrameInputs rejected = empty;
+    rejected.localLights.capture = LocalLightCapture::DisabledLight;
+    rejected.farClip = empty.farClip + kFarClipStepThatLogsASummary;
+    const size_t rejectedStart = ReadText(FogLogBesideTheFogDll()).size();
+    frame(rejected);
+    const std::string firstRejectedFrame = LogWrittenSince(rejectedStart);
+    for (int i = 0; i < kFramesPastLightSetSettling; ++i)
+        frame(rejected);
+    const std::string rejectedLog = LogWrittenSince(rejectedStart);
+    Check(rendered &&
+              HasLine(firstRejectedFrame,
+                      "local lights: capture rejected (disabled light in the table), first on frame ") &&
+              HasLine(firstRejectedFrame,
+                      "  local points 0 enabled 1, capture rejected (disabled light in the table); interior ") &&
+              CountOf(rejectedLog, "capture rejected (disabled light in the table), first on frame ") == 1 &&
+              CountOf(rejectedLog, "local lights: none uploaded, capture rejected (disabled light in the table)") ==
+                  1,
+          "a rejected point-light capture is logged with its reason on its first frame, in the frame summary and "
+          "once settled, not as an area without lights");
     vf_test_set_config(&saved);
 }
 

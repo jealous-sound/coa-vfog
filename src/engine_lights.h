@@ -24,12 +24,26 @@ struct LocalPointLight
     uintptr_t nativeId = 0;
 };
 
+enum class LocalLightCapture : uint32_t
+{
+    Captured,
+    UnsupportedClient,
+    CameraOutOfRange,
+    DamagedTable,
+    DisabledLight,
+    NonPointLight,
+    TableChanged,
+    ReadFault,
+    InteriorRejected,
+};
+
 struct LocalLightInputs
 {
     LocalPointLight pointLights[kMaxLocalPointLights] = {};
     uint32_t pointLightCount = 0;
     float interiorBlend = 0.0f;
     bool cameraInterior = false;
+    LocalLightCapture capture = LocalLightCapture::Captured;
 };
 
 namespace engine
@@ -38,6 +52,9 @@ void UploadedPointLightColor(const float captured[3], const PointLightUpload& up
 float PointLightCutoff(const float color[3], const float attenuation[3]);
 bool SelectLocalPointLight(LocalLightInputs& out, const LocalPointLight& light, const float cameraPosition[3],
                            const PointLightUpload& upload);
+const char* LocalLightCaptureName(LocalLightCapture capture);
+LocalLightCapture CapturePointLightTable(uintptr_t sceneSlot, const float cameraPosition[3],
+                                         const PointLightUpload& upload, LocalLightInputs& out);
 bool CaptureLocalLightInputs(const float cameraPosition[3], bool withPointLights, const PointLightUpload& upload,
                              LocalLightInputs& out);
 }

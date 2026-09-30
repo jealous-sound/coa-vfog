@@ -85,6 +85,8 @@ constexpr float kHistoryMinForwardDot = 0.70710678f;
 constexpr float kLoggedStormBlendSteps = 10.0f;
 constexpr unsigned kLocalLightSetSettleFrames = 30;
 constexpr uint64_t kLightIdMixMultiplier = 0x9E3779B97F4A7C15ull;
+constexpr unsigned kLightSetCaptureShift = 32;
+constexpr size_t kCaptureRejectionText = 80;
 
 const D3DRENDERSTATETYPE kRenderStates[] = {
     D3DRS_ZENABLE,          D3DRS_ZWRITEENABLE,  D3DRS_ALPHATESTENABLE,   D3DRS_ALPHABLENDENABLE,
@@ -274,10 +276,17 @@ uint64_t MixedLightId(uintptr_t nativeId)
 
 uint64_t UploadedLightSet(const LocalLightInputs& lights, uint32_t uploaded)
 {
-    uint64_t set = uploaded;
+    uint64_t set = uploaded + (static_cast<uint64_t>(lights.capture) << kLightSetCaptureShift);
     for (uint32_t i = 0; i < uploaded; ++i)
         set += MixedLightId(lights.pointLights[i].nativeId);
     return set;
+}
+
+void DescribeCaptureRejection(LocalLightCapture capture, char* text, size_t size)
+{
+    text[0] = 0;
+    if (capture != LocalLightCapture::Captured)
+        std::snprintf(text, size, ", capture rejected (%s)", engine::LocalLightCaptureName(capture));
 }
 
 float PeakUploadedColor(const LocalPointLight& light)
@@ -404,10 +413,21 @@ void Renderer::LogLightChange(const FrameInputs& in, const AuthoredFog& fog, boo
                 loggedStormStep / kLoggedStormBlendSteps, selection.screenEffectSlot);
 }
 
+void Renderer::LogFirstLocalLightRejection(LocalLightCapture capture)
+{
+    const uint32_t reason = 1u << static_cast<uint32_t>(capture);
+    if (capture == LocalLightCapture::Captured || (m_loggedLocalLightRejections & reason))
+        return;
+    m_loggedLocalLightRejections |= reason;
+    VF_LOG_INFO("local lights: capture rejected (%s), first on frame %u", engine::LocalLightCaptureName(capture),
+                m_frame);
+}
+
 void Renderer::LogUploadedLocalLights(const FrameInputs& in, const Config& cfg, uint32_t uploaded)
 {
     if (!LogEnabled(LogLevel::Info))
         return;
+    LogFirstLocalLightRejection(in.localLights.capture);
     const uint64_t set = UploadedLightSet(in.localLights, uploaded);
     if (set != m_pendingLocalLightSet)
     {
@@ -422,7 +442,9 @@ void Renderer::LogUploadedLocalLights(const FrameInputs& in, const Config& cfg, 
     m_loggedLocalLightDetail = detailed || uploaded == 0;
     if (uploaded == 0)
     {
-        VF_LOG_INFO("local lights: none uploaded%s", cfg.localLights ? "" : " (LocalLights=0)");
+        char rejection[kCaptureRejectionText];
+        DescribeCaptureRejection(in.localLights.capture, rejection, sizeof(rejection));
+        VF_LOG_INFO("local lights: none uploaded%s%s", cfg.localLights ? "" : " (LocalLights=0)", rejection);
         return;
     }
     const LocalPointLight* lights = in.localLights.pointLights;
@@ -976,7 +998,9 @@ void Renderer::LogFrameSummary(IDirect3DDevice9* dev, long long now, const Frame
     char localPoints[32] = "not captured";
     if (cfg.localLights)
         std::snprintf(localPoints, sizeof(localPoints), "%u", in.localLights.pointLightCount);
-    VF_LOG_INFO("  local points %s enabled %d; interior %d blend %.3f", localPoints, cfg.localLights,
+    char rejection[kCaptureRejectionText];
+    DescribeCaptureRejection(in.localLights.capture, rejection, sizeof(rejection));
+    VF_LOG_INFO("  local points %s enabled %d%s; interior %d blend %.3f", localPoints, cfg.localLights, rejection,
                 in.localLights.cameraInterior, in.localLights.interiorBlend);
     for (int i = 0; i < kFogLayers; ++i)
     {

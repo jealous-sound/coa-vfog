@@ -57,6 +57,7 @@ private:
     bool CopyWorldViewport(IDirect3DDevice9* dev, IDirect3DSurface9* target, const D3DVIEWPORT9& vp);
     bool Skip(const char* reason);
     void LogLightChange(const FrameInputs& in, const AuthoredFog& fog, bool authored);
+    void LogFirstLocalLightRejection(LocalLightCapture capture);
     void LogUploadedLocalLights(const FrameInputs& in, const Config& cfg, uint32_t uploaded);
     bool DepthProbeDue(long long now) const;
     bool EnsureDepthProbe(IDirect3DDevice9* dev);
@@ -153,5 +154,6 @@ private:
     unsigned m_pendingLocalLightFrames = 0;
     uint64_t m_loggedLocalLightSet = 0;
     bool m_loggedLocalLightDetail = true;
+    uint32_t m_loggedLocalLightRejections = 0;
     const char* m_skip = "";
 };
