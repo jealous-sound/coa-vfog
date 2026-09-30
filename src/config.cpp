@@ -45,7 +45,7 @@ const IntSetting kIntSettings[] = {
 
 const IntSetting kWaterIntSettings[] = {
     {"WaterQuality", &Config::waterQuality, 1, 3},
-    {"WaterDebugView", &Config::waterDebugView, 0, 5},
+    {"WaterDebugView", &Config::waterDebugView, 0, 6},
 };
 
 const FloatSetting kFloatSettings[] = {
@@ -76,6 +76,7 @@ const FloatSetting kWaterFloatSettings[] = {
     {"WaterSpecular", &Config::waterSpecular, 0.0f, 4.0f},
     {"WaterClarity", &Config::waterClarity, 0.25f, 4.0f},
     {"WaterZoneColors", &Config::waterZoneColors, 0.0f, 1.0f},
+    {"WaterRipples", &Config::waterRipples, 0.0f, 2.0f},
 };
 
 const BoolSetting kBoolSettings[] = {

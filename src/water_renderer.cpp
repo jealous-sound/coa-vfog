@@ -30,10 +30,14 @@ constexpr DWORD kWaterDepthStage = 2;
 constexpr DWORD kFirstSurfaceStage = 3;
 constexpr DWORD kFirstFoamStateStage = 7;
 constexpr DWORD kWaveFoamMaskStage = 11;
+constexpr DWORD kRippleStage = 12;
 constexpr DWORD kShoreFoamMaskStage = 14;
 constexpr DWORD kDepthFoamMaskStage = 15;
 constexpr int kShoreFoamSlot = static_cast<int>(WaterMaskSlot::ShoreFoam);
 constexpr int kDepthFoamSlot = static_cast<int>(WaterMaskSlot::DepthFoam);
+constexpr double kRippleGapSeconds = 1.0;
+constexpr float kRippleEdgeRampPerExtent = 1.0f / 16.0f;
+constexpr float kRippleFadeYards = 4.0f;
 constexpr DWORD kStencilAllBits = 0xFF;
 constexpr DWORD kColourWriteRgb = D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE;
 constexpr DWORD kColourWriteAll = kColourWriteRgb | D3DCOLORWRITEENABLE_ALPHA;
@@ -456,6 +460,9 @@ void WaterRenderer::ReleaseDefaultPool()
     m_stencilArmed = false;
     m_lastSeconds = -1.0;
     m_fft.ReleaseDefaultPool();
+    m_ripples.ReleaseDefaultPool();
+    m_contacts.Reset();
+    m_lastRippleSeconds = -1.0;
 }
 
 void WaterRenderer::ReleaseAll()
@@ -470,6 +477,7 @@ void WaterRenderer::ReleaseAll()
         SafeRelease(shader);
     SafeRelease(m_flat);
     m_fft.ReleaseAll();
+    m_ripples.ReleaseAll();
 }
 
 void WaterRenderer::ReleaseMasks()
@@ -710,6 +718,8 @@ unsigned WaterRenderer::HeldResources() const
         held |= kWaterWaveMapsHeld;
     if (UploadedMasks() > 0)
         held |= kWaterFoamMasksHeld;
+    if (m_ripples.HoldsDeviceResources())
+        held |= kWaterRippleMapsHeld;
     return held;
 }
 
@@ -759,6 +769,20 @@ bool WaterRenderer::MaskPresent(const WaterPreset& preset, int slot) const
         return MaskTexture(preset.masks[slot]) != nullptr;
     const FoamMaskTexture* wave = WaveFoamMasks(preset);
     return wave && wave->present[slot];
+}
+
+WaterRippleStats WaterRenderer::RippleStats() const
+{
+    WaterRippleStats stats;
+    stats.texels = m_ripples.Texels();
+    stats.running = m_ripples.Running();
+    stats.shaded = m_ripplesShaded;
+    stats.contacts = m_contacts.Contacts();
+    stats.tracks = m_contacts.Tracks();
+    stats.steps = m_ripples.StepsRun();
+    stats.droppedSteps = m_ripples.DroppedSteps();
+    stats.restarts = m_rippleRestarts;
+    return stats;
 }
 
 void WaterRenderer::SaveTargets(IDirect3DDevice9* dev)
@@ -1035,6 +1059,77 @@ bool WaterRenderer::SimulateWaves(IDirect3DDevice9* dev, double seconds)
     return m_fft.Run(dev, m_waveSettings, GlobalWaterData().Tiles(), seconds, static_cast<float>(step));
 }
 
+bool WaterRenderer::RippleContinuityBroken(double seconds) const
+{
+    return m_lastRippleSeconds >= 0.0 && (seconds < m_lastRippleSeconds ||
+                                          seconds - m_lastRippleSeconds > kRippleGapSeconds ||
+                                          m_in.mapId != m_rippleMapId);
+}
+
+void WaterRenderer::RestartRipples()
+{
+    m_ripples.Restart();
+    m_contacts.Reset();
+    ++m_rippleRestarts;
+}
+
+void WaterRenderer::ReleaseRipples()
+{
+    m_ripples.ReleaseAll();
+    m_contacts.Reset();
+    m_lastRippleSeconds = -1.0;
+}
+
+bool WaterRenderer::SimulateRipples(IDirect3DDevice9* dev, double seconds)
+{
+    if (m_cfg.waterRipples <= 0.0f)
+    {
+        ReleaseRipples();
+        return false;
+    }
+    if (RippleContinuityBroken(seconds))
+        RestartRipples();
+    m_lastRippleSeconds = seconds;
+    m_rippleMapId = m_in.mapId;
+    m_contacts.Update(m_water.contacts, seconds);
+    m_summaryContacts = std::max(m_summaryContacts, m_contacts.Contacts());
+    if (!m_ripples.Running() && !m_contacts.Emitting())
+        return false;
+    const int texels = m_cfg.waterQuality == kLowQuality ? kWaterRippleTexelsLow : kWaterRippleTexels;
+    if (!m_ripples.Prepare(dev, texels))
+    {
+        const char* failure = m_ripples.LastFailure();
+        if (std::strcmp(failure, m_loggedRippleFailure) != 0)
+            VF_LOG_INFO("water ripples skipped: %s", failure);
+        m_loggedRippleFailure = failure;
+        return false;
+    }
+    m_loggedRippleFailure = "";
+    const WaterRippleSchedule schedule = m_ripples.Schedule(seconds);
+    const float centre[2] = {m_in.camTarget[0], m_in.camTarget[1]};
+    WaterRippleDisturbance disturbances[kMaxWaterRippleDisturbances];
+    for (int step = 0; step < schedule.steps; ++step)
+    {
+        const uint32_t count = m_contacts.DisturbancesAt(schedule.stepSeconds[step], kWaterRippleStepSeconds,
+                                                         disturbances, kMaxWaterRippleDisturbances);
+        m_ripples.Step(dev, centre, disturbances, count);
+    }
+    m_summaryRippleTexels = std::max(m_summaryRippleTexels, texels);
+    m_summaryDroppedSteps += schedule.dropped;
+    return m_ripples.Visible();
+}
+
+void WaterRenderer::FillRippleConstants(double seconds)
+{
+    const WaterRippleWindow window = m_ripples.Window(seconds);
+    const float extent = window.texels > 0 ? window.extent : 1.0f;
+    const float texelUv = window.texels > 0 ? 1.0f / window.texels : 0.0f;
+    m_rippleWindow = {window.origin[0], window.origin[1], 1.0f / extent, texelUv};
+    m_rippleShape = {window.weight, m_ripplesShaded ? m_cfg.waterRipples : 0.0f, extent, 0.0f};
+    m_rippleFade = {extent * (0.5f - kRippleEdgeRampPerExtent), 1.0f / kRippleFadeYards, kWaterRippleTexelYards,
+                    0.0f};
+}
+
 void WaterRenderer::LogWaveState()
 {
     if (!m_wavesAttempted)
@@ -1151,6 +1246,9 @@ void WaterRenderer::FillClassConstants(ShadingConstants& c, const WaterPreset& p
     const float packedUnit = kWaterMaxViewDepth / kPackedDepthLevels * kByteMax;
     c.depthDecode = m_packedDepth ? Float4{packedUnit * kHighByteWeight, packedUnit * kMidByteWeight, packedUnit, 0.0f}
                                   : Float4{1.0f, 0.0f, 0.0f, 0.0f};
+    c.rippleWindow = m_rippleWindow;
+    c.rippleShape = m_rippleShape;
+    c.rippleFade = m_rippleFade;
     for (int slot = 0; slot < kWaterShadedMaskSlots; ++slot)
     {
         const int32_t mask = preset.masks[slot];
@@ -1252,6 +1350,8 @@ void WaterRenderer::ShadeClasses(IDirect3DDevice9* dev, IDirect3DSurface9* targe
     BindPointSampler(dev, kSceneColourStage, m_sceneColour, D3DTADDRESS_MIRROR);
     BindPointSampler(dev, kSceneDepthStage, m_sceneDepth, D3DTADDRESS_MIRROR);
     BindPointSampler(dev, kWaterDepthStage, m_waterDepth, D3DTADDRESS_CLAMP);
+    BindSampler(dev, kRippleStage, m_ripplesShaded ? m_ripples.Map() : m_flat, D3DTADDRESS_CLAMP, D3DTEXF_LINEAR,
+                D3DTEXF_NONE);
     const WaterData& data = GlobalWaterData();
     static_assert(sizeof(ShadingConstants) % sizeof(Float4) == 0, "water constants are whole registers");
     static_assert(kShadingFirstConstant + sizeof(ShadingConstants) / sizeof(Float4) <= kWaterPixelConstants,
@@ -1279,6 +1379,7 @@ bool WaterRenderer::End(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, 
     m_shadedClasses = 0;
     m_shadedClassMask = 0;
     m_wavesSimulated = false;
+    m_ripplesShaded = false;
     if (!m_armed)
         return Skip("water pass not armed");
     RestoreClientStencil(dev);
@@ -1329,11 +1430,21 @@ void WaterRenderer::LogSummaryWhenDue(IDirect3DDevice9* dev)
     char waves[kSummaryTextSize] = "flat";
     if (m_summaryWaveResolution > 0)
         std::snprintf(waves, sizeof(waves), "%d (%d tiles)", m_summaryWaveResolution, m_summaryWaveTiles);
-    VF_LOG_INFO("%s, classes %s, waves %s", gpu[0] ? gpu : "water gpu timing unavailable",
-                classes[0] ? classes : "none", waves);
+    char ripples[kSummaryTextSize] = "off";
+    if (m_summaryRippleTexels > 0)
+        std::snprintf(ripples, sizeof(ripples), "%d at %.3f yd, %.0f Hz, up to %u contacts, %u steps dropped",
+                      m_summaryRippleTexels, kWaterRippleTexelYards, kWaterRippleStepsPerSecond, m_summaryContacts,
+                      m_summaryDroppedSteps);
+    else if (m_cfg.waterRipples > 0.0f)
+        std::snprintf(ripples, sizeof(ripples), "idle, up to %u contacts", m_summaryContacts);
+    VF_LOG_INFO("%s, classes %s, waves %s, ripples %s", gpu[0] ? gpu : "water gpu timing unavailable",
+                classes[0] ? classes : "none", waves, ripples);
     m_summaryClasses = 0;
     m_summaryWaveResolution = 0;
     m_summaryWaveTiles = 0;
+    m_summaryRippleTexels = 0;
+    m_summaryContacts = 0;
+    m_summaryDroppedSteps = 0;
 }
 
 bool WaterRenderer::ShadeTaggedWater(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture,
@@ -1362,6 +1473,8 @@ bool WaterRenderer::ShadeTaggedWater(IDirect3DDevice9* dev, IDirect3DTexture9* d
     RaiseInjectedFault(WaterFaultStage::End);
     m_wavesSimulated = wavesPrepared && SimulateWaves(dev, seconds);
     dev->SetRenderTarget(1, nullptr);
+    m_ripplesShaded = SimulateRipples(dev, seconds);
+    FillRippleConstants(seconds);
     SetPassState(dev);
     CopyLinearDepth(dev, depthTexture, m_waterDepth);
     ShadeClasses(dev, m_saved.colour[0], depthSurface, seconds);

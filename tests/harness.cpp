@@ -66,6 +66,8 @@ extern "C" __declspec(dllimport) void __cdecl vf_test_fail_water_mask_uploads(in
 extern "C" __declspec(dllimport) int __cdecl vf_test_water_masks_uploaded(int*);
 extern "C" __declspec(dllimport) void __cdecl vf_test_force_water_shading_variant(int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_water_shading_variant();
+extern "C" __declspec(dllimport) void __cdecl vf_test_water_ripple_stats(WaterRippleStats*);
+extern "C" __declspec(dllimport) unsigned __cdecl vf_test_water_contact_reads();
 
 namespace
 {
@@ -1548,6 +1550,7 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "water_contact_checks.h"
 #include "water_ripple_checks.h"
 #include "water_checks.h"
+#include "water_ripple_pass_checks.h"
 
 void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3 at,
                                    const float* proj, const D3DVIEWPORT9& world)
@@ -2003,6 +2006,8 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckDepthWriteStateBlockRestore(h.dev);
     CheckWorldTextDepthIsolation(h);
     Config restored = cfg;
+    vf_test_set_config(&restored);
+    water_checks::CheckWaterRipplePass(h, outDir);
     vf_test_set_config(&restored);
     water_checks::CheckWaterPass(h, outDir, waterDataPath);
     vf_test_set_config(&restored);

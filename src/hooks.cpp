@@ -170,6 +170,7 @@ struct WaterClient
     FogDevice* (*device)();
     bool (*frameInputs)(FrameInputs& in);
     bool (*waterInputs)(WaterInputs& water);
+    void (*contacts)(const FrameInputs& in, WaterContactFrame& out);
     WaterClass (*classify)(const void* liquidSettings);
 };
 
@@ -190,7 +191,12 @@ bool GameWaterInputs(WaterInputs& water)
     return true;
 }
 
-const WaterClient kGameWaterClient = {&GameFogDevice, &GameWaterFrameInputs, &GameWaterInputs,
+void GameWaterContacts(const FrameInputs& in, WaterContactFrame& out)
+{
+    engine::CaptureWaterContacts(in.camTarget, out);
+}
+
+const WaterClient kGameWaterClient = {&GameFogDevice, &GameWaterFrameInputs, &GameWaterInputs, &GameWaterContacts,
                                       &engine::ClassifyWaterSettings};
 
 FrameInputs g_testWaterFrame = {};
@@ -208,12 +214,21 @@ bool TestWaterInputs(WaterInputs& water)
     return true;
 }
 
+unsigned g_testWaterContactReads = 0;
+
+void TestWaterContacts(const FrameInputs&, WaterContactFrame& out)
+{
+    out = g_testWaterInputs.contacts;
+    ++g_testWaterContactReads;
+}
+
 WaterClass TestWaterClass(const void* liquidSettings)
 {
     return liquidSettings ? static_cast<WaterClass>(*static_cast<const int*>(liquidSettings)) : WaterClass::None;
 }
 
-const WaterClient kTestWaterClient = {&LatestFogDevice, &TestWaterFrameInputs, &TestWaterInputs, &TestWaterClass};
+const WaterClient kTestWaterClient = {&LatestFogDevice, &TestWaterFrameInputs, &TestWaterInputs, &TestWaterContacts,
+                                      &TestWaterClass};
 const WaterClient* g_waterClient = &kGameWaterClient;
 
 void RecordFogFrame(bool rendered, bool cameraUnderLiquid, const char* skip)
@@ -357,6 +372,9 @@ WaterArming ArmWaterPass(FogDevice* device, const Config& cfg, const char** reas
         *reason = "the client's water colours are unavailable";
         return WaterArming::Failed;
     }
+    water.contacts = {};
+    if (cfg.waterRipples > 0.0f)
+        g_waterClient->contacts(in, water.contacts);
     const char* skip = "";
     if (BeginWaterPass(device, in, water, cfg, &skip))
         return WaterArming::Armed;
@@ -1014,6 +1032,11 @@ void UseTestWaterClient(const FrameInputs& in, const WaterInputs& water)
     g_testWaterInputs = water;
     g_waterClient = &kTestWaterClient;
     g_waterHooksInstalled = true;
+}
+
+unsigned TestWaterContactReads()
+{
+    return g_testWaterContactReads;
 }
 
 bool TagHookedWaterDraw(const void* liquidSettings)

@@ -6,6 +6,9 @@ static const float kAdtTilesPerYard = 0.001875;
 static const float kSlopeToAdtUv = 0.001;
 static const float kMinFoamFade = 1e-4;
 static const float kMinRayRise = 1e-4;
+static const float kRippleSlopeScale = 3;
+static const float kRippleFullDetailTexels = 2;
+static const float kRippleDetailFadeTexels = 2;
 
 struct WaterPixel
 {
@@ -24,6 +27,13 @@ struct WaveState
 {
     float4 moments;
     float2 foam;
+};
+
+struct RippleSample
+{
+    float height;
+    float2 slope;
+    float coverage;
 };
 
 float2 CopyUv(float2 pixel)
@@ -92,7 +102,38 @@ float ShallowTileWeight(float inverseTileSize, float columnDepth)
     return saturate(lerp(shallowAmplitude, 1, Tanh(4 * kPi * columnDepth * inverseTileSize)));
 }
 
-WaveState SampleWaves(WaterPixel w)
+float RippleHeight(float2 uv)
+{
+    float2 state = tex2Dlod(sRipples, float4(uv, 0, 0)).rg;
+    return lerp(state.g, state.r, RippleWeight());
+}
+
+float RippleCoverage(WaterPixel w, float2 uv)
+{
+    float2 fromCentre = abs(uv - 0.5) * RippleExtent();
+    float window = saturate((RippleFadeEnd() - max(fromCentre.x, fromCentre.y)) * RippleInverseFadeWidth());
+    float footprintTexels = max(length(w.footprintX), length(w.footprintY)) / RippleTexelYards();
+    return window * saturate(1 - (footprintTexels - kRippleFullDetailTexels) / kRippleDetailFadeTexels);
+}
+
+RippleSample SampleRipples(WaterPixel w)
+{
+    RippleSample ripples = (RippleSample)0;
+    float2 uv = (w.position.xy - RippleOrigin()) * RippleInverseExtent();
+    ripples.coverage = RippleGain() > 0 ? RippleCoverage(w, uv) : 0;
+    [branch] if (ripples.coverage > 0)
+    {
+        float step = RippleTexelUv();
+        ripples.height = RippleHeight(uv);
+        float dx = RippleHeight(uv + float2(step, 0)) - ripples.height;
+        float dy = RippleHeight(uv + float2(0, step)) - ripples.height;
+        float2 gradient = float2(dx, dy) * rsqrt((1 + dx * dx) * (1 + dy * dy));
+        ripples.slope = gradient * kRippleSlopeScale * RippleGain() * ripples.coverage;
+    }
+    return ripples;
+}
+
+WaveState SampleWaves(WaterPixel w, float2 rippleSlope)
 {
     float4 inverseSize = cInverseTileSizes;
     float4 weight = float4(ShallowTileWeight(inverseSize.x, w.columnDepth),
@@ -104,6 +145,7 @@ WaveState SampleWaves(WaterPixel w)
                     weight.y * SampleTile(sSurface1, w, inverseSize.y) +
                     weight.z * SampleTile(sSurface2, w, inverseSize.z) +
                     weight.w * SampleTile(sSurface3, w, inverseSize.w);
+    waves.moments.xy += rippleSlope;
     waves.foam = weight.x * SampleFoamState(sFoamState0, w, inverseSize.x) +
                  weight.y * SampleFoamState(sFoamState1, w, inverseSize.y) +
                  weight.z * SampleFoamState(sFoamState2, w, inverseSize.z) +

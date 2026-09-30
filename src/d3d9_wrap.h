@@ -45,3 +45,5 @@ int UploadedWaterMasks(FogDevice* device);
 int RequiredWaterMasks(FogDevice* device);
 int LastWaterShadingVariant(FogDevice* device);
 
+struct WaterRippleStats;
+void ReadWaterRippleStats(FogDevice* device, WaterRippleStats& out);

@@ -4,6 +4,7 @@
 #include <d3d9.h>
 
 #include "fog_data.h"
+#include "engine_actors.h"
 #include "engine_lights.h"
 #include "water_types.h"
 
@@ -43,6 +44,7 @@ struct WaterInputs
     uint32_t riverColors[kWaterColorPair];
     uint32_t oceanColors[kWaterColorPair];
     bool stockFogApplies;
+    WaterContactFrame contacts;
 };
 
 namespace engine

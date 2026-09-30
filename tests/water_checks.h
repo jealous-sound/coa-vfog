@@ -589,6 +589,7 @@ public:
     }
 
     const WaterView& View() const { return m_v; }
+    void UseView(const WaterView& view) { m_v = view; }
 
 private:
     void BeginClientFrame()
@@ -1440,8 +1441,9 @@ void CheckWaterGpuTimeSummary(BasinClient& client, const Config& base)
         at != std::string::npos && std::sscanf(text.c_str() + at, format, &medianMs, &frames, &skipped, details) == 4;
     std::printf("     water summary: %.3f ms over %u frames, %u skipped, %s\n", medianMs, frames, skipped, details);
     Check(began && parsed && frames > 0 && medianMs > 0.0f &&
-              std::strcmp(details, "classes lake, waves 256 (3 tiles)") == 0,
-          "the water summary reports the water pass's GPU time, the classes shaded and the wave simulation");
+              std::strcmp(details, "classes lake, waves 256 (3 tiles), ripples idle, up to 0 contacts") == 0,
+          "the water summary reports the water pass's GPU time, the classes shaded, the wave simulation and the idle "
+          "ripples");
     const Config on = WaterConfig(base);
     vf_test_set_config(&on);
 }

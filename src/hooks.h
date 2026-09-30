@@ -33,6 +33,7 @@ extern "C" void __cdecl vf_on_water_pass_end();
 
 void RecordHookedFogFrame(bool rendered, bool cameraUnderLiquid, const char* skip);
 void UseTestWaterClient(const FrameInputs& in, const WaterInputs& water);
+unsigned TestWaterContactReads();
 const void* RetargetWaterPassThunk(uintptr_t target);
 void ReuseWaterPassBeginArgumentSlot(bool reuse);
 bool TagHookedWaterDraw(const void* liquidSettings);

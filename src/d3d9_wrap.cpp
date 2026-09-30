@@ -964,3 +964,7 @@ int RequiredWaterMasks(FogDevice* device)
     return device ? device->Water().RequiredMasks() : 0;
 }
 
+void ReadWaterRippleStats(FogDevice* device, WaterRippleStats& out)
+{
+    out = device ? device->Water().RippleStats() : WaterRippleStats();
+}

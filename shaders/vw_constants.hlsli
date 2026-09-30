@@ -26,6 +26,9 @@ float4 cDepthDecode : register(c33);
 float4 cMaskTints[10] : register(c34);
 float4 cReflectionFogLayers[20] : register(c44);
 float4 cReflectionFogRange : register(c64);
+float4 cRippleWindow : register(c65);
+float4 cRippleShape : register(c66);
+float4 cRippleFade : register(c67);
 
 sampler2D sSceneColour : register(s0);
 sampler2D sSceneDepth : register(s1);
@@ -39,6 +42,7 @@ sampler2D sFoamState1 : register(s8);
 sampler2D sFoamState2 : register(s9);
 sampler2D sFoamState3 : register(s10);
 sampler2D sWaveFoamMasks : register(s11);
+sampler2D sRipples : register(s12);
 sampler2D sShoreFoamMask : register(s14);
 sampler2D sDepthFoamMask : register(s15);
 
@@ -198,3 +202,47 @@ float3 MaskTintHigh(int slot)
     return cMaskTints[slot * 2 + 1].rgb;
 }
 
+float2 RippleOrigin()
+{
+    return cRippleWindow.xy;
+}
+
+float RippleInverseExtent()
+{
+    return cRippleWindow.z;
+}
+
+float RippleTexelUv()
+{
+    return cRippleWindow.w;
+}
+
+float RippleWeight()
+{
+    return cRippleShape.x;
+}
+
+float RippleGain()
+{
+    return cRippleShape.y;
+}
+
+float RippleExtent()
+{
+    return cRippleShape.z;
+}
+
+float RippleFadeEnd()
+{
+    return cRippleFade.x;
+}
+
+float RippleInverseFadeWidth()
+{
+    return cRippleFade.y;
+}
+
+float RippleTexelYards()
+{
+    return cRippleFade.z;
+}

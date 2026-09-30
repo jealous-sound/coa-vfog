@@ -65,6 +65,7 @@ struct Config
     float waterSpecular = 1.0f;
     float waterClarity = 1.0f;
     float waterZoneColors = 0.5f;
+    float waterRipples = 1.0f;
     int waterDebugView = 0;
 };
 
