@@ -332,6 +332,61 @@ bool Measure(Harness& h, Timer& timer, const Config& config, const FrameInputs& 
     return true;
 }
 
+void PrintTiming(int quality, const char* name, uint32_t pointLights, std::vector<double>& samples)
+{
+    std::sort(samples.begin(), samples.end());
+    const double median = (samples[kMeasuredFrames / 2 - 1] + samples[kMeasuredFrames / 2]) * 0.5;
+    const double p95 = samples[(kMeasuredFrames * 95 + 99) / 100 - 1];
+    std::printf("%d,%s,%u,%.3f,%.3f\n", quality, name, pointLights, median, p95);
+    std::fflush(stdout);
+}
+
+bool MeasureGrading(Harness& h, Timer& timer, const Street& street, const float* projection,
+                    const D3DVIEWPORT9& viewport)
+{
+    float curve[kGradingCurveEntries];
+    forever_look_checks::SyntheticCurve(curve);
+    const ForeverLookFrame look = forever_look_checks::GradingFrame(viewport, 1.0f, curve);
+    Config config;
+    config.overlay = false;
+    config.logLevel = kErrorLogLevel;
+    config.colorGrading = 1.0f;
+    vf_test_set_config(&config);
+    vf_test_use_forever_look_frame(&look);
+    const FrameInputs inputs = StreetInputs(street, FogSource::Derived, projection, viewport);
+    h.scene = SceneAlong(street);
+    std::vector<double> samples;
+    for (int frame = 0; frame < kWarmupFrames + kMeasuredFrames; ++frame)
+    {
+        GradingStats before;
+        GradingStats after;
+        h.BeginFrame();
+        h.DrawScene(street.eye, inputs.cameraRelativeView, inputs.glProjection, inputs.viewport);
+        vf_test_forever_look_world_done();
+        vf_test_grading_stats(&before);
+        const bool started = timer.Begin();
+        vf_test_hook_frame_end();
+        const bool ended = timer.End();
+        vf_test_grading_stats(&after);
+        h.dev->EndScene();
+        double milliseconds = 0;
+        if (after.grades != before.grades + 1 || !started || !ended || !timer.Resolve(milliseconds))
+        {
+            std::printf("colour grading measurement failed\n");
+            return false;
+        }
+        if (frame >= kWarmupFrames)
+            samples.push_back(milliseconds);
+        if (FAILED(h.dev->Present(nullptr, nullptr, nullptr, nullptr)))
+            return false;
+    }
+    Config off = config;
+    off.colorGrading = 0.0f;
+    vf_test_set_config(&off);
+    PrintTiming(0, "colour-grading", 0, samples);
+    return true;
+}
+
 bool WarmUpGpuClocks(Harness& h, Timer& timer, const Street& street, const float* projection,
                      const D3DVIEWPORT9& viewport)
 {
@@ -428,15 +483,10 @@ bool MeasureCases(Harness& h)
             std::vector<double> samples;
             if (!Measure(h, timer, config, inputs, street.eye, samples))
                 return false;
-            std::sort(samples.begin(), samples.end());
-            const double median = (samples[kMeasuredFrames / 2 - 1] + samples[kMeasuredFrames / 2]) * 0.5;
-            const double p95 = samples[(kMeasuredFrames * 95 + 99) / 100 - 1];
-            std::printf("%d,%s,%u,%.3f,%.3f\n", quality, benchmark.name, inputs.localLights.pointLightCount, median,
-                        p95);
-            std::fflush(stdout);
+            PrintTiming(quality, benchmark.name, inputs.localLights.pointLightCount, samples);
         }
     }
-    return true;
+    return MeasureGrading(h, timer, derivedStreet, projection, viewport);
 }
 }
 
