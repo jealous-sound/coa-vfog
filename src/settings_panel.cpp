@@ -178,6 +178,10 @@ bool DrawLight(Config& c)
     changed |= Toggle("Local lights", c.localLights, "Scatter nearby point lights from the world into the fog");
     changed |= Slider("Local light intensity", c.localLightIntensity, 0.0f, 8.0f, "%.2f",
                       "Brightness of nearby point lights in the fog");
+    changed |= Slider("Local light phase", c.localLightPhase, -0.9f, 0.9f, "%.2f",
+                      "How every point light scatters in the fog: 0 evenly in all directions; toward 0.9 mostly in "
+                      "the fog between you and the light; below 0 the fog behind the light, steeply brighter toward "
+                      "-0.9. The modern client uses one such value for all its lights; 0.3 is a calibration");
     changed |= Slider("God rays", c.godRays, 0.0f, 4.0f, "%.2f",
                       "Radial rays from the bright sky around the sun, 0 = off");
     changed |= Toggle("Glow compensation", c.glowCompensation,

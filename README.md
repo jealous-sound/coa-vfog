@@ -19,7 +19,8 @@ wave spectra and foam textures.
   too thin to hide the far clip.
 - **Forward scattering** around the visible sun or moon sprite (Henyey–Greenstein phase).
 - **Local lights**: up to eight nearby native point lights scatter into the medium with the client's constant,
-  linear and quadratic attenuation. Light/ray intersections preserve small light volumes between march samples.
+  linear and quadratic attenuation and one phase for every light (`LocalLightPhase`). Light/ray intersections
+  preserve small light volumes between march samples.
 - **Interior transitions**: the camera's native WMO blend reduces outdoor layers and sunlight while preserving
   the interior's native fog colour and range.
 - **Authored noise**: drifting fog banks where the Classic layers carry the modern client's noise, mostly in
@@ -61,6 +62,17 @@ about 197,000. The capture holds only the product, so the split is a choice here
 colours on the CPU is not in the kit. That colour times `LocalLightIntensity` is what the fog scatters, and the
 eight-light ranking and the reach cutoff (1/256 of it, at most 200 yd) use it too, so `LocalLightIntensity=0` uploads no
 light.
+
+Every point light scatters with one Henyey–Greenstein phase normalised to 1 toward the light,
+`((1−g)/√(1+g²−2g·cos))³` with g = `LocalLightPhase`, weighted by the total density of the layers, as the modern
+client's fog-light kernel 6227851 does: it reads one g for all local lights (`c_lightScatteringParams.x`, read by no
+other shader) and uses the layers' own g only for the sun. With the layers' sun g a lamp seen side-on kept about 4% of
+its glow toward the light in a Classic layer at the median g of 0.6 and 0.04% at g 0.9, a fifth of the rows. The
+kernel's g is set on the CPU and is not in the kit, so the default 0.3 is a calibration: the fog beside a lamp keeps
+0.30 of the glow toward it and the fog behind it 0.16. Where the derived layers apply (no Classic data) they used to mix
+their own g with 30–70% isotropic scattering; with 0.3 a lamp's side glow stays as it was in the haze, halves in the
+ground mist and falls to about a third in the distance fog. One phase also takes the four per-layer phases out of the
+lit march and composites (about 100 instruction slots each).
 
 Fog renders once after the world, including its late geometry and the native sun/moon glare, and before screen
 effects and the UI. While it draws, the stock fog is pushed out of range for the world render and restored
@@ -640,6 +652,7 @@ describe every key. In the game, `Ctrl+F7` opens the same settings in a window (
 | `ClassicExposure` | 1 | Brightness of the Classic layers (1 = as authored) |
 | `ClassicPhase` | 0 | Classic sun and moon scattering: 0 phase peaks at 1 toward the light, 1 energy-normalised |
 | `LocalLights`, `LocalLightIntensity` | 1, 1 | Scatter up to eight nearby world point lights; intensity 0..8 |
+| `LocalLightPhase` | 0.3 | Henyey–Greenstein g of every point light in the fog, −0.9..0.9 (a calibration) |
 | `InteriorAware`, `InteriorDensity` | 1, 0.15 | Fade outdoor layers indoors, keeping this fraction of their density |
 | `GodRays` | 0 | Radial sky rays, 0 = off |
 | `GlowCompensation` | 1 | Pre-compensate the fog for the client's glow |

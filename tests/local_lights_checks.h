@@ -250,11 +250,22 @@ void CheckInteriorFogInputs()
     ConfigStore settings;
     Config edited = settings.Get();
     edited.localLightIntensity = 20.0f;
+    edited.localLightPhase = 2.0f;
     edited.interiorDensity = -1.0f;
     edited.localLights = false;
     edited.interiorAware = false;
     settings.Apply(edited);
-    Check(settings.Get().localLightIntensity == 8.0f && settings.Get().interiorDensity == 0.0f &&
-              !settings.Get().localLights && !settings.Get().interiorAware && settings.HasUnsavedChanges(),
+    Check(settings.Get().localLightIntensity == 8.0f && settings.Get().localLightPhase == 0.9f &&
+              settings.Get().interiorDensity == 0.0f && !settings.Get().localLights &&
+              !settings.Get().interiorAware && settings.HasUnsavedChanges(),
           "local-light and interior controls clamp and participate in live-setting changes");
+    edited.localLightPhase = -2.0f;
+    settings.Apply(edited);
+    Config shipped;
+    Config phased = shipped;
+    phased.localLightPhase = 0.5f;
+    Check(settings.Get().localLightPhase == -0.9f && shipped.localLightPhase == 0.3f &&
+              !SameFogSettings(shipped, phased) &&
+              SettingChanges(shipped, phased) == "LocalLightPhase 0.3 -> 0.5",
+          "LocalLightPhase defaults to 0.3, clamps to -0.9..0.9, discards fog history and logs its changes");
 }

@@ -1199,7 +1199,7 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDir
         marchLightLimit = std::max(marchLightLimit, std::nextafter(limit, std::numeric_limits<float>::infinity()));
     }
     LogUploadedLocalLights(in, cfg, pointLightCount);
-    const Float4 localControl = {static_cast<float>(pointLightCount), marchLightLimit, 0.0f, 0.0f};
+    const Float4 localControl = {static_cast<float>(pointLightCount), marchLightLimit, cfg.localLightPhase, 0.0f};
     const bool marchesLocalLights = pointLightCount > 0;
     IDirect3DPixelShader9* const* marches = marchesLocalLights ? (samplesNoise ? m_litNoisyMarch : m_litMarch)
                                                                : (samplesNoise ? m_noisyMarch : m_march);

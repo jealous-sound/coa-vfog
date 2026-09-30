@@ -25,7 +25,20 @@ struct Result
     bool valid = false;
 };
 
-Result Reference(const Medium& medium, const Light* lights, int count)
+struct Scattering
+{
+    float layerG = 0;
+    float layerIsotropic = 1;
+    float localLightPhase = 0;
+};
+
+double PeakNormalisedPhase(double g, double cosAngle)
+{
+    const double ratio = (1.0 - g) / std::sqrt(1.0 + g * g - 2.0 * g * cosAngle);
+    return ratio * ratio * ratio;
+}
+
+Result Reference(const Medium& medium, const Light* lights, int count, double localLightPhase = 0)
 {
     constexpr int samples = 32768;
     const double step = (medium.end - medium.start) / samples;
@@ -46,9 +59,10 @@ Result Reference(const Medium& medium, const Light* lights, int count)
                                                         source.attenuation[1] * separation +
                                                         source.attenuation[2] * squared);
             const double fade = (std::min)(1.0, (source.radius - separation) * 4.0 / source.radius);
+            const double phase = PeakNormalisedPhase(localLightPhase, -along / (std::max)(separation, 1e-9));
             for (int channel = 0; channel < 3; ++channel)
                 integral[channel] += source.colour[channel] * transmission * medium.density * step *
-                                     fade / attenuation;
+                                     fade * phase / attenuation;
         }
     }
     Result result;
@@ -95,7 +109,8 @@ float DecodeHalf(unsigned short value)
 
 Result Draw(IDirect3DDevice9* device, const FogIntegrationResources& resources, IDirect3DTexture9* lightTexture,
              const Medium& medium, const Light* lights, int count, D3DFORMAT format = D3DFMT_A8R8G8B8,
-             int layerCount = 1, float maxDistance = 1000.0f, float marchLightLimit = 0.0f)
+             int layerCount = 1, float maxDistance = 1000.0f, float marchLightLimit = 0.0f,
+             const Scattering& scattering = {})
 {
     Result result;
     if (!FillLights(lightTexture, lights, count))
@@ -121,13 +136,15 @@ Result Draw(IDirect3DDevice9* device, const FogIntegrationResources& resources, 
         const int first = 12 + layer * 6;
         constants[first][0] = static_cast<float>(medium.start);
         constants[first][1] = static_cast<float>(medium.density / layerCount);
-        constants[first][3] = 1;
+        constants[first][2] = scattering.layerG;
+        constants[first][3] = scattering.layerIsotropic;
         constants[first + 2][3] = 1;
         constants[first + 4][3] = 1;
         constants[first + 5][2] = static_cast<float>(medium.end);
     }
     constants[53][0] = static_cast<float>(count);
     constants[53][1] = marchLightLimit;
+    constants[53][2] = scattering.localLightPhase;
     if (FAILED(device->SetPixelShaderConstantF(0, &constants[0][0], 99)))
         return result;
     const float quad[4][4] = {{-0.5f, -0.5f, 0, 1}, {7.5f, -0.5f, 0, 1},
@@ -167,6 +184,44 @@ Result Draw(IDirect3DDevice9* device, const FogIntegrationResources& resources, 
     }
     result.valid = SUCCEEDED(resources.readback->UnlockRect());
     return result;
+}
+
+constexpr float kShippedLocalLightPhase = 0.3f;
+constexpr float kClassicForwardHazeG = 0.9f;
+constexpr float kNearFogG = 0.2f;
+constexpr float kVisibleSideGlow = 0.5f;
+constexpr float kSideGlowRelativeTolerance = 0.03f;
+
+void CheckSideOnGlowFollowsLocalLightPhase(IDirect3DDevice9* device, const FogIntegrationResources& floatTarget,
+                                           IDirect3DTexture9* lights, int quality)
+{
+    const Medium medium = {140, 160, 0.002};
+    const Light beside = {150, 8, 1000, {30, 70, 10}};
+    const Result expected = Reference(medium, &beside, 1, kShippedLocalLightPhase);
+    device->SetRenderTarget(0, floatTarget.target);
+    const Result inHaze = Draw(device, floatTarget, lights, medium, &beside, 1, D3DFMT_A32B32G32R32F, 1, 1000, 0,
+                               {kClassicForwardHazeG, 0, kShippedLocalLightPhase});
+    const Result inNearFog = Draw(device, floatTarget, lights, medium, &beside, 1, D3DFMT_A32B32G32R32F, 1, 1000, 0,
+                                  {kNearFogG, 0, kShippedLocalLightPhase});
+    bool followsPhase = inHaze.valid && inHaze.colour[1] > kVisibleSideGlow;
+    bool layerIndependent = inHaze.valid && inNearFog.valid;
+    for (int channel = 0; channel < 3; ++channel)
+    {
+        followsPhase = followsPhase && std::fabs(inHaze.colour[channel] - expected.colour[channel]) <=
+                                           kSideGlowRelativeTolerance * expected.colour[channel];
+        layerIndependent = layerIndependent && std::fabs(inHaze.colour[channel] - inNearFog.colour[channel]) <=
+                                                   1.0e-4f * expected.colour[channel];
+    }
+    std::printf("     quality %d side-on glow: green %.3f in a g 0.9 layer, %.3f in a g 0.2 layer, %.3f expected\n",
+                quality, inHaze.colour[1], inNearFog.colour[1], expected.colour[1]);
+    char label[160];
+    std::snprintf(label, sizeof(label),
+                  "local light quality %d: a lamp beside the ray in a g 0.9 Classic layer glows with LocalLightPhase",
+                  quality);
+    Check(followsPhase, label);
+    std::snprintf(label, sizeof(label),
+                  "local light quality %d: the local-light phase does not depend on the layer's sun g", quality);
+    Check(layerIndependent, label);
 }
 
 void CheckLocalLightIntegration(IDirect3DDevice9* device)
@@ -367,6 +422,13 @@ void CheckLocalLightIntegration(IDirect3DDevice9* device)
             Check(faintPassed, label);
             device->SetRenderTarget(0, resources.target);
         }
+        if (extendedReady[1])
+        {
+            CheckSideOnGlowFollowsLocalLightPhase(device, extended[1], lights, quality + 1);
+            device->SetRenderTarget(0, resources.target);
+        }
+        else
+            std::printf("SKIP: the side-on local-light phase check requires the FP32 render target and readback\n");
         shader->Release();
     }
     for (int scene = 0; scene < kScenarioCount; ++scene)
