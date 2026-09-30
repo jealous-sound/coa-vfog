@@ -1124,7 +1124,7 @@ describe every key. In the game, `Ctrl+F7` opens the same settings in a window (
 | `WaterSpecular` | 1 | Sun or moon glint 0..4 |
 | `WaterClarity` | 1 | How far you see into the water 0.25..4 |
 | `WaterZoneColors` | 0.5 | Tint by the zone's own water colours 0..1 |
-| `WaterRipples` | 1 | Wakes of units in the water 0..2; 0 = no unit reads and no ripple simulation |
+| `WaterRipples` | 0.5 | Wakes of units in the water 0..2; 0 = no unit reads and no ripple simulation |
 | `WaterClientSplashes` | 0 | 1 keeps the client's splash and wake sprites; 0 hides them for all units while wakes run |
 | `WaterDebugView` | 0 | 1 wave normals, 2 foam, 3 transmittance, 4 reflection, 5 liquid class, 6 ripple height |
 

@@ -92,11 +92,13 @@ void CheckShippedWaterDefaults(const std::wstring& shippedIni)
     ConfigStore store;
     store.Load(NarrowPath(shippedIni));
     Check(SameWaterSettings(store.Get(), Config()), "the shipped INI's water keys load with their defaults");
+    Check(Config().waterRipples == 0.5f && store.Get().waterRipples == 0.5f,
+          "WaterRipples defaults to 0.5, in the code and in the shipped INI");
     const std::vector<std::string> lines = IniLines(ReadText(shippedIni));
     const char* const shippedLines[] = {"Water=1",          "WaterQuality=2",     "WaterWaves=1.0",
                                         "WaterWind=2.0",    "WaterFoam=1.0",      "WaterReflections=1.0",
                                         "WaterSpecular=1.0", "WaterClarity=1.0", "WaterZoneColors=0.5",
-                                        "WaterRipples=1.0", "WaterClientSplashes=0", "WaterDebugView=0"};
+                                        "WaterRipples=0.5", "WaterClientSplashes=0", "WaterDebugView=0"};
     int found = 0;
     for (const char* shipped : shippedLines)
         found += std::count(lines.begin(), lines.end(), std::string(shipped)) == 1 ? 1 : 0;
@@ -108,9 +110,11 @@ void CheckShippedWaterDefaults(const std::wstring& shippedIni)
     Check(text.find("; Modern water:") != std::string::npos &&
               text.find("surfaces write depth whatever LiquidDepth says") != std::string::npos &&
               text.find("; Ripples and wakes where players") != std::string::npos &&
+              text.find("drags a thin V behind it") != std::string::npos &&
+              text.find("0.5 is the default strength") != std::string::npos &&
               text.find("; The client's own flat splash discs and white V-shaped wake trails") != std::string::npos,
           "the shipped INI documents the water keys, that water writes depth while modern water is drawn, the "
-          "ripples and the client's splash and wake sprites");
+          "ripples' V wake and default strength, and the client's splash and wake sprites");
 }
 
 void CheckWaterSettingsSave(const std::wstring& outDir, const std::wstring& shippedIni)
@@ -124,7 +128,7 @@ void CheckWaterSettingsSave(const std::wstring& outDir, const std::wstring& ship
     edited.waterQuality = 3;
     edited.waterWaves = 1.5f;
     edited.waterFoam = 0.25f;
-    edited.waterRipples = 0.5f;
+    edited.waterRipples = 1.5f;
     edited.waterClientSplashes = true;
     edited.waterDebugView = 6;
     store.Apply(edited);
@@ -157,7 +161,7 @@ void CheckWaterSettingsSave(const std::wstring& outDir, const std::wstring& ship
         return std::find(saved.begin(), saved.end(), std::string(line)) != saved.end();
     };
     Check(has("Water=0") && has("WaterQuality=3") && has("WaterWaves=1.5") && has("WaterFoam=0.25") &&
-              has("WaterRipples=0.5") && has("WaterClientSplashes=1") && has("WaterDebugView=6") &&
+              has("WaterRipples=1.5") && has("WaterClientSplashes=1") && has("WaterDebugView=6") &&
               has("WaterWind=2.0"),
           "the saved water lines hold the edited values and the untouched ones keep their text");
 }
@@ -240,7 +244,7 @@ void CheckWaterOnlyEditsKeepFogHistory()
     waterOnly.waterReflections = 0.5f;
     waterOnly.waterZoneColors = 0.25f;
     waterOnly.waterQuality = 3;
-    waterOnly.waterRipples = 0.5f;
+    waterOnly.waterRipples = 1.0f;
     waterOnly.waterClientSplashes = true;
     waterOnly.waterDebugView = 4;
     Check(SameFogSettings(base, waterOnly) && !SameLiveSettings(base, waterOnly),

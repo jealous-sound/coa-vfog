@@ -285,7 +285,8 @@ bool DrawWater(Config& c)
                       "How much the zone's own water colours from the client's lights tint the water, 0 = the modern "
                       "colours only");
     changed |= Slider("Ripples", c.waterRipples, 0.0f, 2.0f, "%.2f",
-                      "Ripples and wakes from players, creatures, pets and mounts moving through water, 0 = none");
+                      "Wakes of players, creatures, pets and mounts in the water: a thin V behind a unit that runs or "
+                      "swims, one ring as it starts or stops, a calm surface while it stands. 0.5 = default, 0 = none");
     changed |= Toggle("Client splashes", c.waterClientSplashes,
                       "Keep the client's own flat splash and wake sprites while the ripples run; off hides them for "
                       "every unit, also those beyond the ripples' reach");
