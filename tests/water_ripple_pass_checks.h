@@ -399,6 +399,61 @@ WaterRippleStats StartRipples(BasinClient& client, const WaterView& view, double
     return RippleStats();
 }
 
+struct QualitySwitch
+{
+    WaterRippleStats switched;
+    WaterRippleStats resumed;
+    bool cleared = false;
+};
+
+QualitySwitch SwitchRippleQuality(Harness& h, BasinClient& client, const Config& on, int quality, double& seconds)
+{
+    const WaterContactFrame deep = ContactsOf({BasinContact(1, kRippleUnitX, 0.0f, kRippleDeepDepth)});
+    Config switched = on;
+    switched.waterQuality = quality;
+    vf_test_set_config(&switched);
+    QualitySwitch result;
+    seconds += kRippleFrame * 2.0;
+    RenderRippleFrame(client, client.View(), seconds, deep);
+    result.switched = RippleStats();
+    seconds += kRippleFrame * 3.0;
+    RenderRippleFrame(client, client.View(), seconds, deep);
+    result.resumed = RippleStats();
+    WaterRippleShading shading;
+    vf_test_water_ripple_shading(&shading);
+    water_ripple_checks::RippleState map;
+    result.cleared = water_ripple_checks::ReadRippleMap(h.dev, shading.map, map) &&
+                     water_ripple_checks::MaxDifference(map, water_ripple_checks::ZeroState(map.texels)) == 0.0f;
+    return result;
+}
+
+bool RestartedAtSize(const QualitySwitch& s, const WaterRippleStats& before, int texels)
+{
+    return s.switched.texels == texels && s.switched.running && !s.switched.shaded &&
+           s.switched.restarts == before.restarts && s.resumed.texels == texels && s.resumed.shaded && s.cleared;
+}
+
+void CheckLiveQualitySwitchRestartsRipples(Harness& h, BasinClient& client, const Config& on, double& seconds)
+{
+    Config high = on;
+    high.waterQuality = 2;
+    vf_test_set_config(&high);
+    seconds += kRippleGap;
+    const WaterRippleStats started = StartRipples(client, client.View(), seconds);
+    const QualitySwitch lower = SwitchRippleQuality(h, client, on, 1, seconds);
+    const QualitySwitch higher = SwitchRippleQuality(h, client, on, 2, seconds);
+    std::printf("     live WaterQuality 2 -> 1 -> 2: %d -> %d -> %d texels, shaded on the switch frames %d and %d, "
+                "cleared maps %d and %d\n",
+                started.texels, lower.switched.texels, higher.switched.texels, lower.switched.shaded,
+                higher.switched.shaded, lower.cleared, higher.cleared);
+    Check(started.shaded && started.texels == kWaterRippleTexels &&
+              RestartedAtSize(lower, started, kWaterRippleTexelsLow) &&
+              RestartedAtSize(higher, started, kWaterRippleTexels),
+          "WaterQuality 1 simulates ripples on 256 x 256 texels and WaterQuality 2 on 512 x 512 (32 and 64 yd); "
+          "switching it while ripples run restarts them on the new map at once, which is cleared by its first step "
+          "before it is sampled");
+}
+
 void CheckRippleResets(Harness& h, BasinClient& client, const Config& base)
 {
     const WaterView view = client.View();
@@ -444,19 +499,7 @@ void CheckRippleResets(Harness& h, BasinClient& client, const Config& base)
               !(heldAfter & kRippleMapsHeld) && !afterReset.shaded,
           "a device Reset releases the ripple maps and the next frame starts without ripples");
 
-    int texels[2] = {};
-    const int qualities[2] = {1, 2};
-    for (int i = 0; i < 2; ++i)
-    {
-        Config quality = on;
-        quality.waterQuality = qualities[i];
-        vf_test_set_config(&quality);
-        seconds += kRippleGap;
-        StartRipples(client, view, seconds);
-        texels[i] = RippleStats().texels;
-    }
-    Check(texels[0] == kWaterRippleTexelsLow && texels[1] == kWaterRippleTexels,
-          "WaterQuality 1 simulates ripples on 256 x 256 texels and WaterQuality 2 on 512 x 512 (32 and 64 yd)");
+    CheckLiveQualitySwitchRestartsRipples(h, client, on, seconds);
     ReleaseRipples(client, base, seconds + kRippleGap);
 }
 
