@@ -396,8 +396,10 @@ rates from fields 4–9. The water is tuned by eye against this mapping, not mat
 - **Glow and grading.** No further patch: the glow override runs in the world-done hook before the fog, and the
   grading last in the world render's frame-end hook. Once the fog hooks are installed, each is enabled only if its
   client bytes still match (see Engine inputs); a mismatch leaves it unavailable and is logged. Neither depends on
-  the fog: the world viewport is captured after the opaque pass even after a fog exception, and an exception in the
-  glow override or the grading turns only that one off for the session.
+  the fog: the world viewport is captured after the opaque pass even after a fog exception. An exception in the glow
+  override or the grading turns only that one off for the session, but one while reading their shared inputs (the
+  screen effects, the camera's liquid flag and the Classic light blend) turns both off, and `GlowCompensation` then
+  falls back to the clamped day/night glow.
 - **State.** Every state the passes touch is captured with a recorded state block and restored, plus render
   targets, depth and stream 0 (whose offset state blocks drop). The client's shader-constant cache stays valid:
   the pixel constants a pass sets, the grading's c0 and c1 included, are recorded in its state block, because the
