@@ -126,28 +126,33 @@ fog, its exponent 1, and its colour the fitted fog colour when the client passes
 (alpha 0xFF); the black, white and grey colours of additive, modulate and modulate-2x batches are kept, which is
 the stock form of the modern client's per-material fog modes. The fit samples the volumetric transmittance and
 in-scatter within 100 yd along 15 rays across the view (weighted toward the centre, rise clamped to ±0.26) with the
-march's layer terms at the layers' mean noise, and solves the least-squares line in planar view depth, the depth
-the client's M2 shaders fog by; samples clamped to zero by the shader are refitted without. When the fog within
-100 yd is thin (weighted transmittance at 100 yd above 0.9, for example fog that begins farther out), the fitted range
-grows smoothly toward the depth where the transmittance along the view axis halves, which it reaches when the first
-100 yd are clear (above 0.995); only a view clear of fog to the far clip fits no fog. The colour is the
-in-scatter over the opacity, exposed, rolled off, gamma-encoded and glow-compensated as the composite shows it. God
-rays are traced from the scene copied just before the early composite, the unfogged image the single composite traces
-them from, and added over the finished world at the end of the world render, over a new scene copy. Under water,
-with `StockFog=0`, a debug view or the sun marker, or when the early composite cannot run, the fog is drawn after the
-world as before and the glare at its own call. The composite's preconditions (device ready, valid frame inputs, the
-fog's depth bound with the target's size and sample count, the world viewport inside the target) are checked before
-the glare is drawn; a failure only the draw itself finds (the multisampled depth copy, a fog target allocation, a
-view matrix that cannot be inverted) falls back to the fog after the world with that frame's glare already drawn
-before M2 pass 1. The fit is linear in depth, so it cannot follow the medium's height and distance-curve shape: in
-the harness it stays within 0.03 of the volumetric transmittance along the view axis and within 0.06 at the side of
-the view over the first 100 yd for thin homogeneous fog, ground fog and the Classic harbour sunset; each vertex is
-fogged by its own planar depth, as in the stock client. Every see-through batch beyond 100 yd gets the same line,
-extrapolated: between 100 and 600 yd it departs from the volumetric transmittance by up to 0.36 for homogeneous
-0.002/yd fog, 0.32 for the harbour sunset and 0.41 for the derived layers, denser than the fog around the batch in the
-first two cases and thinner in the third (0.55 against 0.14 at 400 yd). Past the line's end (504, 588 and 883 yd
-there) a batch is fully fogged, so additive effects, whose fog colour is black, vanish and others take the flat fog
-colour, where the volumetric fog still shows about 30% of the scene at 600 yd in the first two cases.
+march's layer terms at the layers' mean noise and the point lights the march uploaded, scattered as the lit march
+scatters them (the chord through each light's cutoff sphere, its attenuation with the floor of 1, the outer fade and
+`LocalLightPhase`, two light samples per piece of a step split at the chord and layer ends, times the layer density the
+fit's transmittance uses in that step), and solves the least-squares line in planar view depth, the depth the client's
+M2 shaders fog by; samples clamped to zero by the shader are refitted without. When the fog within 100 yd is thin
+(weighted transmittance at 100 yd above 0.9, for example fog that begins farther out), the fitted range grows smoothly
+toward the depth where the transmittance along the view axis halves, which it reaches when the first 100 yd are clear
+(above 0.995); only a view clear of fog to the far clip fits no fog. The colour is the in-scatter over the opacity,
+exposed, rolled off, gamma-encoded and glow-compensated as the composite shows it; with lamps in the fog it carries
+their glow averaged over the 15 rays. Measured in the harness, the fit costs 0.05–0.08 ms of CPU per frame, 0.11–0.14 ms
+with three lamps and 0.21–0.25 ms with eight lamps that each reach across the first 100 yd on every ray. God rays are
+traced from the scene copied just before the early composite, the unfogged image the single composite traces them from,
+and added over the finished world at the end of the world render, over a new scene copy. Under water, with `StockFog=0`,
+a debug view or the sun marker, or when the early composite cannot run, the fog is drawn after the world as before and
+the glare at its own call. The composite's preconditions (device ready, valid frame inputs, the fog's depth bound with
+the target's size and sample count, the world viewport inside the target) are checked before the glare is drawn; a
+failure only the draw itself finds (the multisampled depth copy, a fog target allocation, a view matrix that cannot be
+inverted) falls back to the fog after the world with that frame's glare already drawn before M2 pass 1. The fit is
+linear in depth, so it cannot follow the medium's height and distance-curve shape: in the harness it stays within 0.03
+of the volumetric transmittance along the view axis and within 0.06 at the side of the view over the first 100 yd for
+thin homogeneous fog, ground fog and the Classic harbour sunset; each vertex is fogged by its own planar depth, as in
+the stock client. Every see-through batch beyond 100 yd gets the same line, extrapolated: between 100 and 600 yd it
+departs from the volumetric transmittance by up to 0.36 for homogeneous 0.002/yd fog, 0.32 for the harbour sunset and
+0.41 for the derived layers, denser than the fog around the batch in the first two cases and thinner in the third (0.55
+against 0.14 at 400 yd). Past the line's end (504, 588 and 883 yd there) a batch is fully fogged, so additive effects,
+whose fog colour is black, vanish and others take the flat fog colour, where the volumetric fog still shows about 30% of
+the scene at 600 yd in the first two cases.
 
 **Water.** The client draws every water and ocean surface, and nothing else, inside one call of its liquid
 renderer. Before that call the DLL copies the scene colour and its linear depth, clears the stencil and turns on
@@ -892,10 +897,11 @@ This runs the comment check and `vfog_harness`, which creates a real D3D9 device
 flags (`0x52`, auto depth D24X8), renders a Z-up test scene with the client's projection convention, and runs the fog
 passes through the same entry the hook uses. Its checks, in `tests/`, cover the device wrapper and state restoration,
 depth and sky handling, the transparent fog (the fitted stock fog against the volumetric transmittance through the
-client's planar-depth formula, blend-mode colours, the M2 and glare thunks, an additive effect drawn through a copy of
-the client's M2 fog shader after the early composite, which the fog must dim by its own distance, the fallbacks to one
-composite after the world, a fault in the M2 hook, the late god rays against the single composite's, the logged
-counters, and the early composite on a 4x device), Classic light blending and slot selection, the authored noise, glow
+client's planar-depth formula, blend-mode colours, the fitted colour with lamps around the camera against the lit
+composite's own in-scatter, the M2 and glare thunks, an additive effect drawn through a copy of the client's M2 fog
+shader after the early composite, which the fog must dim by its own distance, the fallbacks to one composite after the
+world, a fault in the M2 hook, the late god rays against the single composite's, the logged counters, and the early
+composite on a 4x device), Classic light blending and slot selection, the authored noise, glow
 and grading the Classic data resolves, the harbour's sunset halo hue with the shipped settings, the march against CPU
 integrals at every quality, the authored noise against the modern curve and a CPU sample of the noise volume, the noisy
 composites' full-resolution march at thin silhouettes, split sample sides included, temporal filtering and upsampling,
@@ -1136,7 +1142,9 @@ Forever in the game, so by default colours still differ from Classic.
   effects `TransparentFog=1` is less exact than `TransparentFog=0`, and a fit per model (stage 2) is what would fix it.
   The glare and its occlusion query run before M2 pass 1, so depth writes of fading models no longer occlude it; on a
   multisampled device the late god rays read the depth copied at the early composite; and the fitted colour is not glow
-  pre-compensated per pixel for bright effects.
+  pre-compensated per pixel for bright effects. The fitted colour is one colour for the view: with lamps in the fog it
+  carries their glow averaged over the fit's rays, so an effect beside a lamp takes less of the lamp's glow than the
+  composite gives the scene around it, and an effect far from the lamps takes more.
 - Interior treatment follows the camera's transition weight, not rooms or portals along each ray, so views
   through doorways may differ.
 - The `gxApi d3d9ex` path is not wrapped (fog and the settings window stay off there). The settings window also

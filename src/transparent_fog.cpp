@@ -27,6 +27,15 @@ constexpr float kMinPhaseDenominator = 1.0e-6f;
 constexpr float kDistanceCurveBias = 1.0e-6f;
 constexpr double kMinLineDeterminant = 1.0e-12;
 constexpr float kChannelLevels = 255.0f;
+constexpr int kQuadratureSamples = 2;
+constexpr float kFirstQuadratureFraction = 0.2113248654f;
+constexpr float kQuadratureFractionSpacing = 0.5773502692f;
+constexpr float kQuadratureWeight = 0.5f;
+constexpr float kMinLightDistanceSquared = 1.0e-6f;
+constexpr float kMinLightFalloffDenominator = 1.0f;
+constexpr float kLightBoundaryFadeRate = 4.0f;
+constexpr float kMinLightRadius = 1.0e-3f;
+constexpr int kMaxPieceCuts = 2 + 2 * kFogLayers + 2 * static_cast<int>(kMaxLocalPointLights);
 
 struct FitRay
 {
@@ -135,8 +144,46 @@ struct RayLight
     float range;
 };
 
+struct FitPointLights
+{
+    const LocalPointLight* lights = nullptr;
+    uint32_t count = 0;
+    float phase = 0.0f;
+    float relative[kMaxLocalPointLights][3] = {};
+};
+
+const FitPointLights kNoPointLights{};
+
+struct LightChord
+{
+    uint32_t light;
+    float start;
+    float end;
+};
+
+struct RayPointLights
+{
+    const FitPointLights* points;
+    const float* direction;
+    LightChord chords[kMaxLocalPointLights];
+    int chordCount;
+};
+
+struct LayerPortion
+{
+    float start;
+    float end;
+    float density;
+};
+
+struct StepLayers
+{
+    LayerPortion portions[kFogLayers];
+    int count = 0;
+};
+
 void AccumulateLayer(const FogLayer& layer, const RayLight& ray, float stepStart, float stepEnd, float* radiance,
-                     float& opticalDepth)
+                     float& opticalDepth, StepLayers& stepLayers)
 {
     const float layerStart = std::max(stepStart, layer.start);
     const float layerLength = std::max(std::min(stepEnd, layer.endDistance) - layerStart, 0.0f);
@@ -148,6 +195,7 @@ void AccumulateLayer(const FogLayer& layer, const RayLight& ray, float stepStart
     const float layerOpticalDepth = layer.density * layerLength * DistanceCurve(layer, sampleDistance, ray.range) *
                                     HeightProfile(layer, ray.cameraHeight + ray.rise * sampleDistance) *
                                     shadowDensity;
+    stepLayers.portions[stepLayers.count++] = {layerStart, layerStart + layerLength, layerOpticalDepth / layerLength};
     const float directPhase = (1.0f - shadow) * LayerPhase(layer, ray.cosToLight);
     for (int c = 0; c < 3; ++c)
     {
@@ -164,11 +212,143 @@ float StepOpacity(float opticalDepth)
                : 1.0f - std::exp(-opticalDepth);
 }
 
-void IntegrateRay(const FogParams& fog, const FitRay& fitRay, const FrameInputs& in, float stepDepth, int steps,
-                  DepthSample* samples)
+FitPointLights UploadedPointLights(const FrameInputs& in, const StockFogFitLight& light)
+{
+    FitPointLights points;
+    points.lights = in.localLights.pointLights;
+    points.count = std::min({light.uploadedPointLights, in.localLights.pointLightCount, kMaxLocalPointLights});
+    points.phase = light.pointLightPhase;
+    for (uint32_t i = 0; i < points.count; ++i)
+        for (int axis = 0; axis < 3; ++axis)
+            points.relative[i][axis] = points.lights[i].position[axis] - in.camPos[axis];
+    return points;
+}
+
+RayPointLights PointLightsAlong(const FitPointLights& points, const float* direction)
+{
+    RayPointLights lit = {&points, direction, {}, 0};
+    for (uint32_t i = 0; i < points.count; ++i)
+    {
+        const float* relative = points.relative[i];
+        const float radius = points.lights[i].cutoff;
+        const float projected = Dot3(relative, direction);
+        const float perpendicularSquared = std::max(Dot3(relative, relative) - projected * projected, 0.0f);
+        const float discriminant = radius * radius - perpendicularSquared;
+        if (discriminant <= 0.0f)
+            continue;
+        const float halfChord = std::sqrt(discriminant);
+        lit.chords[lit.chordCount++] = {i, projected - halfChord, projected + halfChord};
+    }
+    return lit;
+}
+
+float PointLightScattering(const RayPointLights& lit, uint32_t index, float distance)
+{
+    const LocalPointLight& light = lit.points->lights[index];
+    float toLight[3];
+    for (int axis = 0; axis < 3; ++axis)
+        toLight[axis] = lit.points->relative[index][axis] - lit.direction[axis] * distance;
+    const float distanceSquared = std::max(Dot3(toLight, toLight), kMinLightDistanceSquared);
+    const float lightDistance = std::sqrt(distanceSquared);
+    const float* attenuation = light.attenuation;
+    const float falloff =
+        1.0f / std::max(attenuation[0] + attenuation[1] * lightDistance + attenuation[2] * distanceSquared,
+                        kMinLightFalloffDenominator);
+    const float boundaryFade = std::clamp(
+        (light.cutoff - lightDistance) * kLightBoundaryFadeRate / std::max(light.cutoff, kMinLightRadius), 0.0f, 1.0f);
+    return falloff * boundaryFade * PhaseHG(lit.points->phase, Dot3(toLight, lit.direction) / lightDistance);
+}
+
+float PortionDensity(const StepLayers& stepLayers, float distance)
+{
+    float density = 0.0f;
+    for (int i = 0; i < stepLayers.count; ++i)
+        if (distance > stepLayers.portions[i].start && distance < stepLayers.portions[i].end)
+            density += stepLayers.portions[i].density;
+    return density;
+}
+
+bool ChordCovers(const LightChord& chord, float distance)
+{
+    return distance > chord.start && distance < chord.end;
+}
+
+bool ChordsMeetStep(const RayPointLights& lit, float stepStart, float stepEnd)
+{
+    for (int i = 0; i < lit.chordCount; ++i)
+        if (lit.chords[i].start < stepEnd && lit.chords[i].end > stepStart)
+            return true;
+    return false;
+}
+
+int PieceCuts(const StepLayers& stepLayers, const RayPointLights& lit, float stepStart, float stepEnd, float* cuts)
+{
+    int count = 0;
+    cuts[count++] = stepStart;
+    cuts[count++] = stepEnd;
+    const auto cutInside = [&](float cut) {
+        if (cut > stepStart && cut < stepEnd)
+            cuts[count++] = cut;
+    };
+    for (int i = 0; i < stepLayers.count; ++i)
+    {
+        cutInside(stepLayers.portions[i].start);
+        cutInside(stepLayers.portions[i].end);
+    }
+    for (int i = 0; i < lit.chordCount; ++i)
+    {
+        cutInside(lit.chords[i].start);
+        cutInside(lit.chords[i].end);
+    }
+    std::sort(cuts, cuts + count);
+    return count;
+}
+
+float QuadratureFraction(int sample)
+{
+    return kFirstQuadratureFraction + static_cast<float>(sample) * kQuadratureFractionSpacing;
+}
+
+void AccumulatePointLightPiece(const StepLayers& stepLayers, const RayPointLights& lit, float from, float to,
+                               float* radiance)
+{
+    const float length = to - from;
+    const float middle = from + 0.5f * length;
+    const float weightedDensity = kQuadratureWeight * length * PortionDensity(stepLayers, middle);
+    if (weightedDensity <= 0.0f)
+        return;
+    for (int i = 0; i < lit.chordCount; ++i)
+    {
+        if (!ChordCovers(lit.chords[i], middle))
+            continue;
+        const uint32_t light = lit.chords[i].light;
+        float scattering = 0.0f;
+        for (int sample = 0; sample < kQuadratureSamples; ++sample)
+            scattering += PointLightScattering(lit, light, from + length * QuadratureFraction(sample));
+        const float* colour = lit.points->lights[light].uploadedColor;
+        for (int c = 0; c < 3; ++c)
+            radiance[c] += colour[c] * weightedDensity * scattering;
+    }
+}
+
+void AccumulatePointLights(const StepLayers& stepLayers, const RayPointLights& lit, float stepStart, float stepEnd,
+                           float* radiance)
+{
+    if (stepLayers.count == 0 || !ChordsMeetStep(lit, stepStart, stepEnd))
+        return;
+    float cuts[kMaxPieceCuts];
+    const int cutCount = PieceCuts(stepLayers, lit, stepStart, stepEnd, cuts);
+    for (int piece = 0; piece + 1 < cutCount; ++piece)
+        if (cuts[piece + 1] > cuts[piece])
+            AccumulatePointLightPiece(stepLayers, lit, cuts[piece], cuts[piece + 1], radiance);
+}
+
+void IntegrateRay(const FogParams& fog, const FitPointLights& points, const FitRay& fitRay, const FrameInputs& in,
+                  float stepDepth, int steps, DepthSample* samples)
 {
     const RayLight ray = {Dot3(in.toLight, fitRay.world), fog.lightAboveHorizon, in.camPos[2],
                           std::clamp(fitRay.world[2], -kMaxFitRise, kMaxFitRise), fog.maxDistance};
+    const RayPointLights lit = PointLightsAlong(points, fitRay.world);
     float transmittance = 1.0f;
     float inScatter[3] = {};
     samples[0] = {1.0f, {0.0f, 0.0f, 0.0f}};
@@ -178,8 +358,10 @@ void IntegrateRay(const FogParams& fog, const FitRay& fitRay, const FrameInputs&
         const float stepEnd = SampleDepth(step + 1, stepDepth) * fitRay.distancePerViewDepth;
         float radiance[3] = {};
         float opticalDepth = 0.0f;
+        StepLayers stepLayers;
         for (const FogLayer& layer : fog.layers)
-            AccumulateLayer(layer, ray, stepStart, stepEnd, radiance, opticalDepth);
+            AccumulateLayer(layer, ray, stepStart, stepEnd, radiance, opticalDepth, stepLayers);
+        AccumulatePointLights(stepLayers, lit, stepStart, stepEnd, radiance);
         if (opticalDepth > 0.0f)
         {
             const float opacity = StepOpacity(opticalDepth);
@@ -213,11 +395,11 @@ int BuildFitRays(const FrameInputs& in, FitRay* rays)
     return count;
 }
 
-void IntegrateRays(const FogParams& fog, const FitRay* rays, int rayCount, const FrameInputs& in, float stepDepth,
-                   RaySamples* samples)
+void IntegrateRays(const FogParams& fog, const FitPointLights& points, const FitRay* rays, int rayCount,
+                   const FrameInputs& in, float stepDepth, RaySamples* samples)
 {
     for (int r = 0; r < rayCount; ++r)
-        IntegrateRay(fog, rays[r], in, stepDepth, kFitDepthSteps, samples[r]);
+        IntegrateRay(fog, points, rays[r], in, stepDepth, kFitDepthSteps, samples[r]);
 }
 
 bool Clamped(double slope, double intercept, float depth, float transmittance)
@@ -275,7 +457,7 @@ TransmittanceProfile ProfileToTheFarClip(const FogParams& fog, const FitRay& ray
     TransmittanceProfile profile = {};
     profile.stepDepth = std::max(kStockFogFitDepth, fog.farClip) / kProfileSteps;
     DepthSample samples[kProfileSteps + 1];
-    IntegrateRay(fog, ray, in, profile.stepDepth, kProfileSteps, samples);
+    IntegrateRay(fog, kNoPointLights, ray, in, profile.stepDepth, kProfileSteps, samples);
     for (int step = 0; step <= kProfileSteps; ++step)
         profile.transmittance[step] = samples[step].transmittance;
     return profile;
@@ -358,9 +540,10 @@ StockFogFit FitStockFog(const FogParams& drawn, const FrameInputs& in, const Sto
     const int rayCount = BuildFitRays(in, rays);
     if (rayCount == 0)
         return {};
+    const FitPointLights points = UploadedPointLights(in, light);
     RaySamples samples[kFitRays];
     float stepDepth = kStockFogFitDepth / kFitDepthSteps;
-    IntegrateRays(fog, rays, rayCount, in, stepDepth, samples);
+    IntegrateRays(fog, points, rays, rayCount, in, stepDepth, samples);
     const float nearTransmittance = WindowEndTransmittance(rays, samples, rayCount);
     if (nearTransmittance > kThinNearFogTransmittance)
     {
@@ -368,7 +551,7 @@ StockFogFit FitStockFog(const FogParams& drawn, const FrameInputs& in, const Sto
         if (profile.transmittance[kProfileSteps] > kFogFreeTransmittance)
             return {};
         stepDepth = ExtendedWindowDepth(profile, nearTransmittance) / kFitDepthSteps;
-        IntegrateRays(fog, rays, rayCount, in, stepDepth, samples);
+        IntegrateRays(fog, points, rays, rayCount, in, stepDepth, samples);
     }
     double slope = 0.0;
     double intercept = 0.0;

@@ -1509,7 +1509,7 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDir
     else
         m_gpuTimer.End();
     if (pass == FogPass::BeforeTransparents)
-        m_stockFogFit = FitStockFog(fog, in, {composite[0].x, composite[2].w});
+        m_stockFogFit = FitStockFog(fog, in, {composite[0].x, composite[2].w, pointLightCount, cfg.localLightPhase});
 
     if (DepthProbeDue(now))
     {

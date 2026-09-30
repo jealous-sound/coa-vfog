@@ -39,6 +39,8 @@ struct StockFogFitLight
 {
     float exposure;
     float glowToCompensate;
+    uint32_t uploadedPointLights = 0;
+    float pointLightPhase = 0.0f;
 };
 
 StockFogFit FitStockFog(const FogParams& fog, const FrameInputs& in, const StockFogFitLight& light);

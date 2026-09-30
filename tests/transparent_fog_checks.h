@@ -70,6 +70,30 @@ constexpr uint32_t kSentinelEbx = 0x5B5B5B5Bu;
 constexpr uint32_t kFogArgumentBytes = 16;
 constexpr float kStockFogStart = 150.0f;
 constexpr float kStockFogEnd = 600.0f;
+constexpr float kLampLitDensity = 0.03f;
+constexpr float kLampLitIntensity = 4.0f;
+constexpr int kLampLitWalls = 25;
+constexpr DWORD kBlackWall = 0xFF000000;
+constexpr int kLampProbeRadius = 1;
+constexpr float kFitRayNdcColumns[] = {-0.8f, -0.4f, 0.0f, 0.4f, 0.8f};
+constexpr float kFitRayNdcRows[] = {-0.6f, 0.0f, 0.6f};
+constexpr float kFitRayCentreFalloff = 1.5f;
+constexpr float kCompositeHighlightKnee = 0.8f;
+constexpr int kMinLampLitColourLevel = 40;
+constexpr int kMaxLampColourLevelError = 3;
+
+struct LampPlacement
+{
+    Vec3 fromEye;
+    float colour[3];
+    float quadraticAttenuation;
+};
+
+constexpr LampPlacement kLampsAroundTheCamera[] = {
+    {{5.0f, 2.5f, 1.5f}, {1.0f, 0.72f, 0.4f}, 0.4f},
+    {{25.0f, -6.0f, -2.0f}, {0.45f, 0.6f, 1.0f}, 0.1f},
+    {{-4.0f, -1.5f, 2.0f}, {0.9f, 0.85f, 0.7f}, 0.2f},
+};
 
 struct ClientFogConstant
 {
@@ -645,6 +669,9 @@ enum class Backdrop
 struct FrameOptions
 {
     Backdrop backdrop = Backdrop::Scene;
+    float wallDepth = kBackgroundDepth;
+    DWORD wallColour = kBackgroundColour;
+    uint32_t batchFogColour = kAdditiveFogColour;
     bool drawEffect = false;
     bool captureAfterLiquid = false;
     bool keepStateAround = false;
@@ -673,7 +700,7 @@ struct HookedFrame
 void DrawBackdropFor(Harness& h, const View& v, const FrameOptions& options)
 {
     if (options.backdrop == Backdrop::FarWall)
-        DrawBackdrop(h, v, kBackgroundDepth, kBackgroundColour);
+        DrawBackdrop(h, v, options.wallDepth, options.wallColour);
     else
         h.DrawScene(v.eye, v.view, v.proj, v.world);
     if (options.drawOverBackdrop)
@@ -726,10 +753,10 @@ void EndLiquid(Harness& h, const View& v, const FrameOptions& options, HookedFra
 void DrawEffect(Harness& h, const View& v, const FrameOptions& options, const ClientM2Shaders* shaders,
                 HookedFrame& frame)
 {
-    const uint32_t additive = kAdditiveFogColour;
-    frame.effectFog = {kPushedStockFogStart, kPushedStockFogEnd, kAuthoredClientExponent, &additive};
+    const uint32_t pushedColour = options.batchFogColour;
+    frame.effectFog = {kPushedStockFogStart, kPushedStockFogEnd, kAuthoredClientExponent, &pushedColour};
     vf_test_hook_m2_batch_fog(&frame.effectFog);
-    frame.effectColourKept = frame.effectFog.colour == &additive;
+    frame.effectColourKept = frame.effectFog.colour == &pushedColour;
     frame.effectFogColour = *frame.effectFog.colour;
     if (options.drawEffect && shaders && shaders->Ready())
         DrawClientAdditiveEffect(h.dev, *shaders, v, frame.effectFog);
@@ -950,6 +977,152 @@ void CheckGodRaysAfterTheWorld(Harness& h)
     Check(wholeFrameDifference <= kMaxLateRayDifference,
           "the god rays drawn after the early composite come from the scene before the fog, as the single "
           "composite's do, and match them");
+}
+
+Config LampLitConfig()
+{
+    Config cfg = HookConfig(true);
+    cfg.glowCompensation = false;
+    cfg.localLightIntensity = kLampLitIntensity;
+    return cfg;
+}
+
+View LampLitView(const Config& cfg)
+{
+    View v;
+    for (const LampPlacement& placement : kLampsAroundTheCamera)
+    {
+        const Vec3 position = Add(v.eye, placement.fromEye);
+        LocalPointLight lamp;
+        lamp.position[0] = position.x;
+        lamp.position[1] = position.y;
+        lamp.position[2] = position.z;
+        for (int c = 0; c < 3; ++c)
+            lamp.color[c] = placement.colour[c];
+        lamp.attenuation[0] = 1.0f;
+        lamp.attenuation[2] = placement.quadraticAttenuation;
+        engine::SelectLocalPointLight(v.in.localLights, lamp, v.in.camPos, LocalLightUpload(cfg));
+    }
+    return v;
+}
+
+struct FitRayProbe
+{
+    UINT x;
+    UINT y;
+    float weight;
+    float distancePerViewDepth;
+};
+
+std::vector<FitRayProbe> FitRayProbes(const View& v)
+{
+    const float* proj = v.in.glProjection;
+    std::vector<FitRayProbe> probes;
+    for (float row : kFitRayNdcRows)
+        for (float column : kFitRayNdcColumns)
+        {
+            const float rightPerDepth = (column - proj[8]) / proj[0];
+            const float upPerDepth = (row - proj[9]) / proj[5];
+            probes.push_back({static_cast<UINT>(v.world.X + (column * 0.5f + 0.5f) * v.world.Width),
+                              static_cast<UINT>(v.world.Y + (0.5f - row * 0.5f) * v.world.Height),
+                              std::exp(-kFitRayCentreFalloff * (column * column + row * row)),
+                              std::sqrt(rightPerDepth * rightPerDepth + upPerDepth * upPerDepth + 1.0f)});
+        }
+    return probes;
+}
+
+struct LampLitFit
+{
+    uint32_t fitted = 0;
+    bool fittedEveryWall = true;
+    bool earlyEveryWall = true;
+    bool litShaders = false;
+    double scattered[3] = {};
+    double opacity = 0.0;
+    float brightest = 0.0f;
+};
+
+void AddCompositeOverBlackWall(LampLitFit& fit, const std::vector<FitRayProbe>& probes, const Image& image,
+                               float wallDepth, float exposure)
+{
+    for (const FitRayProbe& probe : probes)
+    {
+        const Rgb seen = SampleRgb(image, static_cast<int>(probe.x), static_cast<int>(probe.y), kLampProbeRadius);
+        const float levels[3] = {seen.r, seen.g, seen.b};
+        for (int c = 0; c < 3; ++c)
+        {
+            const float exposedInScatter = std::pow(levels[c] / 255.0f, kDisplayGamma);
+            fit.brightest = std::fmax(fit.brightest, exposedInScatter);
+            fit.scattered[c] += probe.weight * exposedInScatter / exposure;
+        }
+        fit.opacity += probe.weight * (1.0 - std::exp(-kLampLitDensity * probe.distancePerViewDepth * wallDepth));
+    }
+}
+
+LampLitFit MeasureLampLitFit(Harness& h, const View& v, const Config& cfg)
+{
+    const std::vector<FitRayProbe> probes = FitRayProbes(v);
+    FrameOptions options;
+    options.backdrop = Backdrop::FarWall;
+    options.wallColour = kBlackWall;
+    options.batchFogColour = kLightingColour;
+    LampLitFit fit;
+    for (int wall = 1; wall <= kLampLitWalls; ++wall)
+    {
+        options.wallDepth = wall * kStockFogFitDepth / kLampLitWalls;
+        const HookedFrame frame =
+            wall == 1 ? RenderSettledHookedFrame(h, v, cfg, options) : RenderHookedFrame(h, v, cfg, options);
+        fit.fittedEveryWall = fit.fittedEveryWall && (wall == 1 || frame.effectFogColour == fit.fitted);
+        fit.fitted = frame.effectFogColour;
+        fit.earlyEveryWall = fit.earlyEveryWall && frame.glarePassesBeforeTheFog == 1 &&
+                             frame.glarePassesAtOwnCall == 0 && !frame.effectColourKept;
+        AddCompositeOverBlackWall(fit, probes, frame.image, options.wallDepth, cfg.exposure);
+    }
+    authored_noise::DrawnShaders drawn;
+    vf_test_drawn_fog_shaders(&drawn.march, &drawn.composite, &drawn.splitComposite);
+    fit.litShaders = authored_noise::ShaderRuns(drawn.march, g_ps_lit_march_mid) &&
+                     authored_noise::ShaderRuns(drawn.composite, g_ps_lit_composite_mid);
+    return fit;
+}
+
+int FittedFormulaLevel(const LampLitFit& fit, int channel, float exposure)
+{
+    const double ratio = fit.opacity > 0.0 ? fit.scattered[channel] / fit.opacity : 0.0;
+    const float colour = HighlightRollOff(static_cast<float>(exposure * ratio), kCompositeHighlightKnee);
+    return ChannelLevel(std::pow(colour, 1.0f / kDisplayGamma));
+}
+
+void CheckFittedColourCarriesThePointLights(Harness& h)
+{
+    const Config cfg = LampLitConfig();
+    const View v = LampLitView(cfg);
+    const FogParams fog = HomogeneousFog(kLampLitDensity, 0.0f);
+    vf_test_force_fog_params(&fog);
+    const LampLitFit fit = MeasureLampLitFit(h, v, cfg);
+    vf_test_force_fog_params(nullptr);
+    const int shifts[3] = {16, 8, 0};
+    int expected[3] = {};
+    int fitted[3] = {};
+    int largestError = 0;
+    for (int c = 0; c < 3; ++c)
+    {
+        expected[c] = FittedFormulaLevel(fit, c, cfg.exposure);
+        fitted[c] = static_cast<int>((fit.fitted >> shifts[c]) & 0xFF);
+        largestError = std::max(largestError, std::abs(fitted[c] - expected[c]));
+    }
+    std::printf("     %u point lights in lamp-lit fog (%.2f/yd, no layer light): fitted colour %d %d %d; the fit's "
+                "formula over the lit composite at its %d rays and %d depths %d %d %d (brightest pixel %.3f linear)\n",
+                v.in.localLights.pointLightCount, kLampLitDensity, fitted[0], fitted[1], fitted[2],
+                static_cast<int>(std::size(kFitRayNdcColumns) * std::size(kFitRayNdcRows)), kLampLitWalls,
+                expected[0], expected[1], expected[2], fit.brightest);
+    Check(v.in.localLights.pointLightCount == std::size(kLampsAroundTheCamera) && fit.litShaders &&
+              fit.earlyEveryWall && fit.fittedEveryWall && fit.brightest < kCompositeHighlightKnee &&
+              *std::max_element(expected, expected + 3) >= kMinLampLitColourLevel &&
+              largestError <= kMaxLampColourLevelError,
+          "with TransparentFog=1 and point lights around the camera, the fitted colour of see-through batches in "
+          "lighting-colour mode carries the lamps' in-scatter as the lit march and lit composite of the early "
+          "composite draw it: the fit's formula over the composite's own in-scatter at the fit's rays and depths "
+          "gives the same colour within 3 levels");
 }
 
 void CheckHookedFogRestoresState(Harness& h)
@@ -1194,6 +1367,7 @@ void CheckTransparentFog(Harness& h)
     CheckEarlyCompositeMatchesWholeFrame(h);
     CheckTransparentsFoggedAtOwnDepth(h);
     CheckGodRaysAfterTheWorld(h);
+    CheckFittedColourCarriesThePointLights(h);
     CheckHookedFogRestoresState(h);
     CheckWholeFrameFallbacks(h);
     CheckEarlyCompositeFailureLogged(h);
