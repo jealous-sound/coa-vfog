@@ -4,10 +4,13 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
-constexpr size_t kMaxDepartedWaterContactDepths = 256;
+constexpr size_t kMaxDepartedWaterEntries = 256;
 constexpr size_t kMaxPendingWaterRings = 128;
+constexpr float kWaterSplashRearmDepthPerHeight = 0.15f;
+constexpr double kMinWaterSplashIntervalSeconds = 2.0;
 
 struct WaterRippleDisturbance
 {
@@ -31,22 +34,28 @@ struct ClientRipple
     float alpha = 0.0f;
 };
 
+struct WaterEntryState
+{
+    bool armed = false;
+    double splashedAt = -std::numeric_limits<double>::infinity();
+};
+
 struct WaterContactTrack
 {
     uint64_t guid = 0;
     float position[3] = {};
     double seenAt = 0.0;
-    float previousDepth = 0.0f;
+    WaterEntryState entry;
     float splashRadius = 0.0f;
     float pendingSplash = 0.0f;
     uint32_t nextRippleMs = 0;
     uint32_t rings = 0;
 };
 
-struct WaterContactDepthMemory
+struct DepartedWaterEntry
 {
     uint64_t guid = 0;
-    float previousDepth = 0.0f;
+    WaterEntryState entry;
     double seenAt = 0.0;
 };
 
@@ -68,21 +77,21 @@ public:
     bool Emitting() const;
     uint32_t Tracks() const { return static_cast<uint32_t>(m_tracks.size()); }
     uint32_t Contacts() const { return m_contacts; }
-    uint32_t RememberedDepths() const { return static_cast<uint32_t>(m_departed.size()); }
+    uint32_t RememberedEntries() const { return static_cast<uint32_t>(m_departed.size()); }
     uint32_t PendingRings() const { return static_cast<uint32_t>(m_rings.size()); }
     const WaterContactTrack* Find(uint64_t guid) const;
 
 private:
     WaterContactTrack& TrackOf(uint64_t guid, bool& created);
-    float FirstPreviousDepth(const WaterContact& contact, bool seeding);
-    void Follow(WaterContactTrack& track, const WaterContact& contact, double seconds, bool created, bool seeding);
+    WaterEntryState FirstEntryState(uint64_t guid);
+    void Follow(WaterContactTrack& track, const WaterContact& contact, double seconds, bool created);
     void QueueRing(WaterContactTrack& track, const WaterContact& contact);
     uint32_t TakeRings(WaterRippleDisturbance* out, uint32_t capacity);
-    void RememberDepth(const WaterContactTrack& track);
+    void RememberEntry(const WaterContactTrack& track);
     void DropStaleTracks(double seconds);
 
     std::vector<WaterContactTrack> m_tracks;
-    std::vector<WaterContactDepthMemory> m_departed;
+    std::vector<DepartedWaterEntry> m_departed;
     std::vector<WaterRippleDisturbance> m_rings;
     double m_seconds = -1.0;
     uint32_t m_contacts = 0;

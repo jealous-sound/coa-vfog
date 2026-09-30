@@ -191,12 +191,20 @@ and ripple events:
   and its depression 3 per unit of alpha; U is a hash of the GUID and the event's time in place of the client's
   `rand()`. The client emits every strength · 2.5 / min(speed, 20) · 250 ms while moving (89 ms at a 7 yd/s run)
   and every 400 to 449 ms otherwise, so a unit standing in the water keeps making small rings. A unit that is not
-  swimming adds an entry splash when its depth crosses 0.4 of its height in either direction, the client's own
-  splash rule; it takes the place of that frame's event (the client's 0xC9 splash) and has the ring's depression
-  times the strength over twice the collision radius (0.5 to 6 yd). The client keeps that previous depth for the
-  unit's lifetime, so a dropped track leaves its last one behind for 30 s and a track created again (after a dive,
-  or back in range or among the nearest 32) starts from it. A unit never seen before starts from its current depth
-  when it swims, and otherwise from 0, approximating the client's zero initial depth.
+  swimming adds an entry splash when its depth rises above 0.4 of its height, the client's splash depth, once it is
+  armed: since its last splash it has been at most 0.15 of its height deep, and that splash is at least 2 s old. The
+  splash takes the place of that frame's event (the client's 0xC9 splash) and has the ring's depression times the
+  strength over twice the collision radius (0.5 to 6 yd). This departs from the client on purpose: the client splashes
+  whenever the depth crosses 0.4 of the height in either direction, so a unit wading at about that depth over an uneven
+  floor splashed again every second or so on top of its wake (seen in an owner test), and splashed again on its way out.
+  A splash disarms the unit, and so does a crossing refused by the 2 s interval, so a refused entry is not made up
+  later; swimming disarms it too, so standing up out of a swim makes no splash. The re-arm depth, 0.3 yd for a 2 yd unit
+  (mid-shin), lies 0.25 of the height under the splash depth: a unit stepping out onto the beach or jumping passes
+  it, a unit wading along at about 0.4 of its height does not. The 2 s interval lets the last splash's ring spread about
+  5 yd before the next. A dropped track leaves its entry state (armed or not, and the time of its last splash) behind
+  for 30 s, and a track created again (after a dive, or back in range or among the nearest 32) continues from it. A unit
+  never seen before starts disarmed, so one first seen deeper than the re-arm depth makes no splash until it has been
+  that shallow again, whereas the client, from its zeroed depth, also splashes a unit created in the water.
 - *Simulation.* The disturbances drive Forever's local displacement recurrence, `next = 0.97·edge·(0.5·(L + D + R +
   U) − C.g)`, output `(next, C.r)`: R is the current height, G the previous one, and the edge ramp
   `saturate(16·min(u, 1 − u, v, 1 − v))` is taken on the shifted uv. It runs on a G16R16F ping-pong map
@@ -841,7 +849,7 @@ Engine notes behind the code:
   first mismatch. Reads are SEH-guarded with pointer and range checks; a link whose back
   pointer does not match rejects the frame, the walk keeps what it found when it reaches 4096 objects, and the
   manager is re-read afterwards. `WaterRipples=0` skips the walk. The client's ripple pool (`0x79D180`, 128 entries)
-  and `+0x784` are not read (the tracker keeps its own previous depth), and the `[movement + 0x48]` bit 2 early
+  and `+0x784` are not read (the tracker keeps its own entry state), and the `[movement + 0x48]` bit 2 early
   return of `0x730D10` is not mirrored.
 - Client ripple sprites. `waterRipples` is a console command, not a saved CVar: `0x7813A4`
   (`68 90 F6 77 00 68 00 E8 A3 00`) registers the handler `0x77F690` under the name at `0xA3E800` through `0x769100`
@@ -919,7 +927,8 @@ double-precision reference, the liquid classification, the water pass driven thr
 restoration, stencil tagging, optics against a CPU reference, fault recovery, the viewport's first column reshaded
 like the second on the single-sampled and the 4x device), the water settings, the packed foam
 masks, the unit walk on synthetic object-manager images, the contact tracker's rings against a harness copy of the
-client's ripple clock, the ripple simulation against a CPU reference, the ripples in the water pass, whose normals are
+client's ripple clock and its entry splashes over an uneven floor and on re-entries, the ripple simulation against a
+CPU reference, the ripples in the water pass, whose normals are
 compared with the 7552035 slope evaluated on the CPU (within the depth-copy precision, but for at most 0.5% of the
 pixels, up to 6/255 off where the GPU's bilinear weights meet fresh impulses), the rings' visibility in shaded water
 with the real data, and the hold on the client's sprite value, driven through the hooks on a synthetic value and code
@@ -1184,30 +1193,31 @@ Forever in the game, so by default colours still differ from Classic.
 - Ripples are harness-checked only: the unit walk, the ripple clock and the sprite hold have run on synthetic
   memory, not in the client, and their look needs an owner test. The recurrence (0.97, 0.5, the edge ramp), the
   one-map slope with its gain of 3 and the display blend `lerp(G, R, w)` are Forever's; the contact gate, depth
-  limit, strength fade, 0.4·height splash rule, swimming flag, ripple cadence, kinds, size clamp, idle size and
+  limit, strength fade, 0.4·height splash depth, swimming flag, ripple cadence, kinds, size clamp, idle size and
   alpha factors and the sprite gate are the client's. That Forever feeds these same client events into its map is
   the lead's reading of its videos, not a recovered fact. Everything else is a prototype choice, not a recovered
   value: the 30 Hz step, `w` as the elapsed fraction of the next step, 0.125 yd texels, 512²/256² windows, the ring
   (a stamp as wide as the client's starting sprite, at least 0.25 yd, 3 deep per unit of alpha, chosen on the
   `--scene ripples` renders so that the 4 yd ring at 1.5 s still shows at `WaterRipples=1` without covering the
-  water), the hashed size jitter, the entry splash (the same depth over twice the collision radius, 0.5 to 6 yd),
-  the 0.5 s track lifetime, the 30 s memory of a dropped track's depth and the swimming start depth of a new one,
-  32 contacts within 48 yd, at most 128 queued rings, the 4 yd fade, the two-to-four-texel detail fade, the 15 s
-  stop, the 1 s restart gap and the 1 s grace before the sprites come back. The tracker sees at most one event per
-  frame per unit, so two client emissions in one frame make one ring, and it only approximates the client's
-  previous depth: a unit that changes depth while it is not tracked, or leaves the water and is back within 30 s,
-  can splash where the client does not, or not where it does. A running unit outruns its rings (2.65 yd/s), so its
-  wake reads as a V-shaped front with arcs inside rather than separate rings; only a slower unit leaves separate
-  ring trains. The harness scene has a flat pebble floor, a clear sky and no character model. While the sprites are
-  hidden, `waterRipples 0` typed in the console cannot be told from the DLL's own 0, so the value put back is the
-  last non-zero one. The hold is global: while it lasts, units beyond the ripple window (24 to 28 yd from the camera
-  target along either axis, 10 to 14 yd at `WaterQuality=1`), beyond the 32 nearest, or wading in a liquid the
-  modern water leaves to the client lose the client's wake and get no rings. The footstep spray `0x723A50` (its
-  spell-visual call at `0x723CD1`, `E8 CA 56 FD FF`, for depths below half the height) is not hooked; hooking it
-  would give rings the footsteps' animation cadence and is a possible later addition. Game objects (boats, bobbers)
-  make no ripples, one map serves every water level inside the window, the window follows the camera target (which
-  can leave the player in free-look or vehicle views), and FP16 render-target writes on the test GPU truncate, which
-  damps ripples slightly more than the recurrence (about 6% of the amplitude over 2 s).
+  water), the hashed size jitter, the entry splash (the same depth over twice the collision radius, 0.5 to 6 yd, only on
+  the way in, re-armed at 0.15 of the height and at most every 2 s), the 0.5 s track lifetime, the 30 s memory of a
+  dropped track's entry state and the disarmed start of a new one, 32 contacts within 48 yd, at most 128 queued rings,
+  the 4 yd fade, the two-to-four-texel detail fade, the 15 s stop, the 1 s restart gap and the 1 s grace before the
+  sprites come back. The tracker sees at most one event per frame per unit, so two client emissions in one frame make
+  one ring. Its entry splash is rarer than the client's: none on the way out, none again before the unit has been that
+  shallow, and none for a unit first seen deep; a unit that changes depth while it is not tracked can splash when it is
+  seen again, or not at all. A running unit outruns its rings (2.65 yd/s), so its wake reads as a V-shaped front with
+  arcs inside rather than separate rings; only a slower unit leaves separate ring trains. The harness scene has a flat
+  pebble floor, a clear sky and no character model. While the sprites are hidden, `waterRipples 0` typed in the console
+  cannot be told from the DLL's own 0, so the value put back is the last non-zero one. The hold is global: while it
+  lasts, units beyond the ripple window (24 to 28 yd from the camera target along either axis, 10 to 14 yd at
+  `WaterQuality=1`), beyond the 32 nearest, or wading in a liquid the modern water leaves to the client lose the
+  client's wake and get no rings. The footstep spray `0x723A50` (its spell-visual call at `0x723CD1`, `E8 CA 56 FD FF`,
+  for depths below half the height) is not hooked; hooking it would give rings the footsteps' animation cadence and is a
+  possible later addition. Game objects (boats, bobbers) make no ripples, one map serves every water level inside the
+  window, the window follows the camera target (which can leave the player in free-look or vehicle views), and FP16
+  render-target writes on the test GPU truncate, which damps ripples slightly more than the recurrence (about 6% of the
+  amplitude over 2 s).
 - `ForeverGlow` and `ColorGrading` are harness-checked only. The client's glow is `lerp(screen, blur, blur byte) +
   g·blur²`, while Forever's final composite adds or blends a linear blur term whose amounts are set on its CPU, so
   only a glow of 0 means the same in both, and on continents Forever may still bloom from values the kit does not

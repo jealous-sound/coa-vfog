@@ -11,6 +11,7 @@ constexpr float kRippleUnitHeight = 2.0f;
 constexpr float kRippleUnitRadius = 0.35f;
 constexpr float kRippleWadingDepth = 0.6f;
 constexpr float kRippleDeepDepth = 1.2f;
+constexpr float kRippleShoreDepth = 0.2f;
 constexpr double kRippleStart = 40.0;
 constexpr double kRippleFrame = 1.0 / 60.0;
 constexpr int kRippleFrames = 60;
@@ -423,6 +424,8 @@ void CheckRipplesOffRenderAsBefore(BasinClient& client, const Config& base)
 WaterRippleStats StartRipples(BasinClient& client, const WaterView& view, double& seconds)
 {
     RenderRippleFrame(client, view, seconds, {});
+    seconds += kRippleFrame * 2.0;
+    RenderRippleFrame(client, view, seconds, ContactsOf({BasinContact(1, kRippleUnitX, 0.0f, kRippleShoreDepth)}));
     const WaterContactFrame deep = ContactsOf({BasinContact(1, kRippleUnitX, 0.0f, kRippleDeepDepth)});
     for (int k = 0; k < 4; ++k)
     {
