@@ -42,6 +42,7 @@ constexpr uint32_t kSwimmingFlag = 0x200000;
 constexpr uint32_t kCappedObjects = 4100;
 constexpr uint32_t kDisturbanceCapacity = 32;
 constexpr double kStepSeconds = 1.0 / 30.0;
+constexpr uint64_t kCrowdOverflow = 44;
 
 template <typename T>
 void Put(uintptr_t address, T value)
@@ -373,8 +374,90 @@ void CheckEntryImpulses()
     fresh.Update(FrameOf({ContactAt(1, 0.0f, 0.0f, 1.5f), ContactAt(2, 3.0f, 0.0f, 1.5f)}), t);
     const uint32_t appeared = DisturbancesNow(fresh, t, d);
     Check(seeded == 0 && appeared == 1 && d[0].to[0] == 3.0f,
-          "units already deep in water when the tracker starts make no impulse; a unit that appears deeper than "
-          "0.4 of its height afterwards makes one, as the client's zero initial depth does");
+          "units already deep in water when the tracker starts make no impulse; a unit never seen before that appears "
+          "deeper than 0.4 of its height afterwards makes one, approximating the client's zero initial depth");
+}
+
+struct WadingStage
+{
+    float depth;
+    bool swimming;
+    bool present;
+    int frames;
+};
+
+int ImpulsesOver(WaterContactTracker& tracker, double& t, uint64_t guid, const WadingStage& stage)
+{
+    int impulses = 0;
+    for (int i = 0; i < stage.frames; ++i)
+    {
+        t += 1.0 / 60.0;
+        WaterContact contact = ContactAt(guid, 0.0f, 0.0f, stage.depth);
+        contact.swimming = stage.swimming;
+        tracker.Update(stage.present ? FrameOf({contact}) : FrameOf({}), t);
+        WaterRippleDisturbance d[kDisturbanceCapacity];
+        const uint32_t count = DisturbancesNow(tracker, t, d);
+        for (uint32_t k = 0; k < count; ++k)
+            impulses += d[k].amplitude < 0.0f ? 1 : 0;
+    }
+    return impulses;
+}
+
+void CheckReturningUnitsKeepTheirSplashDepth()
+{
+    constexpr float kShore = 0.1f * kUnitHeight;
+    constexpr float kWaist = 0.7f * kUnitHeight;
+    constexpr float kSwim = 0.8f * kUnitHeight;
+    constexpr float kStandUp = 0.75f * kUnitHeight;
+    constexpr float kDeep = 1.5f * kUnitHeight;
+    constexpr int kDiveFrames = 40;
+    constexpr int kForgottenFrames = 31 * 60;
+    WaterContactTracker diver;
+    double t = kStartSeconds;
+    ImpulsesOver(diver, t, 1, {kShore, false, true, 2});
+    const int wadeIn = ImpulsesOver(diver, t, 1, {kWaist, false, true, 10});
+    const int swim = ImpulsesOver(diver, t, 1, {kSwim, true, true, 10});
+    const int dive = ImpulsesOver(diver, t, 1, {kDeep, true, false, kDiveFrames});
+    const bool dropped = diver.Find(1) == nullptr && diver.RememberedDepths() == 1;
+    const int resurface = ImpulsesOver(diver, t, 1, {kSwim, true, true, 10});
+    const int standUp = ImpulsesOver(diver, t, 1, {kStandUp, false, true, 10});
+    const int wadeOut = ImpulsesOver(diver, t, 1, {kShore, false, true, 10});
+    std::printf("     dive and wade out: %d wading in, %d swimming, %d diving (track dropped %d), %d resurfacing, %d "
+                "standing up at 0.75h, %d wading out\n",
+                wadeIn, swim, dive, dropped, resurface, standUp, wadeOut);
+    Check(wadeIn == 1 && swim == 0 && dive == 0 && dropped && resurface == 0 && standUp == 0 && wadeOut == 1,
+          "a unit whose track was dropped while it dived keeps its last depth outside the water, so standing up at "
+          "0.75 of its height makes no second entry impulse and wading out makes one, as the client's +0x784 does");
+
+    WaterContactTracker arrivals;
+    t = kStartSeconds;
+    ImpulsesOver(arrivals, t, 1, {kShore, false, true, 2});
+    ImpulsesOver(arrivals, t, 1, {kWaist, false, true, 10});
+    const int appearedSwimming = ImpulsesOver(arrivals, t, 2, {kSwim, true, true, 10});
+    const int arrivingSwimmer = appearedSwimming + ImpulsesOver(arrivals, t, 2, {kStandUp, false, true, 10});
+    const int away = ImpulsesOver(arrivals, t, 1, {kWaist, false, false, kForgottenFrames});
+    const int forgotten = away + ImpulsesOver(arrivals, t, 1, {kStandUp, false, true, 10});
+    std::printf("     unit first seen swimming then standing at 0.75h: %d impulses; waist-deep unit back at 0.75h "
+                "after 31 s: %d, %u depths remembered\n",
+                arrivingSwimmer, forgotten, arrivals.RememberedDepths());
+    Check(arrivingSwimmer == 0 && forgotten == 1 && arrivals.RememberedDepths() == 0,
+          "a unit first seen while swimming starts from its current depth, and a remembered depth is forgotten after "
+          "30 s, so a unit back in the water later counts as new");
+
+    WaterContactTracker crowd;
+    t = kStartSeconds;
+    const uint64_t crowdSize = kMaxDepartedWaterContactDepths + kCrowdOverflow;
+    for (uint64_t guid = 1; guid <= crowdSize; ++guid)
+        ImpulsesOver(crowd, t, guid, {kWaist, false, true, 1});
+    ImpulsesOver(crowd, t, 0, {kWaist, false, false, kDiveFrames});
+    const uint32_t remembered = crowd.RememberedDepths();
+    const int newest = ImpulsesOver(crowd, t, crowdSize, {kStandUp, false, true, 1});
+    const int oldest = ImpulsesOver(crowd, t, 1, {kStandUp, false, true, 1});
+    std::printf("     %llu waist-deep units passing by: %u depths remembered; back at 0.75h: newest %d, oldest %d "
+                "impulses\n",
+                static_cast<unsigned long long>(crowdSize), remembered, newest, oldest);
+    Check(remembered == kMaxDepartedWaterContactDepths && newest == 0 && oldest == 1,
+          "the tracker remembers at most 256 departed depths and forgets the oldest first");
 }
 
 void CheckTeleportAndStaleTracks()
@@ -426,6 +509,7 @@ void CheckWaterContacts()
     CheckVisibleUnitWalk();
     CheckStationaryUnitStopsEmitting();
     CheckEntryImpulses();
+    CheckReturningUnitsKeepTheirSplashDepth();
     CheckTeleportAndStaleTracks();
 }
 }

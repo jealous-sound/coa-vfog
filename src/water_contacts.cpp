@@ -19,6 +19,7 @@ constexpr float kTeleportSlackYards = 2.0f;
 constexpr float kTeleportSpeedFactor = 3.0f;
 constexpr double kMaxTrackGapSeconds = 0.5;
 constexpr double kStaleTrackSeconds = 0.5;
+constexpr double kDepartedDepthSeconds = 30.0;
 
 float Saturate(float x)
 {
@@ -71,6 +72,7 @@ float WaterEntryImpulse(float depth, float height)
 void WaterContactTracker::Reset()
 {
     m_tracks.clear();
+    m_departed.clear();
     m_seconds = -1.0;
     m_contacts = 0;
 }
@@ -98,12 +100,27 @@ WaterContactTrack& WaterContactTracker::TrackOf(uint64_t guid, bool& created)
     return m_tracks.back();
 }
 
+float WaterContactTracker::FirstPreviousDepth(const WaterContact& contact, bool seeding)
+{
+    const float depth = WaterContactDepth(contact);
+    if (seeding)
+        return depth;
+    for (auto departed = m_departed.begin(); departed != m_departed.end(); ++departed)
+        if (departed->guid == contact.guid)
+        {
+            const float previousDepth = departed->previousDepth;
+            m_departed.erase(departed);
+            return previousDepth;
+        }
+    return contact.swimming ? depth : 0.0f;
+}
+
 void WaterContactTracker::Follow(WaterContactTrack& track, const WaterContact& contact, double seconds, bool created,
                                  bool seeding)
 {
     const float depth = WaterContactDepth(contact);
     if (created)
-        track.previousDepth = seeding ? depth : 0.0f;
+        track.previousDepth = FirstPreviousDepth(contact, seeding);
     else
     {
         const double elapsed = seconds - track.seenAt;
@@ -127,13 +144,36 @@ void WaterContactTracker::Follow(WaterContactTrack& track, const WaterContact& c
     track.previousDepth = depth;
 }
 
+void WaterContactTracker::RememberDepth(const WaterContactTrack& track)
+{
+    const WaterContactDepthMemory memory = {track.guid, track.previousDepth, track.seenAt};
+    auto same = std::find_if(m_departed.begin(), m_departed.end(),
+                             [&track](const WaterContactDepthMemory& departed) { return departed.guid == track.guid; });
+    if (same != m_departed.end())
+        *same = memory;
+    else if (m_departed.size() < kMaxDepartedWaterContactDepths)
+        m_departed.push_back(memory);
+    else
+        *std::min_element(m_departed.begin(), m_departed.end(),
+                          [](const WaterContactDepthMemory& a, const WaterContactDepthMemory& b) {
+                              return a.seenAt < b.seenAt;
+                          }) = memory;
+}
+
 void WaterContactTracker::DropStaleTracks(double seconds)
 {
-    m_tracks.erase(std::remove_if(m_tracks.begin(), m_tracks.end(),
-                                  [seconds](const WaterContactTrack& track) {
-                                      return seconds - track.seenAt > kStaleTrackSeconds;
-                                  }),
-                   m_tracks.end());
+    const auto stale = [seconds](const WaterContactTrack& track) {
+        return seconds - track.seenAt > kStaleTrackSeconds;
+    };
+    for (const WaterContactTrack& track : m_tracks)
+        if (stale(track))
+            RememberDepth(track);
+    m_tracks.erase(std::remove_if(m_tracks.begin(), m_tracks.end(), stale), m_tracks.end());
+    m_departed.erase(std::remove_if(m_departed.begin(), m_departed.end(),
+                                    [seconds](const WaterContactDepthMemory& departed) {
+                                        return seconds - departed.seenAt > kDepartedDepthSeconds;
+                                    }),
+                     m_departed.end());
 }
 
 void WaterContactTracker::Update(const WaterContactFrame& frame, double seconds)
