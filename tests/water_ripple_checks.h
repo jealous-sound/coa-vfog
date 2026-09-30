@@ -632,6 +632,40 @@ void CheckRecentringKeepsRipplesInPlace(IDirect3DDevice9* dev)
           "recentring by whole-texel shifts keeps a ripple bit-identical at the same world position");
 }
 
+void CheckUnusableCentreKeepsTheWindow(IDirect3DDevice9* dev)
+{
+    RippleBench steady(dev, kTexels);
+    RippleBench glitched(dev, kTexels);
+    const float centre[2] = {};
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float infinity = std::numeric_limits<float>::infinity();
+    const float unusable[][2] = {{nan, 0.0f}, {0.0f, nan}, {infinity, 0.0f}, {0.0f, -infinity}, {3e8f, 0.0f},
+                                 {0.0f, -1e30f}};
+    steady.Step(centre, {Impulse(0.0f, 0.0f)});
+    glitched.Step(centre, {Impulse(0.0f, 0.0f)});
+    for (const float(&glitch)[2] : unusable)
+    {
+        steady.Step(centre, {});
+        glitched.Step(glitch, {});
+    }
+    const WaterRippleWindow window = glitched.Ripples().Window(kStartSeconds);
+    for (int i = 0; i < kSpreadSteps; ++i)
+    {
+        steady.Step(centre, {});
+        glitched.Step(centre, {});
+    }
+    const RippleState a = steady.Read();
+    const RippleState b = glitched.Read();
+    const float difference = MaxDifference(a, b);
+    std::printf("     non-finite and out-of-range window centres: origin %.2f, %.2f yd, peak %.4f, largest "
+                "difference %.2e\n",
+                window.origin[0], window.origin[1], Peak(a), difference);
+    Check(steady.Prepared() && glitched.Prepared() && Peak(a) > 0.0f && difference == 0.0f &&
+              window.origin[0] == -kTexels / 2 * kWaterRippleTexelYards &&
+              window.origin[1] == -kTexels / 2 * kWaterRippleTexelYards,
+          "a non-finite or out-of-range window centre keeps the ripple window where it was and the ripples running");
+}
+
 RippleState RunAtFrameRate(IDirect3DDevice9* dev, int framesPerSecond, uint64_t& steps)
 {
     WaterContactTracker tracker;
@@ -749,6 +783,7 @@ void CheckWaterRipples(IDirect3DDevice9* dev)
         CheckPlaneWaveDecay(dev);
         CheckEdgeAndLongRun(dev);
         CheckRecentringKeepsRipplesInPlace(dev);
+        CheckUnusableCentreKeepsTheWindow(dev);
         CheckSimulationFrameRateIndependence(dev);
         CheckQuietSimulationStops(dev);
         dev->EndScene();

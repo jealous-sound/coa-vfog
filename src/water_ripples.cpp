@@ -17,6 +17,7 @@ constexpr DWORD kMaxRenderTargets = 4;
 constexpr UINT kStepConstant = 0;
 constexpr UINT kFirstSegmentConstant = 1;
 constexpr UINT kFirstShapeConstant = kFirstSegmentConstant + kMaxWaterRippleDisturbances;
+constexpr float kMaxWindowCentreYards = 100000.0f;
 constexpr float kFullscreenTriangle[3][4] = {
     {-1.0f, -1.0f, 0.0f, 1.0f}, {-1.0f, 3.0f, 0.0f, 1.0f}, {3.0f, -1.0f, 0.0f, 1.0f}};
 
@@ -77,6 +78,14 @@ void SetTarget(IDirect3DDevice9* dev, IDirect3DTexture9* texture)
 int WindowOrigin(float centre, int texels)
 {
     return static_cast<int>(std::floor(static_cast<double>(centre) / kWaterRippleTexelYards)) - texels / 2;
+}
+
+bool UsableWindowCentre(const float centre[2])
+{
+    for (int axis = 0; axis < 2; ++axis)
+        if (!(std::fabs(centre[axis]) <= kMaxWindowCentreYards))
+            return false;
+    return true;
 }
 
 bool OutsideWindow(const float from[2], const float to[2], float radius, int texels)
@@ -282,7 +291,9 @@ void WaterRipples::SetStepState(IDirect3DDevice9* dev)
 
 WaterRipples::WindowShift WaterRipples::Recentre(IDirect3DDevice9* dev, const float centre[2])
 {
-    const int desired[2] = {WindowOrigin(centre[0], m_texels), WindowOrigin(centre[1], m_texels)};
+    const bool usable = UsableWindowCentre(centre);
+    const int desired[2] = {usable ? WindowOrigin(centre[0], m_texels) : m_origin[0],
+                            usable ? WindowOrigin(centre[1], m_texels) : m_origin[1]};
     WindowShift shift = {desired[0] - m_origin[0], desired[1] - m_origin[1]};
     if (!m_mapsCleared || std::abs(shift.x) >= m_texels || std::abs(shift.y) >= m_texels)
     {
