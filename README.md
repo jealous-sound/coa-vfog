@@ -445,7 +445,10 @@ Engine notes behind the code:
   world X/Y in 20-yard cells and inserts it into a null-terminated list. A light holds its scene at `+0`, type at
   `+8` (1 = point), world position at `+0xC`, diffuse RGB at `+0x3C`, constant/linear/quadratic attenuation at
   `+0x54`, enabled state at `+0x60`, the address of its preceding link at `+0x64` and the next light at
-  `+0x68`; removal `0x834AB0` and the setters `0x835690`/`0x8356F0` maintain the links. Animated M2 positions
+  `+0x68`; removal `0x834AB0` and the setters `0x835690`/`0x8356F0` maintain the links. Registration skips a
+  disabled light (`0x834C79`, `83 7E 60 00`), and the enable setter `0x8356F0` stores its argument at `+0x60`, then
+  registers the light again (`0x835716`) or unlinks it (`0x835720`–`0x835740`), so the table holds only enabled
+  lights and the capture treats a disabled entry as a damaged table. Animated M2 positions
   are already transformed to world space before the setter (`0x828AF4`). The diffuse already includes the
   animated intensity and model scale (`0x8305B9`–`0x8305FE`) and is uploaded unchanged (`0x835527`,
   `0x6A462F`). The attenuation is uploaded as `D3DLIGHT9::Attenuation0/1/2` (`0x835539`, `0x6A46AC`) with the
@@ -585,6 +588,15 @@ was lost, and `fog gpu no samples` means none finished in the interval. Without 
 so once and the summaries omit the time; at `LogLevel=0` no queries are issued. With Classic data the summary
 adds the resolved glow and grading curve, for example `Classic glow 0.00, grading curve at inputs 8/31 16/31 24/31:
 0.267 0.565 0.890 (not rendered)`, and a line for each layer with authored noise.
+
+When the set of point lights the fog uploads changes and then holds for 30 drawn frames, one line gives their count,
+the brightest uploaded colour (after the colour rule and `LocalLightIntensity`, see Local lights) and the nearest
+distance, for example `local lights: 2 uploaded, brightest linear (12.99 255 255), nearest 20.0 yd`, or `local
+lights: none uploaded`; a set that changes every frame, such as flickering lights trading the eighth place, is not
+logged. `LogLevel=2` adds a line per light with what the capture read and what the fog uploads: `local light 0: at
+(x y z), 20.0 yd; diffuse (65.9 255 255), attenuation 0 0.7 0.03, enabled 1; uploaded (12.99 255 255), reach 200.0
+yd`. An owner test near a campfire and near a bright doodad checks the static findings in the game: every M2 light is
+expected to carry the attenuation 0, 0.7, 0.03, and a diffuse above 1 where the model's light intensity exceeds 1.
 
 Every 60 s the water adds `water gpu 1.24 ms (median of 3500 frames, 0 skipped), classes lake+ocean, waves 256
 (7 tiles)`: its GPU time without the client's own water draws. `water:` lines name each liquid type the first

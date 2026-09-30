@@ -209,6 +209,8 @@ bool CapturePointLightsUnsafe(const float cameraPosition[3], const PointLightUpl
             std::memcpy(light.position, native.position, sizeof(light.position));
             std::memcpy(light.color, native.color, sizeof(light.color));
             std::memcpy(light.attenuation, native.attenuation, sizeof(light.attenuation));
+            light.enabled = native.enabled;
+            light.nativeId = address;
             engine::SelectLocalPointLight(out, light, cameraPosition, upload);
             previousLink = address + offsetof(NativePointLight, next);
             address = native.next;

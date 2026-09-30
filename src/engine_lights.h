@@ -20,6 +20,8 @@ struct LocalPointLight
     float attenuation[3] = {};
     float uploadedColor[3] = {};
     float cutoff = 0.0f;
+    uint32_t enabled = 1;
+    uintptr_t nativeId = 0;
 };
 
 struct LocalLightInputs

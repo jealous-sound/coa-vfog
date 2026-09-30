@@ -2140,6 +2140,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckRendererSwitchesLitShaders(h);
     authored_noise::CheckRendererDrawsStormNoise(h);
     runtime_cost::CheckFrameSummaryLogsClassicExtras(h);
+    runtime_cost::CheckLocalLightLogLines(h);
     runtime_cost::CheckDepthProbeAndGpuTimeLog(h, eye, at);
     runtime_cost::CheckGpuTimerRetriesTransientCreationFailures(h.dev);
     runtime_cost::CheckGpuTimerReportsUnsupportedBeforeFirstSummary(h.dev);
