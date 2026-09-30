@@ -30,6 +30,21 @@ constexpr int kCaptureCount = sizeof(kCaptureSeconds) / sizeof(kCaptureSeconds[0
 constexpr UINT kSceneWidth = 1280;
 constexpr UINT kSceneHeight = 720;
 constexpr uint64_t kWalkerGuid = 1;
+constexpr int kNormalDebugView = 1;
+constexpr float kUnseenRippleGain = 1e-6f;
+constexpr float kPebbleSize = 0.125f;
+constexpr float kPebbleFieldNearX = 360.0f;
+constexpr float kPebbleFieldFarX = 400.0f;
+constexpr float kPebbleFieldStartY = -30.0f;
+constexpr float kPebbleFieldEndY = 20.0f;
+constexpr float kPebbleLift = 0.01f;
+constexpr float kPebbleShadeSpread = 0.15f;
+constexpr uint32_t kPebbleHashMultiplier = 0x9E3779B1u;
+constexpr uint32_t kPebbleHashShift = 15;
+constexpr uint32_t kPebbleShadeLevels = 256;
+constexpr uint32_t kWalkerForwardFlag = 0x1;
+constexpr uint32_t kWorldStartMs = 7200000;
+constexpr double kMsPerSecond = 1000.0;
 
 struct Walk
 {
@@ -49,13 +64,53 @@ float BeachXAtDepth(float depth)
     return kBeachStartX + (kWaterSurfaceZ - depth - kBasinFloorZ) / kBeachRisePerYard;
 }
 
+float BeachFloorZ(float x)
+{
+    return kBasinFloorZ + (x - kBeachStartX) * kBeachRisePerYard + kPebbleLift;
+}
+
+DWORD PebbleColour(int column, int row)
+{
+    uint32_t h = static_cast<uint32_t>(column) * kPebbleHashMultiplier ^ static_cast<uint32_t>(row);
+    h = (h ^ (h >> kPebbleHashShift)) * kPebbleHashMultiplier;
+    h ^= h >> kPebbleHashShift;
+    const float shade = 1.0f - kPebbleShadeSpread + 2.0f * kPebbleShadeSpread * (h % kPebbleShadeLevels) /
+                                                         static_cast<float>(kPebbleShadeLevels - 1);
+    auto channel = [shade](int shift) {
+        const float value = ((water_checks::kFloorColour >> shift) & 0xFF) * shade;
+        return static_cast<DWORD>(std::min(value, 255.0f)) << shift;
+    };
+    return 0xFF000000u | channel(16) | channel(8) | channel(0);
+}
+
+void AddPebbleField(std::vector<SceneVertex>& scene)
+{
+    const int columns = static_cast<int>((kPebbleFieldFarX - kPebbleFieldNearX) / kPebbleSize);
+    const int rows = static_cast<int>((kPebbleFieldEndY - kPebbleFieldStartY) / kPebbleSize);
+    for (int column = 0; column < columns; ++column)
+        for (int row = 0; row < rows; ++row)
+        {
+            const float x0 = kPebbleFieldNearX + column * kPebbleSize;
+            const float x1 = x0 + kPebbleSize;
+            const float y0 = kPebbleFieldStartY + row * kPebbleSize;
+            const float y1 = y0 + kPebbleSize;
+            AddQuad(scene, {x0, y0, BeachFloorZ(x0)}, {x1, y0, BeachFloorZ(x1)}, {x1, y1, BeachFloorZ(x1)},
+                    {x0, y1, BeachFloorZ(x0)}, PebbleColour(column, row));
+        }
+}
+
 Vec3 FeetAt(const Walk& walk, double seconds)
 {
     return {BeachXAtDepth(walk.depth), kStartY + walk.speed * static_cast<float>(seconds),
             kWaterSurfaceZ - walk.depth};
 }
 
-WaterContact WalkerContact(const Walk& walk, double seconds)
+uint32_t WorldMs(double seconds)
+{
+    return kWorldStartMs + static_cast<uint32_t>(std::lround(seconds * kMsPerSecond));
+}
+
+WaterContact WalkerContact(const Walk& walk, double seconds, water_contact_checks::ClientRippleClock& clock)
 {
     WaterContact contact;
     contact.guid = kWalkerGuid;
@@ -67,6 +122,8 @@ WaterContact WalkerContact(const Walk& walk, double seconds)
     contact.radius = kUnitRadius;
     contact.height = kUnitHeight;
     contact.speed = walk.speed;
+    contact.movementFlags = kWalkerForwardFlag;
+    contact.nextRippleMs = clock.Due(WorldMs(seconds), contact);
     return contact;
 }
 
@@ -86,18 +143,20 @@ WaterView ThirdPersonView(const Walk& walk, double seconds)
 std::vector<SceneVertex> BasinWithWalker(const Walk& walk, double seconds)
 {
     std::vector<SceneVertex> scene = water_checks::BuildBasinScene();
+    AddPebbleField(scene);
     const Vec3 feet = FeetAt(walk, seconds);
     AddBox(scene, {feet.x - kUnitHalfWidth, feet.y - kUnitHalfWidth, feet.z},
            {feet.x + kUnitHalfWidth, feet.y + kUnitHalfWidth, kWaterSurfaceZ + kUnitTopAboveSurface}, kUnitColour);
     return scene;
 }
 
-WaterFrameResult RenderWalkerFrame(BasinClient& client, const Walk& walk, double seconds, bool present)
+WaterFrameResult RenderWalkerFrame(BasinClient& client, const Walk& walk, double seconds,
+                                   water_contact_checks::ClientRippleClock* clock)
 {
     client.UseScene(BasinWithWalker(walk, seconds));
     WaterContactFrame contacts;
-    if (present)
-        contacts.contacts[contacts.count++] = WalkerContact(walk, seconds);
+    if (clock)
+        contacts.contacts[contacts.count++] = WalkerContact(walk, seconds, *clock);
     water_checks::WaterFrame frame;
     frame.otherPass = false;
     return water_checks::RenderRippleFrame(client, ThirdPersonView(walk, seconds), kStartSeconds + seconds, contacts,
@@ -107,6 +166,8 @@ WaterFrameResult RenderWalkerFrame(BasinClient& client, const Walk& walk, double
 struct WalkCaptures
 {
     Image images[kCaptureCount];
+    Image normals[kCaptureCount];
+    Image calm[kCaptureCount];
     bool shaded = true;
 };
 
@@ -115,18 +176,28 @@ WalkCaptures RenderWalk(BasinClient& client, const Walk& walk, const Config& cfg
     Config off = cfg;
     off.waterRipples = 0.0f;
     vf_test_set_config(&off);
-    RenderWalkerFrame(client, walk, 0.0, false);
+    RenderWalkerFrame(client, walk, 0.0, nullptr);
     vf_test_set_config(&cfg);
+    water_contact_checks::ClientRippleClock clock;
     WalkCaptures captures;
     int next = 0;
     for (int frame = 0; next < kCaptureCount; ++frame)
     {
         const double seconds = frame * kFrameSeconds;
-        const WaterFrameResult result = RenderWalkerFrame(client, walk, seconds, true);
+        const WaterFrameResult result = RenderWalkerFrame(client, walk, seconds, &clock);
         captures.shaded = captures.shaded && result.began;
         if (seconds + kFrameSeconds * 0.5 < kCaptureSeconds[next])
             continue;
-        captures.images[next++] = result.image;
+        captures.images[next] = result.image;
+        Config normals = cfg;
+        normals.waterDebugView = kNormalDebugView;
+        vf_test_set_config(&normals);
+        captures.normals[next] = RenderWalkerFrame(client, walk, seconds, &clock).image;
+        Config calm = cfg;
+        calm.waterRipples = kUnseenRippleGain;
+        vf_test_set_config(&calm);
+        captures.calm[next++] = RenderWalkerFrame(client, walk, seconds, &clock).image;
+        vf_test_set_config(&cfg);
     }
     return captures;
 }
@@ -190,7 +261,11 @@ int RunRippleScene(const std::wstring& outDir, const std::string& waterDataPath)
             const WalkCaptures captures = RenderWalk(client, walk, cfg);
             ok = ok && captures.shaded;
             for (int i = 0; i < kCaptureCount; ++i)
+            {
                 water_checks::SaveImage(outDir, CaptureName(walk, i).c_str(), captures.images[i]);
+                water_checks::SaveImage(outDir, (CaptureName(walk, i) + L"-normals").c_str(), captures.normals[i]);
+                water_checks::SaveImage(outDir, (CaptureName(walk, i) + L"-calm").c_str(), captures.calm[i]);
+            }
             std::printf("%ls: %s, %d captures\n", walk.name, captures.shaded ? "shaded" : "not shaded",
                         kCaptureCount);
         }

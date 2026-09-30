@@ -44,6 +44,13 @@ constexpr uint32_t kSwimmingFlag = 0x200000;
 constexpr uint32_t kForwardFlag = 0x1;
 constexpr float kLargeScale = 1.5f;
 constexpr uint32_t kWorldMs = 7200000;
+constexpr float kClientRippleReferenceSpeed = 2.5f;
+constexpr float kClientRippleMaxSpeed = 20.0f;
+constexpr float kClientRippleMinSpeed = 1e-4f;
+constexpr float kClientMovingRippleMsPerStrength = 250.0f;
+constexpr uint32_t kClientIdleRippleMs = 400;
+constexpr uint32_t kClientIdleRippleSpreadMs = 50;
+constexpr uint32_t kClientMoveFlags = 0xF;
 constexpr uint32_t kCappedObjects = 4100;
 constexpr uint32_t kDisturbanceCapacity = 32;
 constexpr double kStepSeconds = 1.0 / 30.0;
@@ -293,6 +300,32 @@ void CheckContactSelection()
           "equally near contacts are ordered by GUID; contacts beyond the range or with non-finite positions are "
           "rejected");
 }
+
+struct ClientRippleClock
+{
+    uint32_t next = 0;
+    uint32_t emitted = 0;
+
+    uint32_t Due(uint32_t nowMs, const WaterContact& contact)
+    {
+        if (next && static_cast<int32_t>(nowMs - next) < 0)
+            return next;
+        const float strength = ClientRippleStrength(WaterContactDepth(contact), contact.height);
+        next = nowMs + ((contact.movementFlags & kClientMoveFlags) != 0
+                            ? MovingInterval(contact.speed, strength)
+                            : kClientIdleRippleMs + (nowMs * 7) % kClientIdleRippleSpreadMs);
+        ++emitted;
+        return next;
+    }
+
+    static uint32_t MovingInterval(float speed, float strength)
+    {
+        const float pace = speed > kClientRippleMinSpeed
+                               ? kClientRippleReferenceSpeed / std::min(speed, kClientRippleMaxSpeed)
+                               : 1.0f;
+        return static_cast<uint32_t>(strength * pace * kClientMovingRippleMsPerStrength);
+    }
+};
 
 WaterContactFrame FrameOf(std::initializer_list<WaterContact> contacts)
 {
