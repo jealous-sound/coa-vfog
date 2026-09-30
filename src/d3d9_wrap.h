@@ -3,6 +3,7 @@
 #include "config.h"
 #include "engine.h"
 #include "msaa_depth.h"
+#include "transparent_fog.h"
 #include "water_types.h"
 
 #include <d3d9.h>
@@ -24,6 +25,9 @@ IDirect3DDevice9* RealDevice(FogDevice* device);
 void ForceDepthWrite(FogDevice* device, bool force);
 void SuppressDepthWrite(FogDevice* device, bool suppress);
 bool RenderFog(FogDevice* device, const FrameInputs& in, const Config& cfg, const char** skipReason);
+bool RenderFog(FogDevice* device, const FrameInputs& in, const Config& cfg, FogPass pass, const char** skipReason);
+bool RenderGodRaysAfterWorld(FogDevice* device, const char** skipReason);
+StockFogFit LastStockFogFit(FogDevice* device);
 bool AdaptiveLightingHistory(FogDevice* device);
 void DrawnFogShaders(FogDevice* device, IDirect3DPixelShader9** march, IDirect3DPixelShader9** composite,
                      IDirect3DPixelShader9** splitComposite);

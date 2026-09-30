@@ -4,6 +4,7 @@
 #include "d3d9_wrap.h"
 #include "engine.h"
 #include "log.h"
+#include "transparent_fog.h"
 #include "water_classify.h"
 #include "status_log.h"
 
@@ -32,6 +33,9 @@ constexpr int kNorthrendMap = 571;
 constexpr size_t kDrawnWaterClassesTextSize = 64;
 constexpr unsigned kFlatWavesBit = 1u << 31;
 constexpr const char* kCameraUnderLiquid = "camera under liquid";
+constexpr DWORD kTransparentFogStatsIntervalMs = 60000;
+constexpr size_t kGlarePassEntryTextSize = 64;
+constexpr double kPercent = 100.0;
 
 uintptr_t g_worldRenderTarget = engine::kWorldRenderTarget;
 uintptr_t g_opaqueM2PassTarget = engine::kOpaqueM2PassTarget;
@@ -47,6 +51,52 @@ bool g_deviceChecked = false;
 DWORD g_lastReload = 0;
 const char* g_fogNotDrawnReason = "";
 StatusLog g_fogLog;
+StatusLog g_godRayLog;
+
+uintptr_t g_m2BatchFogTarget = engine::kM2BatchFogTarget;
+uintptr_t g_glarePassTarget = engine::kGlarePassTarget;
+int g_m2BatchFogObserved = 0;
+bool g_transparentFogHooksInstalled = false;
+bool g_transparentFogFailed = false;
+StatusLog g_transparentFogLog;
+
+struct TransparentFogFrame
+{
+    bool inWorld;
+    bool pastLiquid;
+    bool composited;
+    bool armed;
+    bool glareDrawn;
+    StockFogFit fit;
+};
+
+TransparentFogFrame g_transparentFog = {};
+
+struct TransparentFogStats
+{
+    unsigned frames;
+    unsigned earlyComposites;
+    unsigned batchesBeforeLiquid;
+    unsigned batchesAfterLiquid;
+    unsigned batchesOutsideWorld;
+    unsigned batchesRewritten;
+    unsigned lightingColours;
+    unsigned additiveColours;
+    unsigned modulateColours;
+    unsigned modulate2xColours;
+    unsigned otherColours;
+    unsigned linearExponents;
+    unsigned lowerExponents;
+    unsigned higherExponents;
+    float lowestExponent;
+    float highestExponent;
+    unsigned glareDrawnEarly;
+    unsigned glareCallsPassed;
+    unsigned glareCallsSkipped;
+};
+
+TransparentFogStats g_transparentFogStats = {};
+DWORD g_transparentFogStatsTicks = 0;
 
 uintptr_t g_waterPassTarget = engine::kWaterPassTarget;
 bool g_waterHooksInstalled = false;
@@ -94,22 +144,74 @@ FogDevice* GameFogDevice()
     return device;
 }
 
+struct FogClient
+{
+    FogDevice* (*device)();
+    bool (*worldCaptured)();
+    bool (*frameInputs)(FrameInputs& in, bool withPointLights);
+    bool (*cameraInLiquid)();
+    engine::StockFog (*readStockFog)();
+    void (*writeStockFog)(const engine::StockFog& fog);
+    void (*endWorld)();
+};
+
+const FogClient kGameFogClient = {&GameFogDevice,          &engine::HasOpaqueState, &engine::BuildFrameInputs,
+                                  &engine::CameraInLiquid, &engine::ReadStockFog,   &engine::WriteStockFog,
+                                  &engine::ClearOpaqueState};
+
+FrameInputs g_testFogFrame = {};
+engine::StockFog g_testStockFog = {};
+
+bool TestWorldCaptured()
+{
+    return true;
+}
+
+bool TestFogFrameInputs(FrameInputs& in, bool)
+{
+    in = g_testFogFrame;
+    return true;
+}
+
+bool TestCameraInLiquid()
+{
+    return g_testFogFrame.inLiquid;
+}
+
+engine::StockFog TestReadStockFog()
+{
+    return g_testStockFog;
+}
+
+void TestWriteStockFog(const engine::StockFog& fog)
+{
+    g_testStockFog = fog;
+}
+
+void TestEndWorld()
+{
+}
+
+const FogClient kTestFogClient = {&LatestFogDevice,   &TestWorldCaptured, &TestFogFrameInputs, &TestCameraInLiquid,
+                                  &TestReadStockFog, &TestWriteStockFog, &TestEndWorld};
+const FogClient* g_fogClient = &kGameFogClient;
+
 bool FogDrawsInPlaceOfStockFog()
 {
-    return !g_failed && g_renderedLastFrame && GlobalConfig().Get().stockFog == 1 && !engine::CameraInLiquid() &&
-           GameFogDevice();
+    return !g_failed && g_renderedLastFrame && GlobalConfig().Get().stockFog == 1 && !g_fogClient->cameraInLiquid() &&
+           g_fogClient->device();
 }
 
 void PushStockFogOutOfRange()
 {
-    g_savedStockFog = engine::ReadStockFog();
+    g_savedStockFog = g_fogClient->readStockFog();
     engine::StockFog outOfRange;
     for (int group = 0; group < engine::kDayNightFogGroupCount; ++group)
     {
         outOfRange.start[group] = kOutOfRangeStockFogStart;
         outOfRange.end[group] = kOutOfRangeStockFogStart * 2.0f;
     }
-    engine::WriteStockFog(outOfRange);
+    g_fogClient->writeStockFog(outOfRange);
     g_stockFogPushed = true;
 }
 
@@ -117,13 +219,44 @@ void RestorePushedStockFog()
 {
     if (!g_stockFogPushed)
         return;
-    engine::WriteStockFog(g_savedStockFog);
+    g_fogClient->writeStockFog(g_savedStockFog);
     g_stockFogPushed = false;
+}
+
+bool TransparentFogStatsCounted()
+{
+    return g_transparentFogHooksInstalled && LogEnabled(LogLevel::Debug);
+}
+
+void ObserveM2BatchFog()
+{
+    g_m2BatchFogObserved = g_transparentFog.armed || TransparentFogStatsCounted() ? 1 : 0;
+}
+
+void DisarmTransparentFog()
+{
+    g_transparentFog.armed = false;
+    ObserveM2BatchFog();
+}
+
+void ResetTransparentFogFrame()
+{
+    g_transparentFog = {};
+    g_transparentFog.inWorld = true;
+    ObserveM2BatchFog();
+}
+
+void LeaveTransparentFogWorld()
+{
+    g_transparentFog.inWorld = false;
+    g_transparentFog.pastLiquid = false;
+    DisarmTransparentFog();
 }
 
 void OnFrameBegin()
 {
     g_renderedThisFrame = false;
+    ResetTransparentFogFrame();
     if (FogDrawsInPlaceOfStockFog())
         PushStockFogOutOfRange();
 }
@@ -142,11 +275,63 @@ void OnLiquidSurfaceEnd()
     g_liquidDepthWriteDevice = nullptr;
 }
 
+const char* GlarePassEntryText()
+{
+    static char text[kGlarePassEntryTextSize] = "";
+    engine::DescribeGlarePassEntry(text, sizeof(text));
+    return text;
+}
+
+double Share(unsigned part, unsigned whole)
+{
+    return whole ? kPercent * part / whole : 0.0;
+}
+
+void LogTransparentFogStats(const TransparentFogStats& s)
+{
+    const unsigned batches = s.batchesBeforeLiquid + s.batchesAfterLiquid + s.batchesOutsideWorld;
+    VF_LOG_DEBUG("transparent fog: %u frames, %u early composites; M2 batch fog %u before the liquid end, %u after, "
+                 "%u outside the world render, %u rewritten; colours lighting %.1f%%, black %.1f%%, white %.1f%%, "
+                 "grey %.1f%%, other %.1f%%",
+                 s.frames, s.earlyComposites, s.batchesBeforeLiquid, s.batchesAfterLiquid, s.batchesOutsideWorld,
+                 s.batchesRewritten,
+                 Share(s.lightingColours, batches), Share(s.additiveColours, batches),
+                 Share(s.modulateColours, batches), Share(s.modulate2xColours, batches),
+                 Share(s.otherColours, batches));
+    VF_LOG_DEBUG("  fog exponent 1: %.1f%%, below 1: %.1f%%, above 1: %.1f%% (lowest %.3f, highest %.3f); glare pass "
+                 "%u drawn before the fog, %u at its own call, %u own calls skipped; 0x%08X holds %s",
+                 Share(s.linearExponents, batches), Share(s.lowerExponents, batches),
+                 Share(s.higherExponents, batches), batches ? s.lowestExponent : 0.0f,
+                 batches ? s.highestExponent : 0.0f, s.glareDrawnEarly, s.glareCallsPassed, s.glareCallsSkipped,
+                 static_cast<unsigned>(engine::kGlarePassTarget), GlarePassEntryText());
+}
+
+void LogTransparentFogStatsWhenDue()
+{
+    if (!TransparentFogStatsCounted())
+    {
+        g_transparentFogStats = {};
+        g_transparentFogStatsTicks = 0;
+        return;
+    }
+    ++g_transparentFogStats.frames;
+    const DWORD now = GetTickCount();
+    if (!g_transparentFogStatsTicks)
+        g_transparentFogStatsTicks = now;
+    if (now - g_transparentFogStatsTicks < kTransparentFogStatsIntervalMs)
+        return;
+    g_transparentFogStatsTicks = now;
+    LogTransparentFogStats(g_transparentFogStats);
+    g_transparentFogStats = {};
+}
+
 void OnFrameEnd()
 {
     OnLiquidSurfaceEnd();
+    LeaveTransparentFogWorld();
     RestorePushedStockFog();
     g_renderedLastFrame = g_renderedThisFrame;
+    LogTransparentFogStatsWhenDue();
 }
 
 void ReloadConfigAfterInterval()
@@ -239,24 +424,180 @@ void RecordFogFrame(bool rendered, bool cameraUnderLiquid, const char* skip)
         LogWrite(line.level, "fog skipped: %s", skip);
 }
 
-bool RenderCurrentWorldFog(FogDevice* device)
+struct FogAttempt
 {
-    if (!device || !engine::HasOpaqueState())
-        return false;
+    bool tried;
+    bool rendered;
+    bool cameraUnderLiquid;
+    const char* skip;
+};
+
+FogAttempt RenderWorldFog(FogDevice* device, FogPass pass)
+{
+    if (!device || !g_fogClient->worldCaptured())
+        return {false, false, false, ""};
 
     ReloadConfigAfterInterval();
 
     const Config& cfg = GlobalConfig().Get();
     FrameInputs in = {};
-    bool valid = engine::BuildFrameInputs(in, cfg.localLights);
+    bool valid = g_fogClient->frameInputs(in, cfg.localLights);
     if (g_stockFogPushed)
         UseClientFogRangeInsteadOfPushed(in);
     const char* skip = "invalid frame inputs";
     const bool cameraUnderLiquid = valid && in.inLiquid && !cfg.underwater;
-    const bool rendered = valid && !cameraUnderLiquid && RenderFog(device, in, cfg, &skip);
-    g_renderedThisFrame = rendered;
-    RecordFogFrame(rendered, cameraUnderLiquid, skip);
-    return rendered;
+    const bool rendered = valid && !cameraUnderLiquid && RenderFog(device, in, cfg, pass, &skip);
+    return {true, rendered, cameraUnderLiquid, skip};
+}
+
+void RecordFogAttempt(const FogAttempt& attempt)
+{
+    g_renderedThisFrame = attempt.rendered;
+    RecordFogFrame(attempt.rendered, attempt.cameraUnderLiquid, attempt.skip);
+}
+
+void RenderCurrentWorldFog(FogDevice* device)
+{
+    const FogAttempt attempt = RenderWorldFog(device, FogPass::WholeFrame);
+    if (attempt.tried)
+        RecordFogAttempt(attempt);
+}
+
+void RenderGodRaysOverTheWorld(FogDevice* device)
+{
+    const char* skip = "";
+    if (RenderGodRaysAfterWorld(device, &skip))
+    {
+        g_godRayLog.Drawn();
+        return;
+    }
+    const StatusLogLine line = g_godRayLog.Skip(skip);
+    if (line.write)
+        LogWrite(line.level, "god rays after the world skipped: %s", skip);
+}
+
+const char* EarlyCompositeBlocked(const Config& cfg)
+{
+    if (!cfg.transparentFog)
+        return "TransparentFog=0";
+    if (!g_transparentFogHooksInstalled)
+        return "its hooks are not installed";
+    if (g_transparentFogFailed)
+        return "it stopped after an exception";
+    if (!g_stockFogPushed)
+        return "the stock fog is not replaced in this frame";
+    if (cfg.debugView != 0)
+        return "a debug view is shown";
+    if (cfg.sunMarker)
+        return "the sun marker is shown";
+    if (g_fogClient->cameraInLiquid())
+        return kCameraUnderLiquid;
+    return nullptr;
+}
+
+void NoteTransparentFogPath(const Config& cfg, const char* blocked)
+{
+    if (!cfg.transparentFog)
+        return;
+    if (!blocked)
+    {
+        g_transparentFogLog.Drawn();
+        return;
+    }
+    const StatusLogLine line = g_transparentFogLog.Idle(blocked);
+    if (line.write)
+        LogWrite(line.level, "transparent fog: the fog is drawn after the world because %s%s", blocked,
+                 line.level == LogLevel::Info ? " (repeats are logged at LogLevel 2)" : "");
+}
+
+void DrawGlareBeforeTheFog()
+{
+    g_transparentFog.glareDrawn = true;
+    ++g_transparentFogStats.glareDrawnEarly;
+    reinterpret_cast<void(__cdecl*)()>(g_glarePassTarget)();
+}
+
+void ArmTransparentFog(FogDevice* device)
+{
+    g_transparentFog.composited = true;
+    g_transparentFog.fit = LastStockFogFit(device);
+    g_transparentFog.armed = true;
+    ++g_transparentFogStats.earlyComposites;
+    ObserveM2BatchFog();
+}
+
+void OnTransparentsBegin()
+{
+    g_transparentFog.pastLiquid = true;
+    if (g_failed)
+        return;
+    ReloadConfigAfterInterval();
+    const Config& cfg = GlobalConfig().Get();
+    const char* blocked = EarlyCompositeBlocked(cfg);
+    FogDevice* device = blocked ? nullptr : g_fogClient->device();
+    if (!blocked && !device)
+        blocked = "there is no fog device";
+    NoteTransparentFogPath(cfg, blocked);
+    if (blocked)
+        return;
+    DrawGlareBeforeTheFog();
+    const FogAttempt attempt = RenderWorldFog(device, FogPass::BeforeTransparents);
+    if (!attempt.rendered)
+        return;
+    RecordFogAttempt(attempt);
+    ArmTransparentFog(device);
+}
+
+void CountM2BatchFog(const M2BatchFogArgs& args)
+{
+    TransparentFogStats& s = g_transparentFogStats;
+    const unsigned batches = s.batchesBeforeLiquid + s.batchesAfterLiquid + s.batchesOutsideWorld;
+    if (!g_transparentFog.inWorld)
+        ++s.batchesOutsideWorld;
+    else
+        ++(g_transparentFog.pastLiquid ? s.batchesAfterLiquid : s.batchesBeforeLiquid);
+    const uint32_t colour = args.colour ? *args.colour : kAdditiveFogColour;
+    if (UsesLightingFogColour(colour))
+        ++s.lightingColours;
+    else if (colour == kAdditiveFogColour)
+        ++s.additiveColours;
+    else if (colour == kModulateFogColour)
+        ++s.modulateColours;
+    else if (colour == kModulate2xFogColour)
+        ++s.modulate2xColours;
+    else
+        ++s.otherColours;
+    if (args.exponent == kLinearStockFogExponent)
+        ++s.linearExponents;
+    else if (args.exponent < kLinearStockFogExponent)
+        ++s.lowerExponents;
+    else
+        ++s.higherExponents;
+    s.lowestExponent = batches ? std::min(s.lowestExponent, args.exponent) : args.exponent;
+    s.highestExponent = batches ? std::max(s.highestExponent, args.exponent) : args.exponent;
+}
+
+void OnM2BatchFog(M2BatchFogArgs& args)
+{
+    if (TransparentFogStatsCounted())
+        CountM2BatchFog(args);
+    if (!g_transparentFog.armed)
+        return;
+    ApplyStockFogFit(g_transparentFog.fit, args);
+    ++g_transparentFogStats.batchesRewritten;
+}
+
+int TransparentFogGuardFilter(unsigned code, const char* where)
+{
+    VF_LOG_ERROR("exception 0x%08X in %s; transparent fog disabled for this session, the fog is drawn after the world",
+                 code, where);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+void FailTransparentFog()
+{
+    g_transparentFogFailed = true;
+    DisarmTransparentFog();
 }
 
 void OnOpaqueDone()
@@ -269,9 +610,12 @@ void OnOpaqueDone()
 
 void OnWorldDone()
 {
-    if (!g_failed)
-        RenderCurrentWorldFog(GameFogDevice());
-    engine::ClearOpaqueState();
+    if (!g_failed && g_transparentFog.composited)
+        RenderGodRaysOverTheWorld(g_fogClient->device());
+    else if (!g_failed)
+        RenderCurrentWorldFog(g_fogClient->device());
+    DisarmTransparentFog();
+    g_fogClient->endWorld();
 }
 
 int GuardFilter(unsigned code, const char* where)
@@ -671,6 +1015,31 @@ extern "C" void __cdecl vf_on_liquid_end()
     }
 }
 
+extern "C" void __cdecl vf_on_transparents_begin()
+{
+    __try
+    {
+        OnTransparentsBegin();
+    }
+    __except (GuardFilter(GetExceptionCode(), "transparent fog hook"))
+    {
+        g_failed = true;
+        DisarmTransparentFog();
+    }
+}
+
+extern "C" void __cdecl vf_on_m2_batch_fog(M2BatchFogArgs* args)
+{
+    __try
+    {
+        OnM2BatchFog(*args);
+    }
+    __except (TransparentFogGuardFilter(GetExceptionCode(), "M2 batch fog hook"))
+    {
+        FailTransparentFog();
+    }
+}
+
 extern "C" void __cdecl vf_on_opaque_done()
 {
     __try
@@ -730,9 +1099,49 @@ __declspec(naked) static void LiquidSurfaceThunk()
         call dword ptr [g_liquidSurfaceTarget]
         pushad
         call vf_on_liquid_end
+        call vf_on_transparents_begin
         popad
         ret
     }
+}
+
+__declspec(naked) static void M2BatchFogThunk()
+{
+    __asm {
+        cmp dword ptr [g_m2BatchFogObserved], 0
+        je forward
+        pushad
+        lea eax, [esp + 0x24]
+        push eax
+        call vf_on_m2_batch_fog
+        add esp, 4
+        popad
+    forward:
+        jmp dword ptr [g_m2BatchFogTarget]
+    }
+}
+
+static void __cdecl GlarePassThunk()
+{
+    if (g_transparentFog.glareDrawn)
+    {
+        ++g_transparentFogStats.glareCallsSkipped;
+        return;
+    }
+    ++g_transparentFogStats.glareCallsPassed;
+    reinterpret_cast<void(__cdecl*)()>(g_glarePassTarget)();
+}
+
+const void* RetargetM2BatchFogThunk(uintptr_t target)
+{
+    g_m2BatchFogTarget = target;
+    return reinterpret_cast<const void*>(&M2BatchFogThunk);
+}
+
+const void* RetargetGlarePassThunk(uintptr_t target)
+{
+    g_glarePassTarget = target;
+    return reinterpret_cast<const void*>(&GlarePassThunk);
 }
 
 __declspec(naked) static void ScreenEffectsThunk()
@@ -854,6 +1263,37 @@ void RestoreSlots(const PointerSlot* slots, int count)
 }
 
 template <size_t N>
+bool SitesHoldTheClientCalls(const CallSite (&sites)[N], const char* what)
+{
+    for (const CallSite& s : sites)
+        if (!SiteMatches(s.site, s.originalTarget))
+        {
+            VF_LOG_ERROR("%s call site 0x%08X differs from the 12340 client; hooks not installed", what,
+                         static_cast<unsigned>(s.site));
+            return false;
+        }
+    return true;
+}
+
+template <size_t N>
+bool PatchCallSites(const CallSite (&sites)[N])
+{
+    int patched = 0;
+    for (const CallSite& s : sites)
+    {
+        if (!PatchCallSite(s.site, s.originalTarget, s.thunk))
+        {
+            while (patched-- > 0)
+                PatchCallSite(sites[patched].site, reinterpret_cast<uintptr_t>(sites[patched].thunk),
+                              reinterpret_cast<const void*>(sites[patched].originalTarget));
+            return false;
+        }
+        ++patched;
+    }
+    return true;
+}
+
+template <size_t N>
 bool SlotsHoldTheClientRenders(const PointerSlot (&slots)[N])
 {
     for (const PointerSlot& s : slots)
@@ -903,31 +1343,35 @@ bool InstallEngineHooks()
         {engine::kWorldTextDrawSite, engine::kWorldTextDrawTarget, &WorldTextDrawThunk},
         {engine::kScreenEffectsSite, engine::kScreenEffectsTarget, &ScreenEffectsThunk},
     };
-    for (const CallSite& s : sites)
-        if (!SiteMatches(s.site, s.originalTarget))
-        {
-            VF_LOG_ERROR("world render call site 0x%08X differs from the 12340 client; hooks not installed",
-                         static_cast<unsigned>(s.site));
-            return false;
-        }
-    int patched = 0;
-    for (const CallSite& s : sites)
-    {
-        if (!PatchCallSite(s.site, s.originalTarget, s.thunk))
-        {
-            while (patched-- > 0)
-                PatchCallSite(sites[patched].site, reinterpret_cast<uintptr_t>(sites[patched].thunk),
-                              reinterpret_cast<const void*>(sites[patched].originalTarget));
-            return false;
-        }
-        ++patched;
-    }
+    if (!SitesHoldTheClientCalls(sites, "world render") || !PatchCallSites(sites))
+        return false;
     *slot = &GetProcAddressFilter;
     VF_LOG_INFO("engine hooks installed: GetProcAddress filter, world render 0x%08X, opaque 0x%08X, liquid 0x%08X, "
                 "world done 0x%08X, world text 0x%08X",
                 static_cast<unsigned>(engine::kWorldRenderSite), static_cast<unsigned>(engine::kOpaqueM2PassSite),
                 static_cast<unsigned>(engine::kLiquidSurfaceSite),
                 static_cast<unsigned>(engine::kScreenEffectsSite), static_cast<unsigned>(engine::kWorldTextDrawSite));
+    return true;
+}
+
+bool InstallTransparentFogHooks()
+{
+    const CallSite sites[] = {
+        {engine::kM2BatchFogSite, engine::kM2BatchFogTarget, &M2BatchFogThunk},
+        {engine::kGlarePassSite, engine::kGlarePassTarget, &GlarePassThunk},
+    };
+    if (!engine::TransparentFogClientLayoutMatches())
+    {
+        VF_LOG_ERROR("transparent fog hooks not installed: the client's M2 fog or glare code differs from the 12340 "
+                     "client; the fog is drawn after the world");
+        return false;
+    }
+    if (!SitesHoldTheClientCalls(sites, "transparent fog") || !PatchCallSites(sites))
+        return false;
+    g_transparentFogHooksInstalled = true;
+    VF_LOG_INFO("transparent fog hooks installed: M2 batch fog 0x%08X, glare pass 0x%08X (TransparentFog=%d)",
+                static_cast<unsigned>(engine::kM2BatchFogSite), static_cast<unsigned>(engine::kGlarePassSite),
+                GlobalConfig().Get().transparentFog ? 1 : 0);
     return true;
 }
 
@@ -1006,6 +1450,23 @@ bool InstallWaterHooks()
 void RecordHookedFogFrame(bool rendered, bool cameraUnderLiquid, const char* skip)
 {
     RecordFogFrame(rendered, cameraUnderLiquid, skip);
+}
+
+void UseTestFogClient(const FrameInputs& in)
+{
+    g_testFogFrame = in;
+    g_fogClient = &kTestFogClient;
+    g_transparentFogHooksInstalled = true;
+}
+
+engine::StockFog TestClientStockFog()
+{
+    return g_testStockFog;
+}
+
+void SetTestClientStockFog(const engine::StockFog& fog)
+{
+    g_testStockFog = fog;
 }
 
 void UseTestWaterClient(const FrameInputs& in, const WaterInputs& water)

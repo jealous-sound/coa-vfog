@@ -1,5 +1,8 @@
 #pragma once
 
+#include "ps_client_m2_fog.h"
+#include "vs_client_m2_fog.h"
+
 namespace transparent_fog_checks
 {
 struct FitErrorLimits
@@ -32,6 +35,28 @@ constexpr float kDisplayGammaExponent = 2.2f;
 constexpr int kMaxColourLevelError = 1;
 constexpr uint32_t kLightingColour = 0xFF405060u;
 constexpr float kRegressionDensity = 0.004f;
+constexpr float kRegressionEmissive = 0.12f;
+constexpr float kEffectDepth = 10.0f;
+constexpr float kEffectHalfSize = 1.0f;
+constexpr float kBackgroundDepth = 800.0f;
+constexpr DWORD kBackgroundColour = 0xFF303030;
+constexpr int kEffectLevel = 0x66;
+constexpr int kProbeRadius = 4;
+constexpr float kMaxFactorError = 0.02f;
+constexpr float kMaxOwnDepthLevelError = 3.0f;
+constexpr int kWarmUpFrames = 2;
+constexpr int kMaxEarlyDifference = 1;
+constexpr int kMaxMultisampledEarlyDifference = 2;
+constexpr float kRaySunRegion = 60.0f;
+constexpr float kMinRayGain = 0.01f;
+constexpr int kMaxRayDarkening = 1;
+constexpr float kRaysOn = 1.0f;
+constexpr uint32_t kSentinelEsi = 0x51515151u;
+constexpr uint32_t kSentinelEdi = 0x5D5D5D5Du;
+constexpr uint32_t kSentinelEbx = 0x5B5B5B5Bu;
+constexpr uint32_t kFogArgumentBytes = 16;
+constexpr float kStockFogStart = 150.0f;
+constexpr float kStockFogEnd = 600.0f;
 
 struct ClientFogConstant
 {
@@ -46,6 +71,11 @@ ClientFogConstant ClientM2FogConstant(float start, float end, float exponent)
 float ClientM2FogFactor(const ClientFogConstant& c, float viewDepth)
 {
     return std::fmin(std::pow(std::fmax(viewDepth * c.x + c.y, 0.0f), c.z), 1.0f);
+}
+
+float ColourChannel(uint32_t colour, int shift)
+{
+    return static_cast<float>((colour >> shift) & 0xFF) / 255.0f;
 }
 
 FogParams EmptyFog()
@@ -321,5 +351,666 @@ void CheckStockFogFit(const FogData& classic)
 {
     CheckFitAgainstTheVolumetricFog(classic);
     CheckBatchFogKeepsBlendModeColours();
+}
+
+void CheckTransparentFogSetting(const std::wstring& outDir, const std::wstring& shippedIni)
+{
+    ConfigStore shipped;
+    shipped.Load(NarrowPath(shippedIni));
+    const std::string text = ReadText(shippedIni);
+    const std::vector<std::string> lines = water_settings_checks::IniLines(text);
+    Check(!shipped.Get().transparentFog && !Config().transparentFog &&
+              std::count(lines.begin(), lines.end(), std::string("TransparentFog=0")) == 1 &&
+              text.find("; 1 = fog particles, spell effects and other see-through models by their own distance") !=
+                  std::string::npos,
+          "the shipped INI and the built-in default keep TransparentFog=0 until an owner test, and the INI documents "
+          "the key");
+
+    const std::wstring savedIni = FullPath(outDir + L"\\transparent-fog.ini");
+    CopyFileW(shippedIni.c_str(), savedIni.c_str(), FALSE);
+    ConfigStore store;
+    store.Load(NarrowPath(savedIni));
+    Config edited = store.Get();
+    edited.transparentFog = true;
+    const std::string changes = SettingChanges(store.Get(), edited);
+    store.Apply(edited);
+    const bool saved = store.Save();
+    ConfigStore reloaded;
+    reloaded.Load(NarrowPath(savedIni));
+    std::printf("     the settings window's TransparentFog change logs \"%s\"\n", changes.c_str());
+    Check(saved && reloaded.Get().transparentFog && changes == "TransparentFog 0 -> 1" &&
+              ReadText(savedIni).find("\nTransparentFog=1") != std::string::npos &&
+              !SameFogSettings(reloaded.Get(), shipped.Get()),
+          "a TransparentFog change is logged, saved to the INI, read back and counts as a fog setting change");
+}
+
+int g_glarePasses = 0;
+
+void __cdecl RecordGlarePass()
+{
+    ++g_glarePasses;
+}
+
+struct RecordedFog
+{
+    float start;
+    float end;
+    float exponent;
+    const uint32_t* colour;
+    uint32_t colourValue;
+};
+
+RecordedFog g_recordedFog = {};
+
+void __cdecl RecordM2BatchFog(float start, float end, float exponent, const uint32_t* colour)
+{
+    g_recordedFog = {start, end, exponent, colour, colour ? *colour : 0u};
+}
+
+struct ThunkCall
+{
+    uint32_t esi;
+    uint32_t edi;
+    uint32_t ebx;
+    uint32_t stackBefore;
+    uint32_t stackAfter;
+};
+
+ThunkCall CallThroughM2BatchFogThunk(const void* thunk, float start, float end, float exponent,
+                                     const uint32_t* colour)
+{
+    uint32_t esiAfter = 0;
+    uint32_t ediAfter = 0;
+    uint32_t ebxAfter = 0;
+    uint32_t stackBefore = 0;
+    uint32_t stackAfter = 0;
+    __asm {
+        push esi
+        push edi
+        push ebx
+        mov esi, kSentinelEsi
+        mov edi, kSentinelEdi
+        mov ebx, kSentinelEbx
+        mov stackBefore, esp
+        push colour
+        push exponent
+        push end
+        push start
+        call thunk
+        add esp, kFogArgumentBytes
+        mov stackAfter, esp
+        mov esiAfter, esi
+        mov ediAfter, edi
+        mov ebxAfter, ebx
+        pop ebx
+        pop edi
+        pop esi
+    }
+    return {esiAfter, ediAfter, ebxAfter, stackBefore, stackAfter};
+}
+
+bool CallerKept(const ThunkCall& call)
+{
+    return call.esi == kSentinelEsi && call.edi == kSentinelEdi && call.ebx == kSentinelEbx &&
+           call.stackBefore == call.stackAfter;
+}
+
+void CallGlarePassThunk()
+{
+    reinterpret_cast<void(__cdecl*)()>(vf_test_glare_pass_thunk(reinterpret_cast<uintptr_t>(&RecordGlarePass)))();
+}
+
+struct ClientM2Shaders
+{
+    IDirect3DVertexShader9* vs = nullptr;
+    IDirect3DPixelShader9* ps = nullptr;
+    IDirect3DVertexDeclaration9* decl = nullptr;
+
+    explicit ClientM2Shaders(IDirect3DDevice9* dev)
+    {
+        static const D3DVERTEXELEMENT9 elements[] = {
+            {0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
+            {0, 16, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR, 0},
+            D3DDECL_END(),
+        };
+        dev->CreateVertexShader(reinterpret_cast<const DWORD*>(g_vs_client_m2_fog), &vs);
+        dev->CreatePixelShader(reinterpret_cast<const DWORD*>(g_ps_client_m2_fog), &ps);
+        dev->CreateVertexDeclaration(elements, &decl);
+    }
+
+    ~ClientM2Shaders()
+    {
+        IUnknown* objects[] = {vs, ps, decl};
+        for (IUnknown* object : objects)
+            if (object)
+                object->Release();
+    }
+
+    ClientM2Shaders(const ClientM2Shaders&) = delete;
+    ClientM2Shaders& operator=(const ClientM2Shaders&) = delete;
+
+    bool Ready() const { return vs && ps && decl; }
+};
+
+void DrawClientAdditiveEffect(IDirect3DDevice9* dev, const ClientM2Shaders& shaders, const View& v,
+                              const M2BatchFogArgs& fog)
+{
+    struct EffectVertex
+    {
+        float x, y, z, w;
+        DWORD colour;
+    };
+    const DWORD colour = D3DCOLOR_ARGB(0xFF, kEffectLevel, kEffectLevel, kEffectLevel);
+    const float z = kEffectDepth;
+    const float s = kEffectHalfSize;
+    const EffectVertex quad[6] = {{-s, -s, z, 1, colour}, {s, -s, z, 1, colour}, {-s, s, z, 1, colour},
+                                  {s, -s, z, 1, colour},  {s, s, z, 1, colour},  {-s, s, z, 1, colour}};
+    const ClientFogConstant c30 = ClientM2FogConstant(fog.start, fog.end, fog.exponent);
+    const float viewDepthRow[4] = {0.0f, 0.0f, 1.0f, 0.0f};
+    const float fogColour[4] = {ColourChannel(*fog.colour, 16), ColourChannel(*fog.colour, 8),
+                                ColourChannel(*fog.colour, 0), 0.0f};
+    dev->SetVertexShader(shaders.vs);
+    dev->SetPixelShader(shaders.ps);
+    dev->SetVertexDeclaration(shaders.decl);
+    dev->SetVertexShaderConstantF(0, v.d3dProj, 4);
+    dev->SetVertexShaderConstantF(30, &c30.x, 1);
+    dev->SetVertexShaderConstantF(33, viewDepthRow, 1);
+    dev->SetPixelShaderConstantF(2, fogColour, 1);
+    dev->SetViewport(&v.world);
+    dev->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
+    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+    dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ONE);
+    dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE);
+    dev->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD);
+    dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+    dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+    dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+    dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
+    dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 2, quad, sizeof(EffectVertex));
+    dev->SetVertexShader(nullptr);
+    dev->SetPixelShader(nullptr);
+    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+}
+
+void DrawBackdrop(Harness& h, const View& v, float viewDepth, DWORD colour)
+{
+    IDirect3DDevice9* dev = h.dev;
+    dev->SetViewport(&v.world);
+    dev->SetVertexShader(nullptr);
+    dev->SetPixelShader(nullptr);
+    dev->SetTexture(0, nullptr);
+    dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+    dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+    dev->SetRenderState(D3DRS_LIGHTING, FALSE);
+    dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    dev->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+    dev->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+    dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+    dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+    h.DrawPretransformedQuadAtRawDepth(0.0f, 0.0f, static_cast<float>(v.world.Width),
+                                       static_cast<float>(v.world.Height), v.RawDepthAt(viewDepth), colour);
+}
+
+enum class Backdrop
+{
+    Scene,
+    FarWall,
+};
+
+struct FrameOptions
+{
+    Backdrop backdrop = Backdrop::Scene;
+    bool drawEffect = false;
+    bool captureAfterLiquid = false;
+    bool keepStateAround = false;
+    bool unbindDepthAtLiquidEnd = false;
+    bool readDepthAtLiquidEnd = false;
+    const DepthTexel* depthTexels = nullptr;
+    void (*drawOverBackdrop)(Harness& h) = nullptr;
+};
+
+struct HookedFrame
+{
+    Image image;
+    Image afterLiquid;
+    M2BatchFogArgs effectFog = {};
+    bool effectColourKept = false;
+    uint32_t effectFogColour = 0;
+    int glarePassesBeforeTheFog = 0;
+    int glarePassesAtOwnCall = 0;
+    bool stateKept = true;
+    engine::StockFog stockFogInFrame = {};
+    engine::StockFog stockFogAfterFrame = {};
+    float depthAtLiquidEnd[2] = {};
+    bool depthRead = false;
+};
+
+void DrawBackdropFor(Harness& h, const View& v, const FrameOptions& options)
+{
+    if (options.backdrop == Backdrop::FarWall)
+        DrawBackdrop(h, v, kBackgroundDepth, kBackgroundColour);
+    else
+        h.DrawScene(v.eye, v.view, v.proj, v.world);
+    if (options.drawOverBackdrop)
+        options.drawOverBackdrop(h);
+}
+
+bool KeepsState(Harness& h, const View& v, void (*entry)())
+{
+    h.SetEngineState(v.world);
+    Sentinel before;
+    ReadSentinel(h.dev, before);
+    entry();
+    Sentinel after;
+    ReadSentinel(h.dev, after);
+    const bool kept = SameSentinel(before, after);
+    if (!kept)
+        ReportSentinelDifferences(before, after);
+    ReleaseSentinel(before);
+    ReleaseSentinel(after);
+    return kept;
+}
+
+void EndLiquidWithDepthUnbound(Harness& h)
+{
+    IDirect3DSurface9* bound = nullptr;
+    h.dev->GetDepthStencilSurface(&bound);
+    h.dev->SetDepthStencilSurface(nullptr);
+    vf_test_hook_liquid_end();
+    h.dev->SetDepthStencilSurface(bound);
+    if (bound)
+        bound->Release();
+}
+
+void EndLiquid(Harness& h, const View& v, const FrameOptions& options, HookedFrame& frame)
+{
+    const int before = g_glarePasses;
+    if (options.unbindDepthAtLiquidEnd)
+        EndLiquidWithDepthUnbound(h);
+    else if (options.keepStateAround)
+        frame.stateKept = KeepsState(h, v, &vf_test_hook_liquid_end) && frame.stateKept;
+    else
+        vf_test_hook_liquid_end();
+    frame.glarePassesBeforeTheFog = g_glarePasses - before;
+    if (options.readDepthAtLiquidEnd)
+        frame.depthRead = vf_test_read_scene_depth(options.depthTexels, 2, frame.depthAtLiquidEnd) != 0;
+    if (options.captureAfterLiquid)
+        frame.afterLiquid = Capture(h.dev);
+}
+
+void DrawEffect(Harness& h, const View& v, const FrameOptions& options, const ClientM2Shaders* shaders,
+                HookedFrame& frame)
+{
+    const uint32_t additive = kAdditiveFogColour;
+    frame.effectFog = {kPushedStockFogStart, kPushedStockFogEnd, kAuthoredClientExponent, &additive};
+    vf_test_hook_m2_batch_fog(&frame.effectFog);
+    frame.effectColourKept = frame.effectFog.colour == &additive;
+    frame.effectFogColour = *frame.effectFog.colour;
+    if (options.drawEffect && shaders && shaders->Ready())
+        DrawClientAdditiveEffect(h.dev, *shaders, v, frame.effectFog);
+    frame.effectFog.colour = nullptr;
+}
+
+HookedFrame RenderHookedFrame(Harness& h, const View& v, const Config& cfg, const FrameOptions& options,
+                              const ClientM2Shaders* shaders = nullptr)
+{
+    HookedFrame frame;
+    vf_test_set_config(&cfg);
+    vf_test_glare_pass_thunk(reinterpret_cast<uintptr_t>(&RecordGlarePass));
+    vf_test_use_fog_hook_client(&v.in);
+    vf_test_hook_frame_begin();
+    vf_test_hook_stock_fog(&frame.stockFogInFrame, nullptr);
+    h.BeginFrame();
+    h.dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+    DrawBackdropFor(h, v, options);
+    EndLiquid(h, v, options, frame);
+    DrawEffect(h, v, options, shaders, frame);
+    const int beforeOwnCall = g_glarePasses;
+    CallGlarePassThunk();
+    frame.glarePassesAtOwnCall = g_glarePasses - beforeOwnCall;
+    if (options.keepStateAround)
+        frame.stateKept = KeepsState(h, v, &vf_test_hook_world_done) && frame.stateKept;
+    else
+        vf_test_hook_world_done();
+    frame.image = Capture(h.dev);
+    h.dev->EndScene();
+    vf_test_hook_frame_end();
+    vf_test_hook_stock_fog(&frame.stockFogAfterFrame, nullptr);
+    h.dev->Present(nullptr, nullptr, nullptr, nullptr);
+    return frame;
+}
+
+HookedFrame RenderSettledHookedFrame(Harness& h, const View& v, const Config& cfg, const FrameOptions& options,
+                                     const ClientM2Shaders* shaders = nullptr)
+{
+    HookedFrame frame;
+    for (int i = 0; i < kWarmUpFrames; ++i)
+        frame = RenderHookedFrame(h, v, cfg, options, shaders);
+    return frame;
+}
+
+Image RenderWholeFrameDirectly(Harness& h, const View& v, const Config& cfg, const FrameOptions& options)
+{
+    vf_test_set_config(&cfg);
+    h.BeginFrame();
+    h.dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+    DrawBackdropFor(h, v, options);
+    const char* skip = "";
+    vf_test_render(&v.in, &skip);
+    Image image = Capture(h.dev);
+    h.dev->EndScene();
+    h.dev->Present(nullptr, nullptr, nullptr, nullptr);
+    return image;
+}
+
+int LargestDifference(const Image& a, const Image& b, const D3DVIEWPORT9& region)
+{
+    int largest = 0;
+    for (UINT y = region.Y; y < region.Y + region.Height; ++y)
+        for (UINT x = region.X; x < region.X + region.Width; ++x)
+            for (int c = 0; c < 3; ++c)
+                largest = std::max(largest, std::abs(static_cast<int>(a.At(x, y)[c]) - b.At(x, y)[c]));
+    return largest;
+}
+
+int LargestDarkening(const Image& before, const Image& after, const D3DVIEWPORT9& region)
+{
+    int largest = 0;
+    for (UINT y = region.Y; y < region.Y + region.Height; ++y)
+        for (UINT x = region.X; x < region.X + region.Width; ++x)
+            for (int c = 0; c < 3; ++c)
+                largest = std::max(largest, static_cast<int>(before.At(x, y)[c]) - after.At(x, y)[c]);
+    return largest;
+}
+
+Config HookConfig(bool transparentFog)
+{
+    Config cfg;
+    cfg.overlay = false;
+    cfg.temporal = 0.0f;
+    cfg.noiseAmount = 0.0f;
+    cfg.godRays = 0.0f;
+    cfg.dataMode = 0;
+    cfg.transparentFog = transparentFog;
+    return cfg;
+}
+
+bool PassedThrough(const HookedFrame& frame)
+{
+    return frame.effectFog.start == kPushedStockFogStart && frame.effectFog.end == kPushedStockFogEnd &&
+           frame.effectFog.exponent == kAuthoredClientExponent && frame.effectColourKept;
+}
+
+bool Rewritten(const HookedFrame& frame)
+{
+    return frame.effectFog.start != kPushedStockFogStart && frame.effectFog.end != kPushedStockFogEnd &&
+           frame.effectFog.exponent == kLinearStockFogExponent && frame.effectColourKept &&
+           frame.effectFogColour == kAdditiveFogColour;
+}
+
+void CheckEarlyCompositeMatchesWholeFrame(Harness& h)
+{
+    const View v;
+    FrameOptions options;
+    options.captureAfterLiquid = true;
+    engine::StockFog clientFog = {{kStockFogStart, kStockFogStart}, {kStockFogEnd, kStockFogEnd}};
+    vf_test_hook_stock_fog(nullptr, &clientFog);
+    const HookedFrame whole = RenderSettledHookedFrame(h, v, HookConfig(false), options);
+    const HookedFrame early = RenderSettledHookedFrame(h, v, HookConfig(true), options);
+    const Image direct = RenderWholeFrameDirectly(h, v, HookConfig(false), options);
+    const int wholeVsDirect = LargestDifference(whole.image, direct, v.world);
+    const int earlyVsWhole = LargestDifference(early.image, whole.image, v.world);
+    const int earlyAtLiquidEnd = LargestDifference(early.afterLiquid, whole.image, v.world);
+    std::printf("     hooked frames: TransparentFog=0 vs the fog pass alone %d/255, TransparentFog=1 vs 0 %d/255 "
+                "(%d/255 already at the liquid end); glare drawn before the fog %d/%d, at its own call %d/%d\n",
+                wholeVsDirect, earlyVsWhole, earlyAtLiquidEnd, whole.glarePassesBeforeTheFog,
+                early.glarePassesBeforeTheFog, whole.glarePassesAtOwnCall, early.glarePassesAtOwnCall);
+    Check(wholeVsDirect == 0 && PassedThrough(whole) && whole.glarePassesBeforeTheFog == 0 &&
+              whole.glarePassesAtOwnCall == 1,
+          "with TransparentFog=0 the hooks pass through: the fog draws once after the world as before, the M2 batch "
+          "fog arguments stay bit-identical and the glare draws at its own call");
+    Check(earlyVsWhole <= kMaxEarlyDifference && earlyAtLiquidEnd <= kMaxEarlyDifference,
+          "with TransparentFog=1 the early composite at the liquid end fogs opaque pixels as the single composite "
+          "after the world does, and the end of the world adds nothing without god rays");
+    Check(Rewritten(early) && early.glarePassesBeforeTheFog == 1 && early.glarePassesAtOwnCall == 0,
+          "after the early composite the M2 batch fog is armed and the glare pass is drawn once, before the fog, "
+          "and skipped at its own call");
+    const bool pushed = early.stockFogInFrame.start[0] == kPushedStockFogStart &&
+                        early.stockFogInFrame.end[1] == kPushedStockFogEnd;
+    const bool restored = early.stockFogAfterFrame.start[0] == kStockFogStart &&
+                          early.stockFogAfterFrame.end[1] == kStockFogEnd;
+    Check(pushed && restored, "the stock fog stays pushed out of range for the world render and is restored after");
+}
+
+struct OwnDepthResult
+{
+    float levelChange;
+    float factor;
+    bool rewritten;
+};
+
+OwnDepthResult MeasureEffectAtOwnDepth(Harness& h, const View& v, bool transparentFog,
+                                       const ClientM2Shaders& shaders)
+{
+    FrameOptions withEffect;
+    withEffect.backdrop = Backdrop::FarWall;
+    withEffect.drawEffect = true;
+    FrameOptions withoutEffect = withEffect;
+    withoutEffect.drawEffect = false;
+    const Config cfg = HookConfig(transparentFog);
+    const HookedFrame lit = RenderSettledHookedFrame(h, v, cfg, withEffect, &shaders);
+    const HookedFrame dark = RenderSettledHookedFrame(h, v, cfg, withoutEffect, &shaders);
+    const int cx = static_cast<int>(v.world.X + v.world.Width / 2);
+    const int cy = static_cast<int>(v.world.Y + v.world.Height / 2);
+    const Rgb a = SampleRgb(lit.image, cx, cy, kProbeRadius);
+    const Rgb b = SampleRgb(dark.image, cx, cy, kProbeRadius);
+    const ClientFogConstant c30 =
+        ClientM2FogConstant(lit.effectFog.start, lit.effectFog.end, lit.effectFog.exponent);
+    return {(a.r - b.r + a.g - b.g + a.b - b.b) / 3.0f, ClientM2FogFactor(c30, kEffectDepth), Rewritten(lit)};
+}
+
+void CheckTransparentsFoggedAtOwnDepth(Harness& h)
+{
+    ClientM2Shaders shaders(h.dev);
+    const View v;
+    const FogParams fog = HomogeneousFog(kRegressionDensity, kRegressionEmissive);
+    vf_test_force_fog_params(&fog);
+    const OwnDepthResult before = MeasureEffectAtOwnDepth(h, v, false, shaders);
+    const OwnDepthResult after = MeasureEffectAtOwnDepth(h, v, true, shaders);
+    vf_test_force_fog_params(nullptr);
+    const float transmittance = std::exp(-kRegressionDensity * kEffectDepth);
+    const float background = std::exp(-kRegressionDensity * kBackgroundDepth);
+    const float expected = kEffectLevel * transmittance;
+    std::printf("     additive effect %d/255 at %.0f yd over a wall at %.0f yd (T %.3f and %.3f): adds %.1f/255 with "
+                "TransparentFog=0, %.1f/255 with TransparentFog=1 (client fog factor %.3f), expected %.1f/255\n",
+                kEffectLevel, kEffectDepth, kBackgroundDepth, transmittance, background, before.levelChange,
+                after.levelChange, after.factor, expected);
+    Check(shaders.Ready() && after.rewritten && std::fabs(after.factor - transmittance) < kMaxFactorError &&
+              std::fabs(after.levelChange - expected) <= kMaxOwnDepthLevelError,
+          "with TransparentFog=1 an additive effect drawn after the early composite through the client's M2 fog "
+          "formula is fogged at its own depth (effect x T(10 yd)), not at the wall's");
+    Check(!before.rewritten && before.levelChange < expected * 0.5f,
+          "with TransparentFog=0 the same effect keeps today's single composite and takes the fog of the wall "
+          "behind it");
+}
+
+void CheckGodRaysAfterTheWorld(Harness& h)
+{
+    const View v;
+    FrameOptions options;
+    options.captureAfterLiquid = true;
+    Config cfg = HookConfig(true);
+    cfg.godRays = kRaysOn;
+    const HookedFrame rays = RenderSettledHookedFrame(h, v, cfg, options);
+    float sunDir[3];
+    TransformDirection(v.in.toLight, v.view, sunDir);
+    const float sunX = v.world.X + (sunDir[0] / sunDir[2] * v.proj[0] * 0.5f + 0.5f) * v.world.Width;
+    const float sunY = v.world.Y + (0.5f - sunDir[1] / sunDir[2] * v.proj[5] * 0.5f) * v.world.Height;
+    const UINT x0 = static_cast<UINT>(std::fmax(sunX - kRaySunRegion, 0.0f));
+    const UINT y0 = static_cast<UINT>(std::fmax(sunY - kRaySunRegion, 0.0f));
+    const UINT x1 = static_cast<UINT>(std::fmin(sunX + kRaySunRegion, static_cast<float>(v.world.Width)));
+    const UINT y1 = static_cast<UINT>(std::fmin(sunY + kRaySunRegion, static_cast<float>(v.world.Height)));
+    const double gain = MeanLumaChange(rays.afterLiquid, rays.image, x0, y0, x1, y1);
+    const int darkening = LargestDarkening(rays.afterLiquid, rays.image, v.world);
+    std::printf("     god rays after the early composite: mean luma change %.4f around the sun (%.0f, %.0f), largest "
+                "darkening %d/255\n",
+                gain, sunX, sunY, darkening);
+    Check(gain > kMinRayGain && darkening <= kMaxRayDarkening,
+          "with TransparentFog=1 the god rays are added over the finished world at the end of the world render and "
+          "darken nothing");
+}
+
+void CheckHookedFogRestoresState(Harness& h)
+{
+    const View v;
+    FrameOptions options;
+    options.keepStateAround = true;
+    Config cfg = HookConfig(true);
+    cfg.godRays = kRaysOn;
+    const HookedFrame early = RenderSettledHookedFrame(h, v, cfg, options);
+    const HookedFrame whole = RenderSettledHookedFrame(h, v, HookConfig(false), options);
+    Check(early.stateKept && whole.stateKept && Rewritten(early),
+          "the early composite at the liquid end, the late god rays and the single composite restore render, "
+          "sampler, shader, constant, stream, viewport, scissor and target state");
+}
+
+struct Fallback
+{
+    const char* name;
+    Config cfg;
+    bool cameraInLiquid;
+    bool unbindDepth;
+};
+
+void CheckWholeFrameFallbacks(Harness& h)
+{
+    Config debugView = HookConfig(true);
+    debugView.debugView = 2;
+    Config sunMarker = HookConfig(true);
+    sunMarker.sunMarker = true;
+    Config stockFogKept = HookConfig(true);
+    stockFogKept.stockFog = 0;
+    Config underwater = HookConfig(true);
+    underwater.underwater = true;
+    const Fallback fallbacks[] = {
+        {"DebugView=2", debugView, false, false},
+        {"SunMarker=1", sunMarker, false, false},
+        {"StockFog=0", stockFogKept, false, false},
+        {"camera under water with Underwater=1", underwater, true, false},
+        {"early composite failed (depth not bound)", HookConfig(true), false, true},
+    };
+    bool allFallBack = true;
+    for (const Fallback& f : fallbacks)
+    {
+        View v;
+        v.in.inLiquid = f.cameraInLiquid;
+        FrameOptions options;
+        options.unbindDepthAtLiquidEnd = f.unbindDepth;
+        const HookedFrame frame = RenderSettledHookedFrame(h, v, f.cfg, options);
+        const Image direct = RenderWholeFrameDirectly(h, v, f.cfg, options);
+        const int difference = LargestDifference(frame.image, direct, v.world);
+        const int glareDraws = frame.glarePassesBeforeTheFog + frame.glarePassesAtOwnCall;
+        const bool fellBack = PassedThrough(frame) && glareDraws == 1 && difference == 0;
+        std::printf("     %s: M2 fog %s, glare drawn %d before the fog and %d at its own call, frame vs the fog "
+                    "pass alone %d/255\n",
+                    f.name, PassedThrough(frame) ? "passed through" : "rewritten", frame.glarePassesBeforeTheFog,
+                    frame.glarePassesAtOwnCall, difference);
+        allFallBack = allFallBack && fellBack;
+    }
+    Check(allFallBack,
+          "with TransparentFog=1 a debug view, the sun marker, StockFog=0, a camera under water or a failed early "
+          "composite fall back to the single composite after the world with the M2 batch fog unarmed and one glare "
+          "draw");
+}
+
+void CheckThunksAndGlarePass(Harness& h)
+{
+    const void* thunk = vf_test_m2_batch_fog_thunk(reinterpret_cast<uintptr_t>(&RecordM2BatchFog));
+    const uint32_t lighting = kLightingColour;
+    g_recordedFog = {};
+    const ThunkCall unarmed = CallThroughM2BatchFogThunk(thunk, kPushedStockFogStart, kPushedStockFogEnd,
+                                                         kAuthoredClientExponent, &lighting);
+    const bool unarmedPassed = g_recordedFog.start == kPushedStockFogStart &&
+                               g_recordedFog.end == kPushedStockFogEnd &&
+                               g_recordedFog.exponent == kAuthoredClientExponent && g_recordedFog.colour == &lighting;
+
+    const View v;
+    Config cfg = HookConfig(true);
+    vf_test_set_config(&cfg);
+    RenderSettledHookedFrame(h, v, cfg, FrameOptions());
+    vf_test_glare_pass_thunk(reinterpret_cast<uintptr_t>(&RecordGlarePass));
+    vf_test_use_fog_hook_client(&v.in);
+    vf_test_hook_frame_begin();
+    h.BeginFrame();
+    h.DrawScene(v.eye, v.view, v.proj, v.world);
+    const int glareBefore = g_glarePasses;
+    vf_test_hook_liquid_end();
+    CallGlarePassThunk();
+    const int glareDraws = g_glarePasses - glareBefore;
+    g_recordedFog = {};
+    const ThunkCall armed = CallThroughM2BatchFogThunk(thunk, kPushedStockFogStart, kPushedStockFogEnd,
+                                                       kAuthoredClientExponent, &lighting);
+    const RecordedFog armedFog = g_recordedFog;
+    vf_test_hook_world_done();
+    h.dev->EndScene();
+    vf_test_hook_frame_end();
+    h.dev->Present(nullptr, nullptr, nullptr, nullptr);
+    g_recordedFog = {};
+    CallThroughM2BatchFogThunk(thunk, kPushedStockFogStart, kPushedStockFogEnd, kAuthoredClientExponent, &lighting);
+    const bool disarmedAfterFrame = g_recordedFog.start == kPushedStockFogStart && g_recordedFog.colour == &lighting;
+    const int glareAfterFrame = g_glarePasses;
+    vf_test_hook_frame_begin();
+    CallGlarePassThunk();
+    const bool glarePassesNextFrame = g_glarePasses == glareAfterFrame + 1;
+    vf_test_hook_frame_end();
+    const bool armedRewritten = armedFog.start != kPushedStockFogStart &&
+                                armedFog.exponent == kLinearStockFogExponent && armedFog.colour != &lighting &&
+                                UsesLightingFogColour(armedFog.colourValue);
+    std::printf("     M2 batch fog thunk: unarmed start %.0f, armed start %.1f end %.1f exponent %.2f colour %08X\n",
+                kPushedStockFogStart, armedFog.start, armedFog.end, armedFog.exponent, armedFog.colourValue);
+    Check(unarmedPassed && armedRewritten && disarmedAfterFrame && CallerKept(unarmed) && CallerKept(armed),
+          "the M2 batch fog thunk forwards the caller's cdecl arguments unchanged while unarmed, substitutes the "
+          "fitted fog while armed, disarms at the end of the frame, and keeps esi, edi, ebx and the stack");
+    Check(glareDraws == 1 && glarePassesNextFrame,
+          "the glare thunk skips its call when the glare already drew before the fog, and calls the glare pass "
+          "again in the next frame");
+}
+
+void CheckTransparentFog(Harness& h)
+{
+    Config saved;
+    vf_test_get_config(&saved);
+    CheckEarlyCompositeMatchesWholeFrame(h);
+    CheckTransparentsFoggedAtOwnDepth(h);
+    CheckGodRaysAfterTheWorld(h);
+    CheckHookedFogRestoresState(h);
+    CheckWholeFrameFallbacks(h);
+    CheckThunksAndGlarePass(h);
+    vf_test_set_config(&saved);
+}
+
+void CheckEarlyCompositeOnMultisampledDevice(Harness& m, const D3DVIEWPORT9& world, const DepthTexel* texels,
+                                             const float* drawnDepth, void (*drawDepthQuads)(Harness& h))
+{
+    const View v(Add({0, 0, 9}, kGameLikeWorldOffset), Add({100, 2, 4}, kGameLikeWorldOffset), world);
+    FrameOptions withoutQuads;
+    FrameOptions withQuads;
+    withQuads.drawOverBackdrop = drawDepthQuads;
+    withQuads.readDepthAtLiquidEnd = true;
+    withQuads.depthTexels = texels;
+    const HookedFrame whole = RenderSettledHookedFrame(m, v, HookConfig(false), withQuads);
+    RenderHookedFrame(m, v, HookConfig(true), withoutQuads);
+    const HookedFrame early = RenderHookedFrame(m, v, HookConfig(true), withQuads);
+    const int difference = LargestDifference(early.image, whole.image, v.world);
+    const bool copied = early.depthRead && std::fabs(early.depthAtLiquidEnd[0] - drawnDepth[0]) <= 1e-6f &&
+                        std::fabs(early.depthAtLiquidEnd[1] - drawnDepth[1]) <= 1e-6f;
+    std::printf("     4x hooked frames: TransparentFog=1 vs 0 %d/255; depth copied by the liquid end %.7f / %.7f "
+                "(drawn %.2f / %.2f after a frame without them)\n",
+                difference, early.depthAtLiquidEnd[0], early.depthAtLiquidEnd[1], drawnDepth[0], drawnDepth[1]);
+    Check(copied && Rewritten(early) && difference <= kMaxMultisampledEarlyDifference,
+          "on a 4x device the early composite copies this frame's multisampled depth before it fogs, arms the M2 "
+          "batch fog and matches the single composite after the world");
 }
 }

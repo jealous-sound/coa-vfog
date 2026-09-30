@@ -611,6 +611,7 @@ describe every key. In the game, `Ctrl+F7` opens the same settings in a window (
 | `NoiseWindSpeed` | 0.5 | Drift of the variation along world +X in yd/s |
 | `ClassicNoise` | 1 | The modern client's authored noise on the Classic layers that carry it (mostly storms); 0 = off |
 | `StockFog` | 1 | 1 replaces the stock fog with the distance fog, 0 keeps it |
+| `TransparentFog` | 0 | 1 fogs see-through effects by their own distance, 0 with the scene behind them |
 | `DataMode` | 1 | 1 Classic layers where available, 0 derived layers everywhere |
 | `ColorSpace` | 1 | 1 scatter and blend in linear light with a highlight roll-off, 0 gamma |
 | `SunScatter`, `Ambient`, `Exposure` | 1, 1, 1 | Light in the fog |

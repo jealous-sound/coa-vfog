@@ -33,6 +33,7 @@ struct Config
     float groundFog = 0.6f;
     float farFog = 1.0f;
     int stockFog = 1;
+    bool transparentFog = false;
     int dataMode = 1;
     int colorSpace = 1;
     int classicPhase = 0;

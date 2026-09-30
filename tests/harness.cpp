@@ -65,6 +65,15 @@ extern "C" __declspec(dllimport) int __cdecl vf_test_water_status(const char**);
 extern "C" __declspec(dllimport) const void* __cdecl vf_test_water_pass_thunk(uintptr_t);
 extern "C" __declspec(dllimport) void __cdecl vf_test_water_pass_begin_reuses_argument_slot(int);
 extern "C" __declspec(dllimport) void __cdecl vf_test_record_fog_frame(int, int, const char*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_use_fog_hook_client(const FrameInputs*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_stock_fog(engine::StockFog*, const engine::StockFog*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_frame_begin();
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_liquid_end();
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_world_done();
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_m2_batch_fog(M2BatchFogArgs*);
+extern "C" __declspec(dllimport) const void* __cdecl vf_test_m2_batch_fog_thunk(uintptr_t);
+extern "C" __declspec(dllimport) const void* __cdecl vf_test_glare_pass_thunk(uintptr_t);
+extern "C" __declspec(dllimport) void __cdecl vf_test_force_fog_params(const FogParams*);
 extern "C" __declspec(dllimport) void __cdecl vf_test_fail_water_mask_uploads(int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_water_masks_uploaded();
 extern "C" __declspec(dllimport) void __cdecl vf_test_force_water_shading_variant(int);
@@ -1714,6 +1723,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckFogDataBounds(outDir, dataPath);
     water_data_checks::CheckWaterData(outDir, waterDataPath);
     water_settings_checks::CheckWaterSettings(outDir, FullPath(iniPath));
+    transparent_fog_checks::CheckTransparentFogSetting(outDir, FullPath(iniPath));
 
     WNDCLASSW wc = {};
     wc.lpfnWndProc = ClientWindowProc;
@@ -2117,6 +2127,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
 
     CheckDepthWriteStateBlockRestore(h.dev);
     CheckWorldTextDepthIsolation(h);
+    transparent_fog_checks::CheckTransparentFog(h);
     Config restored = cfg;
     vf_test_set_config(&restored);
     water_checks::CheckWaterPass(h, outDir, waterDataPath);

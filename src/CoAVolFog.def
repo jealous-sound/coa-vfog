@@ -37,6 +37,15 @@ EXPORTS
     vf_test_water_status
     vf_test_water_pass_thunk
     vf_test_water_pass_begin_reuses_argument_slot
+    vf_test_use_fog_hook_client
+    vf_test_hook_stock_fog
+    vf_test_hook_frame_begin
+    vf_test_hook_liquid_end
+    vf_test_hook_world_done
+    vf_test_hook_m2_batch_fog
+    vf_test_m2_batch_fog_thunk
+    vf_test_glare_pass_thunk
+    vf_test_force_fog_params
     vf_test_record_fog_frame
     vf_test_fail_water_mask_uploads
     vf_test_water_masks_uploaded

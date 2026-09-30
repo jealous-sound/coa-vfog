@@ -125,7 +125,9 @@ public:
     void KeepSingleSampled(const char* why);
     const MultisamplingStatus& Multisampling() const { return m_multisampling; }
     bool ReadSceneDepth(const DepthTexel* texels, int count, float* values);
-    bool Render(const FrameInputs& in, const Config& cfg, const char** skip);
+    bool Render(const FrameInputs& in, const Config& cfg, FogPass pass, const char** skip);
+    bool RenderGodRaysAfterWorld(const char** skip);
+    const StockFogFit& LastStockFogFit() const { return m_renderer.LastStockFogFit(); }
     bool AdaptiveLightingHistory() const { return m_renderer.AdaptiveLightingHistory(); }
     IDirect3DPixelShader9* DrawnFogMarch() const { return m_renderer.DrawnMarch(); }
     IDirect3DPixelShader9* DrawnFogComposite() const { return m_renderer.DrawnComposite(); }
@@ -1105,9 +1107,17 @@ HRESULT FogDevice::Reset(D3DPRESENT_PARAMETERS* pp)
     return hr;
 }
 
-bool FogDevice::Render(const FrameInputs& in, const Config& cfg, const char** skip)
+bool FogDevice::Render(const FrameInputs& in, const Config& cfg, FogPass pass, const char** skip)
 {
-    bool ok = FogActive() && m_renderer.Render(m_real, Depth(), in, cfg);
+    bool ok = FogActive() && m_renderer.Render(m_real, Depth(), in, cfg, pass);
+    if (skip)
+        *skip = FogActive() ? m_renderer.LastSkipReason() : "fog inactive";
+    return ok;
+}
+
+bool FogDevice::RenderGodRaysAfterWorld(const char** skip)
+{
+    const bool ok = FogActive() && m_renderer.RenderGodRaysAfterWorld(m_real, Depth());
     if (skip)
         *skip = FogActive() ? m_renderer.LastSkipReason() : "fog inactive";
     return ok;
@@ -1208,7 +1218,26 @@ void SuppressDepthWrite(FogDevice* device, bool suppress)
 
 bool RenderFog(FogDevice* device, const FrameInputs& in, const Config& cfg, const char** skipReason)
 {
-    return device && device->Render(in, cfg, skipReason);
+    return RenderFog(device, in, cfg, FogPass::WholeFrame, skipReason);
+}
+
+bool RenderFog(FogDevice* device, const FrameInputs& in, const Config& cfg, FogPass pass, const char** skipReason)
+{
+    return device && device->Render(in, cfg, pass, skipReason);
+}
+
+bool RenderGodRaysAfterWorld(FogDevice* device, const char** skipReason)
+{
+    if (device)
+        return device->RenderGodRaysAfterWorld(skipReason);
+    if (skipReason)
+        *skipReason = "no fog device";
+    return false;
+}
+
+StockFogFit LastStockFogFit(FogDevice* device)
+{
+    return device ? device->LastStockFogFit() : StockFogFit();
 }
 
 bool AdaptiveLightingHistory(FogDevice* device)
