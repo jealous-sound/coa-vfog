@@ -10,6 +10,7 @@
 #include "water_fft.h"
 #include "water_spectrum.h"
 #include "status_log.h"
+#include "transparent_fog.h"
 
 #include <windows.h>
 #include <d3d9.h>
@@ -1638,6 +1639,7 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "water_settings_checks.h"
 #include "water_fft_checks.h"
 #include "water_checks.h"
+#include "transparent_fog_checks.h"
 #include "multisampling_checks.h"
 
 void CheckFirstColumnIsFogged(const Image& transmittance, const D3DVIEWPORT9& world)
@@ -1701,6 +1703,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     authored_fog::CheckAuthoredFogExtras(classic);
     authored_noise::CheckAuthoredNoise(classic);
     classic_phase::CheckClassicPhase();
+    transparent_fog_checks::CheckStockFogFit(classic);
 
     CreateDirectoryW(outDir.c_str(), nullptr);
     g_harnessLog = FullPath(outDir + L"\\harness.log");
