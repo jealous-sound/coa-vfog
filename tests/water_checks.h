@@ -465,6 +465,7 @@ struct WaterFrame
     bool fogDepthView = false;
     int fault = kNoWaterFault;
     IDirect3DSurface9* depthAtEnd = nullptr;
+    bool otherPass = true;
 };
 
 struct WaterFrameResult
@@ -552,8 +553,9 @@ public:
             DrawStrip(frame.hiddenTaggedStrips[i], true, hooked, false, result);
         for (int i = 0; i < frame.coverCount; ++i)
             DrawStrip(frame.covers[i], tagged, hooked, frame.opaqueMask, result);
-        m_h.DrawPretransformedQuadAtRawDepth(kOtherPassLeft, kOtherPassTop, kOtherPassRight, kOtherPassBottom,
-                                             kOtherPassRawDepth, kOtherPassColour);
+        if (frame.otherPass)
+            m_h.DrawPretransformedQuadAtRawDepth(kOtherPassLeft, kOtherPassTop, kOtherPassRight, kOtherPassBottom,
+                                                 kOtherPassRawDepth, kOtherPassColour);
         ApplyClientDrawState();
         IDirect3DSurface9* clientDepth = nullptr;
         if (frame.depthAtEnd)
@@ -591,6 +593,7 @@ public:
 
     const WaterView& View() const { return m_v; }
     void UseView(const WaterView& view) { m_v = view; }
+    void UseScene(std::vector<SceneVertex> scene) { m_scene = std::move(scene); }
 
 private:
     void BeginClientFrame()

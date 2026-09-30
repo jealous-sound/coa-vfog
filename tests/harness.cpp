@@ -1552,6 +1552,7 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "water_ripple_checks.h"
 #include "water_checks.h"
 #include "water_ripple_pass_checks.h"
+#include "ripple_scene.h"
 
 void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3 at,
                                    const float* proj, const D3DVIEWPORT9& world)
@@ -2607,9 +2608,11 @@ int wmain(int argc, wchar_t** argv)
         return RunHarbour(out, data);
     if (scene == L"performance")
         return RunPerformance();
+    if (scene == L"ripples")
+        return ripple_scene::RunRippleScene(out, waterData);
     if (!scene.empty())
     {
-        std::printf("unknown scene %ls (known: harbour, performance)\n", scene.c_str());
+        std::printf("unknown scene %ls (known: harbour, performance, ripples)\n", scene.c_str());
         return 2;
     }
     return Run(out, data, ini, waterData);
