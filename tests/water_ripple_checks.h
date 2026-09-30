@@ -27,6 +27,13 @@ constexpr int kPlaneChecks[] = {15, 30, 60};
 constexpr float kPlaneAmplitude = 0.5f;
 constexpr float kPlaneTolerance = 0.002f;
 constexpr int kEdgeRampTexels = kPlaneTexels / 16;
+constexpr int kEdgeRampTexelsLow = kTexels / 16;
+constexpr int kEdgeImpulseTexels = 20;
+constexpr int kEdgeBandSteps = 8;
+constexpr int kEdgeShiftTexels = 4;
+constexpr float kMinEdgeBandShare = 0.1f;
+constexpr double kDamping = 0.97;
+constexpr double kEnvelopeSlack = 0.002;
 constexpr float kReferenceTolerance = 2e-3f;
 constexpr int kRecentreSteps = 40;
 constexpr int kRecentreShiftPerStep = 3;
@@ -420,6 +427,14 @@ void CheckSymmetricSpreadAndReference(IDirect3DDevice9* dev)
               .c_str());
 }
 
+double PlaneEnvelope(double beta, int steps)
+{
+    const double rootDamping = std::sqrt(kDamping);
+    const double theta = std::acos(beta * rootDamping / 2.0);
+    const double quadrature = (std::cos(theta) - rootDamping) / std::sin(theta);
+    return kPlaneAmplitude * std::sqrt(1.0 + quadrature * quadrature) * std::pow(rootDamping, steps);
+}
+
 double PlaneAmplitude(const std::vector<float>& row, int steps)
 {
     const int margin = kEdgeRampTexels + steps + kPlaneWavelengthTexels;
@@ -498,13 +513,12 @@ void CheckPlaneWaveDecay(IDirect3DDevice9* dev)
             bench.Step(centre, {});
             for (int i = 0; i < 2; ++i)
                 references[i].Step(kHalfRoundings[i]);
-            const double next = 0.97 * (beta * current - previous);
+            const double next = kDamping * (beta * current - previous);
             previous = current;
             current = next;
         }
         const double measured = PlaneAmplitude(RowOf(bench.Read(), kPlaneTexels / 2), check);
-        const double envelope =
-            kPlaneAmplitude * std::pow(0.97, check / 2.0) / std::sqrt(1.0 - beta * beta * 0.97 / 4.0);
+        const double envelope = PlaneEnvelope(beta, check);
         const double nearest = PlaneAmplitude(references[0].r, check);
         const double truncated = PlaneAmplitude(references[1].r, check);
         std::printf("     plane wave of %d texels after %d steps: GPU %.4f, FP16 nearest %.4f, FP16 truncated %.4f, "
@@ -512,12 +526,13 @@ void CheckPlaneWaveDecay(IDirect3DDevice9* dev)
                     kPlaneWavelengthTexels, check, measured, nearest, truncated, current, envelope);
         errors[0] = std::max(errors[0], static_cast<float>(std::fabs(measured - nearest)));
         errors[1] = std::max(errors[1], static_cast<float>(std::fabs(measured - truncated)));
-        inside = inside && std::fabs(current) <= envelope;
+        inside = inside && std::fabs(measured) <= envelope + kEnvelopeSlack;
     }
     const RoundingMatch match = ClosestRounding(errors);
     Check(inside && match.error <= kPlaneTolerance * kPlaneAmplitude,
-          (std::string("a plane wave decays as the damped recurrence does, inside an envelope shrinking by sqrt(0.97) "
-                       "per step (2.2 s amplitude e-folding at 30 Hz), plus the FP16 storage (") +
+          (std::string("a plane wave on the GPU stays inside the damped recurrence's envelope, which shrinks by "
+                       "sqrt(0.97) per step (2.2 s amplitude e-folding at 30 Hz), and follows the recurrence with "
+                       "FP16 storage (") +
            HalfRoundingName(match.rounding) + " on this GPU)")
               .c_str());
 }
@@ -527,7 +542,7 @@ void CheckEdgeAndLongRun(IDirect3DDevice9* dev)
     RippleBench bench(dev, kTexels);
     const int origin[2] = {-kTexels / 2, -kTexels / 2};
     const float centre[2] = {};
-    const float nearEdge = (kTexels / 2 - 20) * kWaterRippleTexelYards;
+    const float nearEdge = (kTexels / 2 - kEdgeImpulseTexels) * kWaterRippleTexelYards;
     const WaterRippleDisturbance impulse = Impulse(nearEdge, 0.0f);
     RippleState references[2];
     bench.Step(centre, {impulse});
@@ -551,19 +566,11 @@ void CheckEdgeAndLongRun(IDirect3DDevice9* dev)
     for (int i = 0; i < 2; ++i)
         errors[i] = MaxDifference(gpu, references[i]) / std::max(Peak(references[i]), 1e-6f);
     const RoundingMatch match = ClosestRounding(errors);
-    const float shiftedCentre[2] = {4 * kWaterRippleTexelYards, 0.0f};
-    bench.Step(shiftedCentre, {});
-    const RippleState shifted = bench.Read();
-    bool entered = !shifted.r.empty();
-    for (int y = 0; y < kTexels; ++y)
-        for (int x = kTexels - 4; x < kTexels; ++x)
-            entered = entered && shifted.R(x, y) == 0.0f;
-    std::printf("     impulse 20 texels from the edge: outermost column peak %.2e (reference %.2e), reference "
-                "difference %.2e of the peak with %s; shifted-in texels zero %d\n",
-                border, referenceBorder, match.error, HalfRoundingName(match.rounding), entered);
-    Check(bench.Prepared() && match.error <= kReferenceTolerance && entered,
-          "near the window edge the ripple follows Forever's 1/16 edge ramp on the shifted uv, and texels shifted in "
-          "from outside start with zero height");
+    std::printf("     impulse %d texels from the edge: outermost column peak %.2e (reference %.2e), reference "
+                "difference %.2e of the peak with %s\n",
+                kEdgeImpulseTexels, border, referenceBorder, match.error, HalfRoundingName(match.rounding));
+    Check(bench.Prepared() && match.error <= kReferenceTolerance,
+          "near the window edge the ripple follows Forever's 1/16 edge ramp over 90 steps");
 
     RippleBench longRun(dev, kTexels);
     water_fft_checks::Lcg random(20260930u);
@@ -585,6 +592,57 @@ void CheckEdgeAndLongRun(IDirect3DDevice9* dev)
     std::printf("     %d FP16 steps with random impulses every %d steps: highest peak %.3f\n", kLongRunSteps,
                 kLongRunImpulsePeriod, highest);
     Check(bounded, "3000 FP16 ripple steps with random impulses stay finite and bounded");
+}
+
+float EdgeBandPeak(const RippleState& state)
+{
+    float peak = 0.0f;
+    for (int y = 0; y < state.texels; ++y)
+        for (int x = state.texels - kEdgeRampTexelsLow; x < state.texels; ++x)
+            peak = std::max(peak, std::fabs(state.R(x, y)));
+    return peak;
+}
+
+void CheckShiftUsesTheShiftedEdgeRamp(IDirect3DDevice9* dev)
+{
+    RippleBench bench(dev, kTexels);
+    const int origin[2] = {-kTexels / 2, -kTexels / 2};
+    const float centre[2] = {};
+    const WaterRippleDisturbance impulse = Impulse((kTexels / 2 - kEdgeImpulseTexels) * kWaterRippleTexelYards, 0.0f);
+    RippleState references[2] = {ZeroState(kTexels), ZeroState(kTexels)};
+    for (int step = 0; step < kEdgeBandSteps; ++step)
+    {
+        const std::vector<WaterRippleDisturbance> now = step == 0 ? std::vector<WaterRippleDisturbance>{impulse}
+                                                                  : std::vector<WaterRippleDisturbance>{};
+        bench.Step(centre, now);
+        std::vector<WaterRippleDisturbance> texels;
+        for (const WaterRippleDisturbance& d : now)
+            texels.push_back(InTexels(d, origin));
+        for (int i = 0; i < 2; ++i)
+            references[i] = ReferenceStep(references[i], 0, 0, texels, kHalfRoundings[i]);
+    }
+    const RippleState before = bench.Read();
+    const float bandShare = EdgeBandPeak(before) / std::max(Peak(before), 1e-6f);
+    const float shiftedCentre[2] = {kEdgeShiftTexels * kWaterRippleTexelYards, 0.0f};
+    bench.Step(shiftedCentre, {});
+    const RippleState shifted = bench.Read();
+    float errors[2] = {};
+    for (int i = 0; i < 2; ++i)
+    {
+        references[i] = ReferenceStep(references[i], kEdgeShiftTexels, 0, {}, kHalfRoundings[i]);
+        errors[i] = MaxDifference(shifted, references[i]) / std::max(Peak(references[i]), 1e-6f);
+    }
+    const RoundingMatch match = ClosestRounding(errors);
+    bool entered = !shifted.r.empty();
+    for (int y = 0; y < kTexels; ++y)
+        for (int x = kTexels - kEdgeShiftTexels; x < kTexels; ++x)
+            entered = entered && shifted.R(x, y) == 0.0f;
+    std::printf("     window shifted %d texels with the ripple in the edge band (band peak %.2f of the peak): "
+                "reference difference %.2e of the peak with %s; shifted-in texels zero %d\n",
+                kEdgeShiftTexels, bandShare, match.error, HalfRoundingName(match.rounding), entered);
+    Check(bench.Prepared() && bandShare >= kMinEdgeBandShare && match.error <= kReferenceTolerance && entered,
+          "a step that shifts the window applies Forever's 1/16 edge ramp on the shifted uv, and texels shifted in "
+          "from outside start with zero height");
 }
 
 RippleState WindowRegion(const RippleState& state, const int origin[2], const int world[2], int side)
@@ -782,6 +840,7 @@ void CheckWaterRipples(IDirect3DDevice9* dev)
         CheckSymmetricSpreadAndReference(dev);
         CheckPlaneWaveDecay(dev);
         CheckEdgeAndLongRun(dev);
+        CheckShiftUsesTheShiftedEdgeRamp(dev);
         CheckRecentringKeepsRipplesInPlace(dev);
         CheckUnusableCentreKeepsTheWindow(dev);
         CheckSimulationFrameRateIndependence(dev);
