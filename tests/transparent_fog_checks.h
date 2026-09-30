@@ -50,6 +50,7 @@ constexpr int kMaxMultisampledEarlyDifference = 2;
 constexpr float kRaySunRegion = 60.0f;
 constexpr float kMinRayGain = 0.01f;
 constexpr int kMaxRayDarkening = 1;
+constexpr int kMaxLateRayDifference = 2;
 constexpr float kRaysOn = 1.0f;
 constexpr uint32_t kSentinelEsi = 0x51515151u;
 constexpr uint32_t kSentinelEdi = 0x5D5D5D5Du;
@@ -854,12 +855,19 @@ void CheckGodRaysAfterTheWorld(Harness& h)
     const UINT y1 = static_cast<UINT>(std::fmin(sunY + kRaySunRegion, static_cast<float>(v.world.Height)));
     const double gain = MeanLumaChange(rays.afterLiquid, rays.image, x0, y0, x1, y1);
     const int darkening = LargestDarkening(rays.afterLiquid, rays.image, v.world);
+    Config wholeFrameCfg = HookConfig(false);
+    wholeFrameCfg.godRays = kRaysOn;
+    const HookedFrame wholeFrameRays = RenderSettledHookedFrame(h, v, wholeFrameCfg, options);
+    const int wholeFrameDifference = LargestDifference(rays.image, wholeFrameRays.image, v.world);
     std::printf("     god rays after the early composite: mean luma change %.4f around the sun (%.0f, %.0f), largest "
-                "darkening %d/255\n",
-                gain, sunX, sunY, darkening);
+                "darkening %d/255, largest difference from the single composite's god rays %d/255\n",
+                gain, sunX, sunY, darkening, wholeFrameDifference);
     Check(gain > kMinRayGain && darkening <= kMaxRayDarkening,
           "with TransparentFog=1 the god rays are added over the finished world at the end of the world render and "
           "darken nothing");
+    Check(wholeFrameDifference <= kMaxLateRayDifference,
+          "the god rays drawn after the early composite come from the scene before the fog, as the single "
+          "composite's do, and match them");
 }
 
 void CheckHookedFogRestoresState(Harness& h)

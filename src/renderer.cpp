@@ -1050,10 +1050,8 @@ void Renderer::PrepareFullscreenPasses(IDirect3DDevice9* dev)
     dev->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
 }
 
-void Renderer::DrawGodRayMask(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* target,
-                              const GodRayFrame& rays)
+void Renderer::CopySceneForGodRays(IDirect3DDevice9* dev, IDirect3DSurface9* target, const D3DVIEWPORT9& vp)
 {
-    const D3DVIEWPORT9& vp = rays.viewport;
     IDirect3DSurface9* raySurface = nullptr;
     const RECT world = ViewportRect(vp);
     if (SUCCEEDED(m_rays[0]->GetSurfaceLevel(0, &raySurface)))
@@ -1061,6 +1059,11 @@ void Renderer::DrawGodRayMask(IDirect3DDevice9* dev, IDirect3DTexture9* depthTex
         dev->StretchRect(target, &world, raySurface, nullptr, D3DTEXF_LINEAR);
         raySurface->Release();
     }
+}
+
+void Renderer::DrawGodRayMask(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, const GodRayFrame& rays)
+{
+    const D3DVIEWPORT9& vp = rays.viewport;
     SetTarget(dev, m_rays[1]);
     dev->SetPixelShader(m_rayMask);
     const Float4 mask[2] = {
@@ -1100,7 +1103,7 @@ bool Renderer::DrawGodRaysOverScene(IDirect3DDevice9* dev, const SceneDepth& dep
         return Skip("god ray targets unavailable");
     PrepareFullscreenPasses(dev);
     dev->SetPixelShaderConstantF(0, &rays.common[0][0], 9);
-    DrawGodRayMask(dev, depth.texture, target, rays);
+    DrawGodRayMask(dev, depth.texture, rays);
     if (!CopyWorldViewport(dev, target, vp))
         return Skip("no scene copy for the god rays");
     const RECT world = ViewportRect(vp);
@@ -1300,8 +1303,10 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDir
     IDirect3DTexture9* const fogResult =
         temporalFiltering ? FilterWithHistory(dev, depthTexture, reproj, historyValid, cfg.temporal) : m_marchTarget;
 
+    if (rays)
+        CopySceneForGodRays(dev, target, vp);
     if (raysNow)
-        DrawGodRayMask(dev, depthTexture, target, godRays);
+        DrawGodRayMask(dev, depthTexture, godRays);
 
     FogBlend blend = FogBlend::GammaFixedFunction;
     if (fog.linear)

@@ -64,8 +64,8 @@ private:
     template <typename Passes>
     bool WithClientStateSaved(IDirect3DDevice9* dev, const SceneDepth& depth, Passes passes);
     void PrepareFullscreenPasses(IDirect3DDevice9* dev);
-    void DrawGodRayMask(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* target,
-                        const GodRayFrame& rays);
+    void CopySceneForGodRays(IDirect3DDevice9* dev, IDirect3DSurface9* target, const D3DVIEWPORT9& vp);
+    void DrawGodRayMask(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, const GodRayFrame& rays);
     bool DrawGodRaysOverScene(IDirect3DDevice9* dev, const SceneDepth& depth, IDirect3DSurface9* target,
                               const D3DSURFACE_DESC& depthDesc, const GodRayFrame& rays);
     bool EnsureShaders(IDirect3DDevice9* dev);

@@ -73,7 +73,8 @@ in-scatter within 100 yd along 15 rays across the view (weighted toward the cent
 march's layer terms at the layers' mean noise, and solves the least-squares line in planar view depth, the depth
 the client's M2 shaders fog by; samples clamped to zero by the shader are refitted without. The colour is the
 in-scatter over the opacity, exposed, rolled off, gamma-encoded and glow-compensated as the composite shows it. God
-rays are then added over the finished world at the end of the world render, over a new scene copy. Under water,
+rays are traced from the scene copied just before the early composite, the unfogged image the single composite traces
+them from, and added over the finished world at the end of the world render, over a new scene copy. Under water,
 with `StockFog=0`, a debug view or the sun marker, or when the early composite fails, the fog is drawn after the
 world as before. The fit is linear in depth, so it cannot follow the medium's height and distance-curve shape: in
 the harness it stays within 0.03 of the volumetric transmittance along the view axis and within 0.06 at the side of
