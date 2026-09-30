@@ -254,7 +254,7 @@ LightParamsSelection ReadLightParamsSelection()
     return selection;
 }
 
-bool BuildFrameInputsUnsafe(FrameInputs& out, bool withPointLights)
+bool BuildFrameInputsUnsafe(FrameInputs& out, bool withPointLights, const PointLightUpload& upload)
 {
     std::memcpy(out.cameraRelativeView, g_opaque.cameraRelativeView, sizeof(out.cameraRelativeView));
     std::memcpy(out.glProjection, g_opaque.glProjection, sizeof(out.glProjection));
@@ -284,7 +284,7 @@ bool BuildFrameInputsUnsafe(FrameInputs& out, bool withPointLights)
     out.inLiquid = CameraInLiquid();
     out.mapId = Read<int32_t>(kCurrentMap);
     out.lightParams = ReadLightParamsSelection();
-    CaptureLocalLightInputs(out.camPos, withPointLights, out.localLights);
+    CaptureLocalLightInputs(out.camPos, withPointLights, upload, out.localLights);
 
     out.zoneFogDistance = Read<float>(kZoneFogDistance);
     out.clientGlowAmount = out.inLiquid ? 0.0f : GlowScreenEffectAmount();
@@ -607,13 +607,13 @@ void ClearOpaqueState()
     g_opaque.valid = false;
 }
 
-bool BuildFrameInputs(FrameInputs& out, bool withPointLights)
+bool BuildFrameInputs(FrameInputs& out, bool withPointLights, const PointLightUpload& upload)
 {
     if (!g_opaque.valid)
         return false;
     __try
     {
-        return BuildFrameInputsUnsafe(out, withPointLights);
+        return BuildFrameInputsUnsafe(out, withPointLights, upload);
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {

@@ -812,14 +812,14 @@ LocalPointLight LampAhead(const WorldCamera& camera)
     return lamp;
 }
 
-FrameInputs HarbourStormInputs(const WorldCamera& camera, bool lamp)
+FrameInputs HarbourStormInputs(const WorldCamera& camera, bool lamp, const Config& cfg)
 {
     FrameInputs in = camera.Inputs();
     in.mapId = kEasternKingdoms;
     in.dayFraction = kNoon;
     in.lightParams = Storm(authored_noise::kFullStorm);
     if (lamp)
-        engine::SelectLocalPointLight(in.localLights, LampAhead(camera), in.camPos);
+        engine::SelectLocalPointLight(in.localLights, LampAhead(camera), in.camPos, LocalLightUpload(cfg));
     return in;
 }
 
@@ -833,7 +833,7 @@ StormSilhouette RenderStormSilhouette(Harness& m, const WorldCamera& camera, boo
     DrawSilhouetteScene(m, camera, kSilhouetteSceneColour, kSilhouetteSceneColour);
     Sentinel before;
     ReadSentinel(m.dev, before);
-    const FrameInputs in = HarbourStormInputs(camera, lamp);
+    const FrameInputs in = HarbourStormInputs(camera, lamp, cfg);
     s.rendered = vf_test_render(&in, &s.skip) != 0 && (!lamp || in.localLights.pointLightCount == 1);
     Sentinel after;
     ReadSentinel(m.dev, after);

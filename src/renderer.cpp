@@ -1098,11 +1098,7 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDir
         float position[3];
         TransformDirection(relative, in.cameraRelativeView, position);
         localConstants[i * 3] = {position[0], position[1], position[2], light.cutoff};
-        float color[3];
-        for (int channel = 0; channel < 3; ++channel)
-            color[channel] = (fog.linear ? std::pow(std::max(light.color[channel], 0.0f), 2.2f)
-                                         : light.color[channel]) * cfg.localLightIntensity;
-        localConstants[i * 3 + 1] = {color[0], color[1], color[2], 0.0f};
+        localConstants[i * 3 + 1] = {light.uploadedColor[0], light.uploadedColor[1], light.uploadedColor[2], 0.0f};
         localConstants[i * 3 + 2] = {light.attenuation[0], light.attenuation[1], light.attenuation[2], 0.0f};
     }
     if (pointLightCount > 0)

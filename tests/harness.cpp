@@ -1766,6 +1766,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     h.CreateEngineObjects();
     CheckFogIntegration(h.dev);
     CheckLocalLightInputs();
+    CheckHdrLocalLightColours();
     CheckInteriorFogInputs();
     CheckNoiseVariation(h.dev);
     authored_noise::CheckAuthoredNoiseOnTheGpu(h.dev);

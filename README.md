@@ -51,6 +51,17 @@ is interpolated from the current frame's march where the taps lie on the pixel's
 across them and no light's sphere meets the ray; thin silhouettes that every tap misses are marched at full
 resolution.
 
+**Local lights.** The captured diffuse colour is the M2 light's colour times its animated intensity and the model's
+factor (see World lights), so a light brighter than 1 carries its intensity in the colour: 36 of the 138 lights in the
+3.3.5 models exceed 1, a held torch 3 times, a statue 255 times. In linear light (`ColorSpace=1`) a colour whose
+brightest channel is at most 1 is decoded as `c^2.2`; above 1 only the chromaticity is decoded and the intensity stays
+linear, `(c/peak)^2.2 · peak`, because the modern client scales its light colours linearly (fog-light kernel 6227851,
+surface shader 2977494) and decoding the whole product would turn an intensity I into I^2.2, the statue's 255 into
+about 197,000. The capture holds only the product, so the split is a choice here: how the modern client packs its light
+colours on the CPU is not in the kit. That colour times `LocalLightIntensity` is what the fog scatters, and the
+eight-light ranking and the reach cutoff (1/256 of it, at most 200 yd) use it too, so `LocalLightIntensity=0` uploads no
+light.
+
 Fog renders once after the world, including its late geometry and the native sun/moon glare, and before screen
 effects and the UI. While it draws, the stock fog is pushed out of range for the world render and restored
 afterwards; frames without volumetric fog keep the stock fog, and an unexpected draw failure restores it on the
