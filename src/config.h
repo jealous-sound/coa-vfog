@@ -35,7 +35,7 @@ struct Config
     int stockFog = 1;
     int dataMode = 1;
     int colorSpace = 1;
-    int classicPhase = 0;
+    int classicPhase = 1;
     float sunScatter = 1.0f;
     float ambient = 1.0f;
     float exposure = 1.0f;

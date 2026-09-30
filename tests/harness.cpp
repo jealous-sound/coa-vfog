@@ -1623,7 +1623,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckFogThinsIntoFoglessClassicLight(classic);
     authored_fog::CheckAuthoredFogExtras(classic);
     authored_noise::CheckAuthoredNoise(classic);
-    classic_phase::CheckClassicPhase();
+    classic_phase::CheckClassicPhase(FullPath(iniPath));
 
     CreateDirectoryW(outDir.c_str(), nullptr);
     g_harnessLog = FullPath(outDir + L"\\harness.log");
@@ -2330,7 +2330,7 @@ void PrintLayers(const FogParams& fog)
 
 struct HarbourOptions
 {
-    int classicPhase = 0;
+    int classicPhase = Config().classicPhase;
     float stormBlend = 0.0f;
 };
 

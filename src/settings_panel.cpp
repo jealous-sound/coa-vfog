@@ -169,9 +169,9 @@ bool DrawLight(Config& c)
     changed |= Multiplier("Exposure", c.exposure, "Brightness of the layers used where no Classic data exists");
     changed |= Multiplier("Classic exposure", c.classicExposure, "Brightness of the Classic layers, 1 = default");
     changed |= Toggle("Energy-normalised Classic phase", c.classicPhase,
-                      "Scatter the sun and moon into the Classic layers with an energy-normalised phase, as their "
-                      "authored intensities suggest the modern client does: dimmer horizon bands, a larger and "
-                      "brighter halo around the sun. Off: the phase peaks at 1 toward the light");
+                      "Scatter the sun and moon into the Classic layers with an energy-normalised phase (the default), "
+                      "which their authored intensities appear to be made for: dimmer horizon bands, a larger and "
+                      "brighter halo around the sun. Off: the phase peaks at 1 toward the light, as before");
     changed |= Toggle("Linear light", c.colorSpace,
                       "Scatter and blend in linear light like the modern client, with a soft highlight roll-off. "
                       "Off: gamma");

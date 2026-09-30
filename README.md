@@ -148,26 +148,29 @@ Then the Classic transforms apply:
   above-horizon ramp.
 - The distance curve `1 + strength·((d − start)/range)^exponent`, with `MaxDistance` as the range; the modern client
   uses its fog volume depth, whose value is not in the kit.
-- The authored scatter intensity (0–50 in the data) times a Henyey–Greenstein phase normalised to 1 toward the
-  light, or energy-normalised with `ClassicPhase=1` (below), in linear light, plus the emissive colour.
+- The authored scatter intensity (0–50 in the data) times a Henyey–Greenstein phase, energy-normalised by default
+  (`ClassicPhase=1`, below) or normalised to 1 toward the light with `ClassicPhase=0`, in linear light, plus the
+  emissive colour.
 
 The sun scattering is scaled by the client's direct-light luminance over Classic's, capped at 1, which keeps the fog
 consistent with the older client's darker lighting; this is a compatibility calibration, not a reproduction of the
 modern renderer.
 
-**Phase normalisation.** The authored intensities suggest that the modern client's Henyey–Greenstein lookup is
-energy-normalised, while the phase here peaks at 1 toward the light (inferred, confidence about 0.65; the lookup table
-is not in the kit). The intensity rises as g falls: over the client-selected rows its median is 1 for g 0.65–0.85, 2
-for 0.35–0.65, 4 for 0.05–0.35 and 12, about 4π, for evenly scattering rows (g < 0.05; rows above 0.85 have 2), and in
-334 of the 370 rows with g = 0 and intensity 12 the emissive colour equals the diffuse one, which an energy-normalised
-phase turns into equal scattered and emitted light. `ClassicPhase=1` multiplies the Classic layers' sun and moon
-scattering by the ratio of the two phases, `k(g) = (1+g)/(4π(1−g)²)`, capped at g = 0.95 (k = 62) because a few rows
-reach g = 1. With k(0) = 0.080 the horizon band of the evenly scattering far wall is about 12 times dimmer; the near
-fog (g ≈ 0.7) gains 1.5 times and the forward haze (g ≈ 0.9) 15 times, so the sun's halo grows larger and much
-brighter. The default stays 0 until the owner compares it with Forever at noon, at sunset toward the sun and in a
-storm; the direct-light calibration, the highlight roll-off and `ClassicExposure` were tuned with the peak-normalised
-phase and may need retuning. Point lights keep their peak-normalised phase, as the modern local-light fog shader
-evaluates its phase analytically.
+**Phase normalisation.** By default (`ClassicPhase=1`) the Classic layers scatter the sun and moon with an
+energy-normalised Henyey–Greenstein phase, because the authored intensities fit a lookup normalised to 1/(4π) over the
+sphere. That is an inference (confidence about 0.65; finding 0.1 of the kit completeness critique): the modern
+client's lookup table is not in the kit. The intensity rises as g falls: over the client-selected rows its median is 1
+for g 0.65–0.85, 2 for 0.35–0.65, 4 for 0.05–0.35 and 12, about 4π, for evenly scattering rows (g < 0.05; rows above
+0.85 have 2), and in 334 of the 370 rows with g = 0 and intensity 12 the emissive colour equals the diffuse one, which
+an energy-normalised phase turns into equal scattered and emitted light. The phase itself is evaluated with its peak
+at 1 toward the light; `ClassicPhase=1` multiplies the Classic layers' sun and moon scattering by the ratio of the two
+phases, `k(g) = (1+g)/(4π(1−g)²)`, capped at g = 0.95 (k = 62) because a few rows reach g = 1. With k(0) = 0.080 the
+horizon band of the evenly scattering far wall is about 12 times dimmer than with the peak-normalised
+`ClassicPhase=0` used before; the near fog (g ≈ 0.7) gains 1.5 times and the forward haze (g ≈ 0.9) 15 times, so the
+sun's halo grows larger and much brighter. The direct-light calibration, the highlight roll-off and `ClassicExposure`
+were tuned with the peak-normalised phase and may need retuning, and the owner has not yet compared the default with
+Forever at noon, at sunset toward the sun or in a storm. Point lights keep their peak-normalised phase, as the modern
+local-light fog shader evaluates its phase analytically.
 
 **Authored noise.** Layers with flag 0x4 modulate their density as the modern global fog kernel does (shader
 6674335, variant 002). Two octaves sample a tileable 3D noise volume at `frac((p − offset_i)·inverseTile_i)`. Their
@@ -537,11 +540,11 @@ writes `before.png`, `after.png`, `overlay.png` and the debug views to `build/ha
 
 `vfog_harness --scene harbour <dir> --data data/fogdata.bin` renders the logged in-game frame at the
 Stormwind harbour (sunset, far clip 791.6 yd) with ideal depth and with the client's depth range, and
-prints fog opacity and colour at probe points next to a CPU integration. `--classic-phase 1` renders it with
-`ClassicPhase=1` and `--storm 1` in a full storm. The CPU integration takes layers with authored noise at their mean
-density, while the GPU samples the noise, so in a storm a single probe's opacity differs from the CPU column where the
-noise is patchy (by up to about 0.2 in the harbour's storm probes). The DLL reads the `fogdata.bin` beside it, so a
-new file must be copied there as well as named with `--data`.
+prints fog opacity and colour at probe points next to a CPU integration. `--classic-phase 0` renders it with the
+peak-normalised `ClassicPhase=0` and `--storm 1` in a full storm. The CPU integration takes layers with authored
+noise at their mean density, while the GPU samples the noise, so in a storm a single probe's opacity differs from the
+CPU column where the noise is patchy (by up to about 0.2 in the harbour's storm probes). The DLL reads the
+`fogdata.bin` beside it, so a new file must be copied there as well as named with `--data`.
 
 `vfog_harness --scene performance` times the fog passes at 1920×1080 at each quality on one street: derived
 layers with no point lights, eight flood lights or eight street lamps, Classic layers at the harbour with and
@@ -611,7 +614,7 @@ describe every key. In the game, `Ctrl+F7` opens the same settings in a window (
 | `ColorSpace` | 1 | 1 scatter and blend in linear light with a highlight roll-off, 0 gamma |
 | `SunScatter`, `Ambient`, `Exposure` | 1, 1, 1 | Light in the fog |
 | `ClassicExposure` | 1 | Brightness of the Classic layers (1 = as authored) |
-| `ClassicPhase` | 0 | Classic sun and moon scattering: 0 phase peaks at 1 toward the light, 1 energy-normalised |
+| `ClassicPhase` | 1 | Classic sun and moon scattering: 1 energy-normalised, 0 phase peaks at 1 toward the light |
 | `LocalLights`, `LocalLightIntensity` | 1, 1 | Scatter up to eight nearby world point lights; intensity 0..8 |
 | `InteriorAware`, `InteriorDensity` | 1, 0.15 | Fade outdoor layers indoors, keeping this fraction of their density |
 | `GodRays` | 0 | Radial sky rays, 0 = off |

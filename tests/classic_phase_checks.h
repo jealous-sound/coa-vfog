@@ -13,6 +13,7 @@ constexpr float kSlabEmissive = 0.3f;
 constexpr float kSlabIntensity = 0.6f;
 constexpr float kSlabTolerance = 2.0f / 255.0f;
 constexpr uint32_t kSelectedLayerFlag = 0x8;
+constexpr int kEnergyNormalisedPhase = 1;
 
 void CheckPhaseScale()
 {
@@ -55,6 +56,7 @@ FrameInputs SlabFrame()
 void CheckOnlyTheScatterChanges()
 {
     Config peak;
+    peak.classicPhase = 0;
     Config energy;
     energy.classicPhase = 1;
     const FrameInputs frame = SlabFrame();
@@ -160,9 +162,25 @@ void CheckIsotropicSlabSaturation(IDirect3DDevice9* device)
         shader->Release();
 }
 
-void CheckClassicPhase()
+void CheckShippedPhaseIsEnergyNormalised(const std::wstring& shippedIni)
+{
+    ConfigStore shipped;
+    shipped.Load(NarrowPath(shippedIni));
+    const std::string text = ReadText(shippedIni);
+    std::printf("     ClassicPhase: built-in default %d, shipped INI %d\n", Config().classicPhase,
+                shipped.Get().classicPhase);
+    Check(Config().classicPhase == kEnergyNormalisedPhase && shipped.Get().classicPhase == kEnergyNormalisedPhase &&
+              text.find("\nClassicPhase=1") != std::string::npos &&
+              text.find("\nClassicPhase=0") == std::string::npos &&
+              text.find("1 = energy-normalised, the default") != std::string::npos,
+          "the Classic layers scatter with the energy-normalised phase by default, in the DLL and the shipped INI, "
+          "whose comment names it the default");
+}
+
+void CheckClassicPhase(const std::wstring& shippedIni)
 {
     CheckPhaseScale();
     CheckOnlyTheScatterChanges();
+    CheckShippedPhaseIsEnergyNormalised(shippedIni);
 }
 }
