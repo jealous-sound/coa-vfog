@@ -3,7 +3,9 @@
 #include "engine.h"
 #include "fog_data.h"
 #include "fog_model.h"
+#include "forever_look.h"
 #include "gpu_timing.h"
+#include "grading_renderer.h"
 #include "log.h"
 #include "msaa_depth.h"
 #include "noise_volume.h"
@@ -83,6 +85,12 @@ extern "C" __declspec(dllimport) void __cdecl vf_test_inject_water_ripple_fault(
 extern "C" __declspec(dllimport) int __cdecl vf_test_bind_client_ripple_gate(volatile int32_t*, uintptr_t,
                                                                              const unsigned char*, size_t);
 extern "C" __declspec(dllimport) void __cdecl vf_test_update_client_ripple_sprites(int, int, double);
+extern "C" __declspec(dllimport) void __cdecl vf_test_use_forever_look_frame(const ForeverLookFrame*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_forever_look_world_done();
+extern "C" __declspec(dllimport) int __cdecl vf_test_delivered_glow(float*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_grading_stats(GradingStats*);
+extern "C" __declspec(dllimport) int __cdecl vf_test_forever_look_guards(engine::CodeRange*, int);
+extern "C" __declspec(dllimport) void __cdecl vf_test_forever_look_status(ForeverLookStatus*);
 
 namespace
 {
@@ -1653,6 +1661,7 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "water_ripple_pass_checks.h"
 #include "ripple_scene.h"
 #include "client_sprite_checks.h"
+#include "forever_look_checks.h"
 #include "multisampling_checks.h"
 
 void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3 at,
@@ -1710,6 +1719,8 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckOverlayKeyNames();
     CheckSettingsSaveKeepsTheIni(outDir, FullPath(iniPath));
     CheckFogDataBounds(outDir, dataPath);
+    forever_look_checks::CheckForeverGlow();
+    forever_look_checks::CheckLookSettings(outDir, FullPath(iniPath));
     water_data_checks::CheckWaterData(outDir, waterDataPath);
     water_settings_checks::CheckWaterSettings(outDir, FullPath(iniPath));
 
@@ -1892,6 +1903,8 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
 
     CheckLinearComposite(h, cfg, eye, at, proj, world);
     CheckDisabledTemporalIsStable(h, cfg, eye, at, proj, world);
+    forever_look_checks::CheckColourGrading(h, world, classic);
+    vf_test_set_config(&cfg);
 
     auto renderDebugIn = [&](int mode, float maxDist, const D3DVIEWPORT9& vp, float wdlPatchRawDepth) {
         Config c = cfg;
@@ -2135,6 +2148,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckOverlayDraw(h, world, outDir);
 
     h.ReleaseEngineObjects();
+    const unsigned curveUploadsBeforeReset = forever_look_checks::CurveUploads();
     h.pp.BackBufferWidth = 1024;
     h.pp.BackBufferHeight = 600;
     hr = h.dev->Reset(&h.pp);
@@ -2160,6 +2174,8 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     DrawOverlayFrames(kOverlaySettleFrames);
     Check(OverlayProbeChange(beforeOverlay, Capture(h.dev)) > 0.05, "the overlay draws again after Reset");
     PressHotkey(h.window, kDefaultOverlayHotkey);
+    forever_look_checks::CheckColourGradingAfterReset(h, resized, curveUploadsBeforeReset);
+    vf_test_set_config(&restored);
 
     runtime_cost::CheckDisabledTemporalSkipsHistoryPasses(h, eye, at, proj, resized);
     CheckRendererSwitchesLitShaders(h);

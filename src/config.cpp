@@ -44,6 +44,14 @@ const IntSetting kIntSettings[] = {
     {"ClassicPhase", &Config::classicPhase, 0, 1},
 };
 
+const IntSetting kLookIntSettings[] = {
+    {"ForeverGlow", &Config::foreverGlow, 0, 1},
+};
+
+const FloatSetting kLookFloatSettings[] = {
+    {"ColorGrading", &Config::colorGrading, 0.0f, 1.0f},
+};
+
 const IntSetting kWaterIntSettings[] = {
     {"WaterQuality", &Config::waterQuality, 1, 3},
     {"WaterDebugView", &Config::waterDebugView, 0, 6},
@@ -97,6 +105,8 @@ void ForEachIntSetting(Visit visit)
 {
     for (const IntSetting& s : kIntSettings)
         visit(s);
+    for (const IntSetting& s : kLookIntSettings)
+        visit(s);
     for (const IntSetting& s : kWaterIntSettings)
         visit(s);
 }
@@ -105,6 +115,8 @@ template <typename Visit>
 void ForEachFloatSetting(Visit visit)
 {
     for (const FloatSetting& s : kFloatSettings)
+        visit(s);
+    for (const FloatSetting& s : kLookFloatSettings)
         visit(s);
     for (const FloatSetting& s : kWaterFloatSettings)
         visit(s);
@@ -327,7 +339,8 @@ bool SameFogSettings(const Config& a, const Config& b)
 
 bool SameLiveSettings(const Config& a, const Config& b)
 {
-    return SameFogSettings(a, b) && SameValues(kWaterIntSettings, a, b) && SameValues(kWaterFloatSettings, a, b) &&
+    return SameFogSettings(a, b) && SameValues(kLookIntSettings, a, b) && SameValues(kLookFloatSettings, a, b) &&
+           SameValues(kWaterIntSettings, a, b) && SameValues(kWaterFloatSettings, a, b) &&
            SameValues(kWaterBoolSettings, a, b);
 }
 

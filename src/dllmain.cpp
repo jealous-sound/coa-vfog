@@ -3,6 +3,7 @@
 #include "d3d9_wrap.h"
 #include "engine.h"
 #include "fog_data.h"
+#include "forever_look.h"
 #include "hooks.h"
 #include "log.h"
 #include "noise_volume.h"
@@ -52,7 +53,10 @@ void Attach(HMODULE module)
     const bool engineHooks = InstallEngineHooks();
     AllowFogOnNewDevices(engineHooks);
     if (engineHooks)
+    {
         PrepareAuthoredNoise();
+        EnableForeverLookOnHookedClient();
+    }
     if (engineHooks && InstallWaterHooks())
         GlobalWaterData().Load(dir + "waterdata.bin");
     InstallFarClipHooks();
@@ -346,4 +350,34 @@ extern "C" int __cdecl vf_test_bind_client_ripple_gate(volatile int32_t* gate, u
 extern "C" void __cdecl vf_test_update_client_ripple_sprites(int allowed, int shaded, double seconds)
 {
     GlobalClientRippleSprites().Update(allowed != 0, shaded != 0, seconds);
+}
+
+extern "C" void __cdecl vf_test_use_forever_look_frame(const ForeverLookFrame* frame)
+{
+    UseTestForeverLookFrame(*frame);
+}
+
+extern "C" void __cdecl vf_test_forever_look_world_done()
+{
+    ForeverLookAtWorldDone();
+}
+
+extern "C" int __cdecl vf_test_delivered_glow(float* amount)
+{
+    return DeliveredGlowThisFrame(*amount) ? 1 : 0;
+}
+
+extern "C" void __cdecl vf_test_grading_stats(GradingStats* stats)
+{
+    *stats = GradingStatsOf(LatestFogDevice());
+}
+
+extern "C" int __cdecl vf_test_forever_look_guards(engine::CodeRange* ranges, int capacity)
+{
+    return engine::ForeverLookGuardRanges(ranges, capacity);
+}
+
+extern "C" void __cdecl vf_test_forever_look_status(ForeverLookStatus* status)
+{
+    *status = LastForeverLookStatus();
 }

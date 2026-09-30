@@ -53,3 +53,9 @@ EXPORTS
     vf_test_update_client_ripple_sprites
     vf_test_refuse_water_contacts
     vf_test_inject_water_ripple_fault
+    vf_test_use_forever_look_frame
+    vf_test_forever_look_world_done
+    vf_test_delivered_glow
+    vf_test_grading_stats
+    vf_test_forever_look_guards
+    vf_test_forever_look_status

@@ -4,6 +4,7 @@
 #include "config.h"
 #include "d3d9_wrap.h"
 #include "engine.h"
+#include "forever_look.h"
 #include "log.h"
 #include "water_classify.h"
 #include "water_renderer.h"
@@ -169,6 +170,13 @@ void UseClientFogRangeInsteadOfPushed(FrameInputs& in)
     in.fogEnd = g_savedStockFog.end[engine::kFrameInputsFogGroup];
 }
 
+void UseDeliveredGlow(FrameInputs& in)
+{
+    float delivered = 0.0f;
+    if (DeliveredGlowThisFrame(delivered))
+        in.clientGlowAmount = !in.inLiquid && engine::GlowScreenEffectRuns() ? delivered : 0.0f;
+}
+
 struct WaterClient
 {
     FogDevice* (*device)();
@@ -281,6 +289,7 @@ bool RenderCurrentWorldFog(FogDevice* device)
     bool valid = engine::BuildFrameInputs(in, cfg.localLights);
     if (g_stockFogPushed)
         UseClientFogRangeInsteadOfPushed(in);
+    UseDeliveredGlow(in);
     const char* skip = "invalid frame inputs";
     const bool cameraUnderLiquid = valid && in.inLiquid && !cfg.underwater;
     const bool rendered = valid && !cameraUnderLiquid && RenderFog(device, in, cfg, &skip);
@@ -291,7 +300,7 @@ bool RenderCurrentWorldFog(FogDevice* device)
 
 void OnOpaqueDone()
 {
-    FogDevice* device = g_failed ? nullptr : GameFogDevice();
+    FogDevice* device = GameFogDevice();
     if (!device)
         return;
     engine::CaptureOpaqueState(RealDevice(device));
@@ -671,6 +680,7 @@ extern "C" void __cdecl vf_on_frame_end()
     {
         g_failed = true;
     }
+    ForeverLookAtFrameEnd();
 }
 
 extern "C" void __cdecl vf_on_water_pass_begin(const void* liquidRenderer)
@@ -737,6 +747,7 @@ extern "C" void __cdecl vf_on_opaque_done()
 
 extern "C" void __cdecl vf_on_world_done()
 {
+    ForeverLookAtWorldDone();
     __try
     {
         OnWorldDone();
@@ -981,6 +992,21 @@ bool InstallEngineHooks()
                 static_cast<unsigned>(engine::kLiquidSurfaceSite),
                 static_cast<unsigned>(engine::kScreenEffectsSite), static_cast<unsigned>(engine::kWorldTextDrawSite));
     return true;
+}
+
+void EnableForeverLookOnHookedClient()
+{
+    const bool worldDoneHooked =
+        SiteMatches(engine::kScreenEffectsSite, reinterpret_cast<uintptr_t>(&ScreenEffectsThunk));
+    const bool frameEndHooked = SiteMatches(engine::kWorldRenderSite, reinterpret_cast<uintptr_t>(&WorldRenderThunk));
+    if (!worldDoneHooked || !frameEndHooked)
+        VF_LOG_ERROR("the world render (0x%08X) or world done (0x%08X) call no longer reaches the DLL; Forever glow "
+                     "and colour grading unavailable",
+                     static_cast<unsigned>(engine::kWorldRenderSite),
+                     static_cast<unsigned>(engine::kScreenEffectsSite));
+    const bool glow = worldDoneHooked && frameEndHooked && engine::GlowPassColourLayoutMatches();
+    const bool grading = worldDoneHooked && frameEndHooked && engine::GradingPlacementMatches();
+    EnableForeverLook(&GameFogDevice, glow, grading);
 }
 
 FogFrameStatus LastFogFrameStatus()

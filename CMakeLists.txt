@@ -129,6 +129,7 @@ add_library(CoAVolFog SHARED
     src/engine_lights.cpp
     src/fog_data.cpp
     src/fog_model.cpp
+    src/forever_look.cpp
     src/gpu_timing.cpp
     src/grading_renderer.cpp
     src/hooks.cpp

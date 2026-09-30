@@ -6,6 +6,7 @@ struct FrameInputs;
 struct WaterInputs;
 
 bool InstallEngineHooks();
+void EnableForeverLookOnHookedClient();
 
 void InstallFarClipHooks();
 
