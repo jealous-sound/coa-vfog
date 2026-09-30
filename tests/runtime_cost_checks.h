@@ -188,6 +188,55 @@ void CheckDepthProbeAndGpuTimeLog(Harness& h, Vec3 eye, Vec3 at)
     vf_test_set_config(&saved);
 }
 
+std::string StormSummaryAtHarbour(Harness& h, Config config, bool classicNoise, const D3DVIEWPORT9& world)
+{
+    config.classicNoise = classicNoise;
+    vf_test_set_config(&config);
+    const Vec3 at = Add(kHarbourEye, {100, 100, -5});
+    float view[16];
+    float projection[16];
+    CameraRelativeLookAt(kHarbourEye, at, view);
+    EngineProjection(static_cast<float>(world.Width) / world.Height, projection);
+    FrameInputs input = MakeInputs(view, projection, kHarbourEye, at, world);
+    input.mapId = kEasternKingdoms;
+    input.dayFraction = kNoon;
+    input.lightParams = Storm(1.0f);
+    const size_t logStart = ReadText(FogLogBesideTheFogDll()).size();
+    h.BeginFrame();
+    h.DrawScene(kHarbourEye, view, projection, world);
+    const char* skip = "";
+    const bool rendered = vf_test_render(&input, &skip) != 0;
+    h.dev->EndScene();
+    h.dev->Present(nullptr, nullptr, nullptr, nullptr);
+    return rendered ? LogWrittenSince(logStart) : std::string();
+}
+
+void CheckFrameSummaryLogsClassicExtras(Harness& h)
+{
+    Config saved;
+    vf_test_get_config(&saved);
+    Config config = saved;
+    config.logLevel = 1;
+    config.dataMode = 1;
+    config.godRays = 0.0f;
+    config.temporal = 0.0f;
+    config.localLights = false;
+    const D3DVIEWPORT9 noisyView = {0, 0, 126, 94, 0, 1};
+    const D3DVIEWPORT9 quietView = {0, 0, 122, 92, 0, 1};
+    const std::string noisy = StormSummaryAtHarbour(h, config, true, noisyView);
+    const std::string quiet = StormSummaryAtHarbour(h, config, false, quietView);
+    const size_t noiseLine = noisy.find("  classic layer ");
+    std::printf("     storm summary noise line: %s\n",
+                noiseLine == std::string::npos ? "missing" : noisy.substr(noiseLine, noisy.find('\n', noiseLine) -
+                                                                                        noiseLine).c_str());
+    Check(HasLine(noisy, "  Classic glow ") && HasLine(noisy, "(not rendered)") &&
+              HasLine(noisy, " noise: share 1.00, drawn alpha 1.00;"),
+          "the frame summary logs the Classic glow, the grading curve and each noisy layer's drawn noise");
+    Check(HasLine(quiet, " noise: share 1.00, drawn alpha 0.00 (off: ClassicNoise=0);"),
+          "with ClassicNoise=0 the frame summary logs the authored noise as off, not as drawn");
+    vf_test_set_config(&saved);
+}
+
 struct ScriptedQueryCreation
 {
     HRESULT failure = S_OK;

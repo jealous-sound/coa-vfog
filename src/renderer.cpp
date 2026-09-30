@@ -216,23 +216,32 @@ char DepthClassLetter(float depthClass)
 
 constexpr int kLoggedGradingInputs[] = {8, 16, 24};
 
-void LogAuthoredExtras(const AuthoredFog& fog)
+const char* DrawnNoiseState(const LayerNoise& drawn, const Config& cfg)
+{
+    if (drawn.alpha > 0.0f)
+        return "";
+    return cfg.classicNoise ? " (at its mean: no noise volume)" : " (off: ClassicNoise=0)";
+}
+
+void LogAuthoredExtras(const AuthoredFog& fog, const FogParams& drawn, const Config& cfg)
 {
     const float* curve = fog.gradingCurve;
-    VF_LOG_INFO("  Classic glow %.2f%s, grading curve at inputs %d/31 %d/31 %d/31: %.3f %.3f %.3f (not rendered)",
-                fog.glow, fog.hasGlow ? "" : " (no glow data)", kLoggedGradingInputs[0], kLoggedGradingInputs[1],
-                kLoggedGradingInputs[2], curve[kLoggedGradingInputs[0]], curve[kLoggedGradingInputs[1]],
-                curve[kLoggedGradingInputs[2]]);
-    for (int i = 0; i < fog.layerCount; ++i)
+    VF_LOG_INFO("  Classic glow %.2f%s at coverage %.2f, grading curve at inputs %d/31 %d/31 %d/31: %.3f %.3f %.3f "
+                "(not rendered)",
+                fog.glow, fog.hasGlow ? "" : " (no glow data)", fog.coverage, kLoggedGradingInputs[0],
+                kLoggedGradingInputs[1], kLoggedGradingInputs[2], curve[kLoggedGradingInputs[0]],
+                curve[kLoggedGradingInputs[1]], curve[kLoggedGradingInputs[2]]);
+    for (int i = 0; i < std::min(fog.layerCount, kSceneLayers); ++i)
     {
         const AuthoredNoise& n = fog.layers[i].noise;
         if (n.presence <= 0.0f)
             continue;
-        VF_LOG_INFO("  classic layer %d noise %.2f: octave shares %.2f/%.2f, tiles %.0f/%.0f yd, drift "
-                    "(%.1f %.1f %.1f)/(%.1f %.1f %.1f) yd/s, fade %.2f %.2f %.2f",
-                    i, n.presence, n.octaveShare[0], n.octaveShare[1], n.tileYards[0], n.tileYards[1],
-                    n.velocity[0][0], n.velocity[0][1], n.velocity[0][2], n.velocity[1][0], n.velocity[1][1],
-                    n.velocity[1][2], n.fade[0], n.fade[1], n.fade[2]);
+        const LayerNoise& shown = drawn.noise[i];
+        VF_LOG_INFO("  classic layer %d noise: share %.2f, drawn alpha %.2f%s; octave shares %.2f/%.2f, tiles "
+                    "%.0f/%.0f yd, drift (%.1f %.1f %.1f)/(%.1f %.1f %.1f) yd/s, fade %.2f %.2f %.2f",
+                    i, n.presence, shown.alpha, DrawnNoiseState(shown, cfg), n.octaveShare[0], n.octaveShare[1],
+                    n.tileYards[0], n.tileYards[1], n.velocity[0][0], n.velocity[0][1], n.velocity[0][2],
+                    n.velocity[1][0], n.velocity[1][1], n.velocity[1][2], n.fade[0], n.fade[1], n.fade[2]);
     }
 }
 }
@@ -757,7 +766,7 @@ void Renderer::LogFrameSummary(IDirect3DDevice9* dev, long long now, const Frame
                     std::min(l.endDistance, 99999.0f));
     }
     if (authored.lightCount > 0)
-        LogAuthoredExtras(authored);
+        LogAuthoredExtras(authored, fog, cfg);
 }
 
 bool Renderer::Render(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* boundDepthStencil,

@@ -170,9 +170,10 @@ shader subtracts a CPU scroll offset; here each octave keeps it as a phase in ti
 elapsed seconds ÷ tile and wrapped to one tile, and uploads phase × tile. When a blend changes an octave's tile size,
 the phase moves so that the pattern scales about the camera. An offset kept in yards would instead slide the pattern
 by offset × Δ(1/tile), which grows with the time the noise has scrolled: after an hour at Hyjal a storm's 5-second
-blend would sweep the haze through 11 tiles. Scaled about the camera, fog 300 yd away moves by 0.03 tiles. The
-frame summary logs each noisy layer's share,
-tiles, drift and fade colour, and `ClassicNoise=0` turns the noise off.
+blend would sweep the haze through 11 tiles. Scaled about the camera, fog 300 yd away moves by 0.03 tiles.
+`ClassicNoise=0` turns the noise off. The frame summary logs each noisy layer's share, the alpha actually drawn (0,
+marked off, with `ClassicNoise=0`, or marked as the mean if the noise volume could not be created), tiles, drift and
+fade colour.
 
 The modern client's noise texture (`t_perlinNoise3D`) is not in the kit, so the volume is ours: a 64³ tileable
 gradient (Perlin) noise with detail layers of 4, 8 and 16 lattice cells per tile at gain 0.5, quantised about its
@@ -215,7 +216,8 @@ there is no glow and the curve is the identity.
   their weights, and params without a graded key count as identity. The Eastern Kingdoms clear-weather light (params
   7748) grades with 8286666 and Kalimdor's (7636) with the milder 8286665.
 
-The frame summary logs the resolved glow and three points of the grading curve.
+The frame summary logs the resolved glow, the Classic coverage and three points of the grading curve wherever Classic
+lights reach the camera.
 
 ## Forever water data
 
