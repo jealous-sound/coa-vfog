@@ -5,13 +5,16 @@
 namespace forever_look_checks
 {
 constexpr uintptr_t kGlowEffectVtableValue = 0x00A941C8;
+constexpr uintptr_t kGlowFirstPassVtableValue = 0x00A94274;
+constexpr uintptr_t kGlowGauss4PassVtableValue = 0x00A9425C;
 constexpr uintptr_t kGlowCompositePassVtableValue = 0x00A94294;
-constexpr uintptr_t kGlowBlurPassVtableValue = 0x00A94250;
-constexpr uintptr_t kDeathEffectVtableValue = 0x00A41818;
+constexpr uintptr_t kDeathEffectVtableValue = 0x00A418D8;
 constexpr uintptr_t kWrongVtableValue = 0x00A94000;
 constexpr uint32_t kPassListCapacity = 4;
 constexpr uint32_t kGlowPasses = 3;
 constexpr uint32_t kTooFewPasses = 2;
+constexpr uintptr_t kGlowPassVtableValues[kGlowPasses] = {kGlowFirstPassVtableValue, kGlowGauss4PassVtableValue,
+                                                          kGlowCompositePassVtableValue};
 constexpr int kCompositePass = 2;
 constexpr int kClearViewList = 0;
 constexpr int kUnderwaterList = 1;
@@ -90,7 +93,7 @@ public:
             {
                 FakeGlowPass& p = m_passes[list][pass];
                 const bool composite = pass == kCompositePass;
-                p.vtable = composite ? kGlowCompositePassVtableValue : kGlowBlurPassVtableValue;
+                p.vtable = kGlowPassVtableValues[pass];
                 p.colour[0] = p.colour[1] = p.colour[2] = kBlurByte;
                 p.colour[kColourAlpha] = composite ? clientByte : kOtherPassAlpha;
                 m_passPointers[list][pass] = reinterpret_cast<uintptr_t>(&p);
@@ -142,6 +145,7 @@ public:
 
     FakeGlowEffect& Glow() { return m_glow; }
     FakeGlowPass& Composite(int list) { return m_passes[list][kCompositePass]; }
+    void DropComposite(int list) { m_passPointers[list][kCompositePass] = 0; }
 
 private:
     FakeGlowPass m_passes[kPassLists][kGlowPasses] = {};
@@ -275,6 +279,8 @@ const BrokenGraph kBrokenGraphs[] = {
      [](FakeGlowGraph& graph, ForeverLookFrame&) { graph.Glow().clearView.count = kTooFewPasses; }},
     {"the underwater list has no pass array",
      [](FakeGlowGraph& graph, ForeverLookFrame&) { graph.Glow().underwater.data = 0; }},
+    {"the underwater list holds a null composite",
+     [](FakeGlowGraph& graph, ForeverLookFrame&) { graph.DropComposite(kUnderwaterList); }},
 };
 
 void CheckNoWriteWithoutTheGlowComposite()
@@ -293,7 +299,8 @@ void CheckNoWriteWithoutTheGlowComposite()
     }
     Check(untouched,
           "no glow byte is written while the death effect or no effect is current, or when the glow effect's "
-          "vtable, a composite pass vtable, a pass count or a pass array does not match the client's");
+          "vtable, a composite pass vtable, a pass count, a pass array or a composite entry does not match the "
+          "client's");
 }
 
 struct CoverageCase

@@ -514,7 +514,7 @@ Engine notes behind the code:
   order unchanged.
 - Screen effects. FFX end runs the current effect `[0xD45780]` when the `ffx` CVar (`[0xD45774]`, int at `+0x30`)
   and the effect's own CVar (`+4`) are on. The glow effect `[0xB74364]` keeps `ffxGlow` there (`0x8BFEDB`); the
-  ghost effect is `[0xB74368]` (`FFXDeath`).
+  ghost effect is `[0xB74368]` (`FFXDeath`, vtable `0xA418D8`, stored at `0x7EA274` by its constructor `0x7EA260`).
 - Glow feed. The world frame callback `0x4FAF90` updates the world (`0x4FB031`: `0x4FA5F0` → `0x7831A0` →
   `0x7816F0` → `0x7F3920` → `0x7F3230`) before it calls the world render (`0x4FB03D`), so the day/night glow
   `0xD38C2C` (`0x7ECEF0()` + `0x12C`) is rewritten every world frame: from the blended light record (`0x7F34AF`), or
@@ -525,8 +525,12 @@ Engine notes behind the code:
   SetParam (`0x4F883C`; vtable `0xA941C8` from `0x8BFE98`, slot `0xA941D8` = `0x8BFDE0`). SetParam stores the
   underwater flag at `+0x2C` and the D3DCOLOR {B = G = R = blur, A = glow} at `+0x30` of pass [2] in both pass
   lists, clear view at `+0x08` (`0x8BFE14`, `0x8BFE21`) and underwater at `+0x1C` (`0x8BFDF2`, `0x8BFE08`), and
-  returns with `ret 8` (`0x8BFE26`). A list is {capacity, count, array} (`0x7EA1C0`). Pass [2] is the composite
-  (vtable `0xA94294`, `0x8C2206`), whose render `0x8C27B0` hands that colour to the draw `0x682400` (`0x8C28A1`).
+  returns with `ret 8` (`0x8BFE26`). A list is {capacity, count, array} (`0x7EA1C0`). The glow constructor
+  `0x8BFE80` fills both lists with the same three passes: `0x8C1F70` (vtable `0xA94274`, `0x8C1F91`), the
+  `FFXGauss4` blur `0x8C1B40` (vtable `0xA9425C`, `0x8C1B61`) and the composite `0x8C21E0` (vtable `0xA94294`,
+  `0x8C2206`), which the underwater list gets only when `[0xD45768]` and a Gx capability allow (`0x8C00BC`–`0x8C00D4`;
+  otherwise a null entry, `0x8C011F`). The composite's render `0x8C27B0` hands that colour to the draw `0x682400`
+  (`0x8C28A1`).
 - FFXGlow. The 12340 shader loader `0x684970` accepts only BLS version `0x10003` (`0x6849FE`). Ascension's patch
   ships ps_3_0 `FFXGlow` and `FFXDeath` as version `0x10004`, so the loader falls back through `0x684AA4` to the
   ps_2_0 profile (`0x684A71`), whose FFXGlow is `lerp(screen, blur, v0.z) + blur²·v0.w` with the pass colour as
@@ -748,8 +752,8 @@ normals are compared with the 7552035 slope evaluated on the CPU (within the dep
 0.5% of the pixels, up to 6/255 off where the GPU's bilinear weights meet fresh impulses), the rings' visibility in
 shaded water with the real data, and the hold on the client's sprite value, driven through the hooks on a synthetic
 value and code image, with the unit walk refused and the ripple map unsupported or failing.
-The glow suite drives the world-done and frame-end entries against a fake glow effect graph whose vtables are plain
-integers the DLL only compares: the write to both pass lists and its restore, a foreign byte that survives, no write
+The glow suite drives the world-done and frame-end entries against a fake glow effect graph that holds the client's
+vtable values as plain integers the DLL only compares: the write to both pass lists and its restore, a foreign byte that survives, no write
 for the ghost effect or a graph that differs, the fade with Classic coverage, the clamp above 1, the compensation
 taking the delivered byte (24 for a wrapped 1.1), and guards that avoid every patched byte. The grading suite fills
 the back buffer with every 8-bit code per channel and checks the identity curve bit-exact, the Stormwind noon curve
