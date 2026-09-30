@@ -45,6 +45,17 @@ constexpr uint32_t kPebbleShadeLevels = 256;
 constexpr uint32_t kWalkerForwardFlag = 0x1;
 constexpr uint32_t kWorldStartMs = 7200000;
 constexpr double kMsPerSecond = 1000.0;
+constexpr int kVisibilityCaptures = 2;
+constexpr int kVisibilityCapture = 1;
+constexpr double kVisibleRippleLevels = 8.0;
+constexpr float kRingCorridorYards = 5.0f;
+constexpr float kQuietYards = 8.0f;
+constexpr float kBandStartBehindYards = 0.5f;
+constexpr float kBandEndBehindYards = 5.0f;
+constexpr double kMinVisibleRingShare = 0.04;
+constexpr double kMaxVisibleRingShare = 0.4;
+constexpr int kMinRingBands = 5;
+constexpr double kLumaLevels = 255.0;
 
 struct Walk
 {
@@ -171,7 +182,7 @@ struct WalkCaptures
     bool shaded = true;
 };
 
-WalkCaptures RenderWalk(BasinClient& client, const Walk& walk, const Config& cfg)
+WalkCaptures RenderWalk(BasinClient& client, const Walk& walk, const Config& cfg, int captureCount = kCaptureCount)
 {
     Config off = cfg;
     off.waterRipples = 0.0f;
@@ -181,7 +192,7 @@ WalkCaptures RenderWalk(BasinClient& client, const Walk& walk, const Config& cfg
     water_contact_checks::ClientRippleClock clock;
     WalkCaptures captures;
     int next = 0;
-    for (int frame = 0; next < kCaptureCount; ++frame)
+    for (int frame = 0; next < captureCount; ++frame)
     {
         const double seconds = frame * kFrameSeconds;
         const WaterFrameResult result = RenderWalkerFrame(client, walk, seconds, &clock);
@@ -207,6 +218,120 @@ std::wstring CaptureName(const Walk& walk, int capture)
     wchar_t name[64];
     std::swprintf(name, 64, L"ripples-%ls-%.1fs", walk.name, kCaptureSeconds[capture]);
     return name;
+}
+
+struct RingVisibility
+{
+    size_t corridor = 0;
+    size_t visible = 0;
+    size_t disturbedFar = 0;
+    int bands = 0;
+
+    double Share() const { return corridor ? static_cast<double>(visible) / corridor : 0.0; }
+};
+
+float DistanceToPath(float x, float y, Vec3 from, Vec3 to)
+{
+    const float alongX = to.x - from.x;
+    const float alongY = to.y - from.y;
+    const float lengthSquared = alongX * alongX + alongY * alongY;
+    const float t =
+        lengthSquared > 0.0f ? std::clamp(((x - from.x) * alongX + (y - from.y) * alongY) / lengthSquared, 0.0f, 1.0f)
+                             : 0.0f;
+    return std::hypot(x - from.x - alongX * t, y - from.y - alongY * t);
+}
+
+bool WaterHit(const WaterView& view, UINT x, UINT y, float& hitX, float& hitY)
+{
+    const Vec3 ray = water_checks::PixelRay(view, x + 0.5f, y + 0.5f);
+    if (ray.z >= 0.0f)
+        return false;
+    const float depth = water_checks::ViewDepthOfPlane(view, ray, kWaterSurfaceZ);
+    hitX = view.eye.x + ray.x * depth - kGameLikeWorldOffset.x;
+    hitY = view.eye.y + ray.y * depth - kGameLikeWorldOffset.y;
+    return true;
+}
+
+double LumaChange(const Image& a, const Image& b, UINT x, UINT y)
+{
+    return std::fabs(a.Luma(x, y) - b.Luma(x, y)) * kLumaLevels;
+}
+
+int BandsBehind(const WaterView& view, Vec3 feet, const Image& rippled, const Image& calm)
+{
+    const UINT column = static_cast<UINT>(view.world.Width / 2);
+    int bands = 0;
+    bool inBand = false;
+    for (UINT y = 0; y < view.world.Height; ++y)
+    {
+        float hitX = 0.0f;
+        float hitY = 0.0f;
+        if (!WaterHit(view, column, y, hitX, hitY) || hitY > feet.y - kBandStartBehindYards ||
+            hitY < feet.y - kBandEndBehindYards)
+            continue;
+        const bool changed = LumaChange(rippled, calm, column, y) >= kVisibleRippleLevels;
+        bands += changed && !inBand ? 1 : 0;
+        inBand = changed;
+    }
+    return bands;
+}
+
+RingVisibility MeasureRings(const Walk& walk, double seconds, const Image& rippled, const Image& calm)
+{
+    const WaterView view = ThirdPersonView(walk, seconds);
+    const Vec3 from = FeetAt(walk, 0.0);
+    const Vec3 to = FeetAt(walk, seconds);
+    RingVisibility v;
+    for (UINT y = 0; y < view.world.Height; ++y)
+        for (UINT x = 0; x < view.world.Width; ++x)
+        {
+            float hitX = 0.0f;
+            float hitY = 0.0f;
+            if (!WaterHit(view, x, y, hitX, hitY))
+                continue;
+            const float distance = DistanceToPath(hitX, hitY, from, to);
+            const double change = LumaChange(rippled, calm, x, y);
+            if (distance <= kRingCorridorYards)
+            {
+                ++v.corridor;
+                v.visible += change >= kVisibleRippleLevels ? 1 : 0;
+            }
+            else if (distance > kQuietYards)
+                v.disturbedFar += change > 0.0 ? 1 : 0;
+        }
+    v.bands = BandsBehind(view, to, rippled, calm);
+    return v;
+}
+
+void CheckRingsShowInShadedWater(Harness& h, const std::wstring& outDir, const std::string& waterDataPath)
+{
+    Config base;
+    vf_test_get_config(&base);
+    const bool loaded = vf_test_load_water_data(waterDataPath.c_str()) != 0;
+    const Config cfg = water_checks::WaterConfig(base);
+    BasinClient client(h, ThirdPersonView(kWalks[0], 0.0));
+    bool visible = loaded;
+    for (const Walk* walk : {&kWalks[0], &kWalks[1]})
+    {
+        const WalkCaptures captures = RenderWalk(client, *walk, cfg, kVisibilityCaptures);
+        const Image& rippled = captures.images[kVisibilityCapture];
+        const RingVisibility v =
+            MeasureRings(*walk, kCaptureSeconds[kVisibilityCapture], rippled, captures.calm[kVisibilityCapture]);
+        water_checks::SaveImage(outDir, CaptureName(*walk, kVisibilityCapture).c_str(), rippled);
+        std::printf("     %ls at %.1f s: %zu of %zu water pixels within %.0f yd of the path change by %.0f+ levels "
+                    "(%.1f%%), %d bands behind the unit, %zu changed beyond %.0f yd\n",
+                    walk->name, kCaptureSeconds[kVisibilityCapture], v.visible, v.corridor, kRingCorridorYards,
+                    kVisibleRippleLevels, 100.0 * v.Share(), v.bands, v.disturbedFar, kQuietYards);
+        visible = visible && captures.shaded && v.Share() >= kMinVisibleRingShare &&
+                  v.Share() <= kMaxVisibleRingShare && v.bands >= kMinRingBands && v.disturbedFar == 0;
+    }
+    Check(visible, "rings from a unit running through shin- and waist-deep shaded water at WaterRipples 1 change 4% to "
+                   "40% of the water within 5 yd of its path by 8+ levels, in 5+ separate bands behind it, and nothing "
+                   "beyond 8 yd (a harness pebble floor and sky, not the in-game look)");
+    vf_test_set_water_seconds(water_checks::kRealTime);
+    vf_test_set_config(&base);
+    Check(water_checks::AssignWaterData(water_checks::MakeSyntheticWaterData()),
+          "synthetic water data restored after the ring visibility check");
 }
 
 bool CreateSceneDevice(Harness& h, const wchar_t* windowClass)

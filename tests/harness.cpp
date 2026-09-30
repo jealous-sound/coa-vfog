@@ -2013,6 +2013,8 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     vf_test_set_config(&restored);
     water_checks::CheckWaterPass(h, outDir, waterDataPath);
     vf_test_set_config(&restored);
+    ripple_scene::CheckRingsShowInShadedWater(h, outDir, waterDataPath);
+    vf_test_set_config(&restored);
 
     CheckOverlayInput(h);
     const size_t logBeforeWidgets = water_settings_checks::DllLogSize();
