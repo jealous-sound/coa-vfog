@@ -224,6 +224,49 @@ void CheckSideOnGlowFollowsLocalLightPhase(IDirect3DDevice9* device, const FogIn
     Check(layerIndependent, label);
 }
 
+constexpr float kBackwardLocalLightPhase = -0.5f;
+
+bool MatchesReference(const Result& actual, const Result& expected)
+{
+    bool matches = actual.valid && expected.valid;
+    for (int channel = 0; channel < 3; ++channel)
+        matches = matches && std::fabs(actual.colour[channel] - expected.colour[channel]) <=
+                                 kSideGlowRelativeTolerance * expected.colour[channel];
+    return matches;
+}
+
+void CheckLocalLightPhaseDirection(IDirect3DDevice9* device, const FogIntegrationResources& floatTarget,
+                                   IDirect3DTexture9* lights, int quality)
+{
+    const Light lamp = {150, 8, 1000, {30, 70, 10}};
+    const Medium beforeLamp = {120, 150, 0.002};
+    const Medium pastLamp = {150, 180, 0.002};
+    device->SetRenderTarget(0, floatTarget.target);
+    for (float phase : {kShippedLocalLightPhase, kBackwardLocalLightPhase})
+    {
+        const Scattering scattering = {kClassicForwardHazeG, 0, phase};
+        const Result before = Draw(device, floatTarget, lights, beforeLamp, &lamp, 1, D3DFMT_A32B32G32R32F, 1, 1000,
+                                   0, scattering);
+        const Result past = Draw(device, floatTarget, lights, pastLamp, &lamp, 1, D3DFMT_A32B32G32R32F, 1, 1000, 0,
+                                 scattering);
+        const Result expectedBefore = Reference(beforeLamp, &lamp, 1, phase);
+        const Result expectedPast = Reference(pastLamp, &lamp, 1, phase);
+        const bool brighterBefore = before.colour[1] > past.colour[1];
+        std::printf("     quality %d LocalLightPhase %.1f: green %.3f before the lamp (%.3f expected), %.3f past it "
+                    "(%.3f expected)\n",
+                    quality, phase, before.colour[1], expectedBefore.colour[1], past.colour[1],
+                    expectedPast.colour[1]);
+        char label[192];
+        std::snprintf(label, sizeof(label),
+                      "local light quality %d: with LocalLightPhase %.1f the fog %s the lamp glows more, as the "
+                      "reference integral",
+                      quality, phase, phase > 0 ? "between the camera and" : "behind");
+        Check(MatchesReference(before, expectedBefore) && MatchesReference(past, expectedPast) &&
+                  brighterBefore == (phase > 0),
+              label);
+    }
+}
+
 void CheckLocalLightIntegration(IDirect3DDevice9* device)
 {
     FogIntegrationResources resources;
@@ -425,10 +468,11 @@ void CheckLocalLightIntegration(IDirect3DDevice9* device)
         if (extendedReady[1])
         {
             CheckSideOnGlowFollowsLocalLightPhase(device, extended[1], lights, quality + 1);
+            CheckLocalLightPhaseDirection(device, extended[1], lights, quality + 1);
             device->SetRenderTarget(0, resources.target);
         }
         else
-            std::printf("SKIP: the side-on local-light phase check requires the FP32 render target and readback\n");
+            std::printf("SKIP: the local-light phase checks require the FP32 render target and readback\n");
         shader->Release();
     }
     for (int scene = 0; scene < kScenarioCount; ++scene)
