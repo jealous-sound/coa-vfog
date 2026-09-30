@@ -9,7 +9,6 @@ constexpr DWORD kClientDeviceFlags =
     D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_PUREDEVICE | D3DCREATE_FPU_PRESERVE;
 constexpr DWORD kClientClearFlags = D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER;
 constexpr D3DFORMAT kStencilDepthFormat = D3DFMT_D24S8;
-constexpr unsigned kNvidiaVendorId = 0x10DE;
 constexpr D3DFORMAT kResz = static_cast<D3DFORMAT>(MAKEFOURCC('R', 'E', 'S', 'Z'));
 constexpr int kDepthCopyFromDriver = kDepthCopyMethodFromDriver;
 constexpr int kNoDepthCopy = static_cast<int>(DepthCopyMethod::None);
@@ -88,15 +87,21 @@ bool OffBecause(const MultisamplingStatus& status, const char* reason)
     return !(status.method && *status.method) && status.off && std::strcmp(status.off, reason) == 0;
 }
 
-bool DriverCanCopyDepth(IDirect3D9* real)
+DepthCopyProbe ProbeTheDllRuns(IDirect3D9* real)
 {
-    D3DADAPTER_IDENTIFIER9 id = {};
-    D3DDISPLAYMODE mode = {};
-    real->GetAdapterIdentifier(0, 0, &id);
-    real->GetAdapterDisplayMode(0, &mode);
-    return id.VendorId == kNvidiaVendorId ||
-           SUCCEEDED(real->CheckDeviceFormat(0, D3DDEVTYPE_HAL, mode.Format, D3DUSAGE_RENDERTARGET, D3DRTYPE_SURFACE,
-                                             kResz));
+    DepthCopyProbe probe;
+    vf_test_probe_depth_copy(real, &probe);
+    return probe;
+}
+
+const char* ProbedMethodName(DepthCopyMethod method)
+{
+    return method == DepthCopyMethod::Nvapi ? "NVAPI" : "RESZ";
+}
+
+bool KeptBy(const MultisamplingStatus& status, const DepthCopyProbe& probe)
+{
+    return Kept(status) && std::strcmp(status.method, ProbedMethodName(probe.method)) == 0;
 }
 
 bool DriverOffersResz(IDirect3D9* real)
@@ -702,7 +707,7 @@ void CheckSilhouetteMatchesSingleSampled(const SilhouetteFrames& multisampled, c
           "away from silhouettes the 4x fog equals the single-sampled fog in both blend modes");
 }
 
-void CheckMultisampledDevice(Harness& m, const std::wstring& outDir)
+void CheckMultisampledDevice(Harness& m, const DepthCopyProbe& probe, const std::wstring& outDir)
 {
     Config keep = MultisamplingConfig(true);
     vf_test_set_config(&keep);
@@ -712,8 +717,9 @@ void CheckMultisampledDevice(Harness& m, const std::wstring& outDir)
     const MultisamplingStatus status = CurrentStatus();
     PrintTargets("4x requested", created, status);
     Check(opened && m.pp.MultiSampleType == kFourSamples && m.pp.EnableAutoDepthStencil == TRUE &&
-              KeepsMultisampledTargets(created) && Kept(status),
-          "with Multisampling=1 CreateDevice keeps the game's 4x back buffer and a 4x automatic depth");
+              KeepsMultisampledTargets(created) && KeptBy(status, probe),
+          "with Multisampling=1 CreateDevice keeps the game's 4x back buffer and a 4x automatic depth, copied by "
+          "the method the probe found");
     Check(opened && m.pp.AutoDepthStencilFormat == kClientDepthFormat &&
               runtime_cost::HasLine(runtime_cost::LogWrittenSince(logStart), "depth requested D24X8 used D24S8"),
           "the game's D24X8 depth has no stencil for the water tags and the silhouette split, so the 4x depth is "
@@ -758,8 +764,8 @@ void CheckMultisampledDevice(Harness& m, const std::wstring& outDir)
     PrintTargets("Reset to 4x", reset4x, status4x);
     const FogFrame fog4x = RenderFogOverDepthQuads(m);
     PrintFogFrame("4x fog after Reset", fog4x);
-    Check(again && m.pp.MultiSampleType == kFourSamples && KeepsMultisampledTargets(reset4x) && Kept(status4x) &&
-              FogFrameDrawn(fog4x),
+    Check(again && m.pp.MultiSampleType == kFourSamples && KeepsMultisampledTargets(reset4x) &&
+              KeptBy(status4x, probe) && FogFrameDrawn(fog4x),
           "Reset from 1x back to 4x keeps the game's multisampling and the fog draws on a fresh depth copy");
     Check(m.pp.AutoDepthStencilFormat == kClientDepthFormat &&
               runtime_cost::HasLine(resetLog, "depth requested D24X8 used D24S8"),
@@ -771,7 +777,7 @@ void CheckMultisampledDevice(Harness& m, const std::wstring& outDir)
     CloseDevice(m);
 }
 
-void CheckStencilLessDepthFormat(Harness& m, D3DFORMAT format, const char* name)
+void CheckStencilLessDepthFormat(Harness& m, const DepthCopyProbe& probe, D3DFORMAT format, const char* name)
 {
     Config keep = MultisamplingConfig(true);
     vf_test_set_config(&keep);
@@ -784,8 +790,8 @@ void CheckStencilLessDepthFormat(Harness& m, D3DFORMAT format, const char* name)
     if (opened)
         frame = RenderFogOverDepthQuads(m);
     PrintFogFrame(requested.c_str(), frame);
-    Check(opened && KeepsMultisampledTargets(targets) && Kept(status) && m.pp.AutoDepthStencilFormat == format &&
-              FogFrameDrawn(frame),
+    Check(opened && KeepsMultisampledTargets(targets) && KeptBy(status, probe) &&
+              m.pp.AutoDepthStencilFormat == format && FogFrameDrawn(frame),
           (std::string("with a ") + name + " depth requested, 4x is kept on a D24S8 depth and the fog draws").c_str());
     CloseDevice(m);
 }
@@ -835,19 +841,24 @@ void CheckMultisampling(Direct3DCreate realCreate, HWND window, const std::wstri
     Check(real && m.d3d, "a second wrapped Direct3D9 for the multisampling checks");
     if (!real || !m.d3d)
         return;
-    const bool driverCopies = DriverCanCopyDepth(real);
+    const DepthCopyProbe probe = ProbeTheDllRuns(real);
+    const bool driverCopies = probe.method != DepthCopyMethod::None;
     D3DADAPTER_IDENTIFIER9 id = {};
     real->GetAdapterIdentifier(0, 0, &id);
-    std::printf("     adapter vendor 0x%04lX: %s\n", id.VendorId,
-                driverCopies ? "a depth copy method is expected (NVAPI or RESZ)" : "no depth copy method expected");
+    std::printf("     adapter vendor 0x%04lX: the DLL's probe %s%s\n", id.VendorId,
+                driverCopies ? "copies the depth by " : "finds no depth copy method: ",
+                driverCopies ? ProbedMethodName(probe.method) : probe.unavailable);
     CheckVideoOptionsOffer(m, real, driverCopies);
     CheckVideoOptionsListCost(m, real);
     CheckFallbacks(m, real);
     if (driverCopies)
     {
-        CheckMultisampledDevice(m, outDir);
-        CheckStencilLessDepthFormat(m, D3DFMT_D16, "D16");
+        CheckMultisampledDevice(m, probe, outDir);
+        CheckStencilLessDepthFormat(m, probe, D3DFMT_D16, "D16");
     }
+    else
+        std::printf("SKIP: the 4x device, fog, water, silhouette, D16 and Reset checks need a depth copy method (%s)\n",
+                    probe.unavailable);
     Config shipped = {};
     vf_test_set_config(&shipped);
     const ULONG refs = m.d3d->Release();

@@ -293,3 +293,8 @@ extern "C" void __cdecl vf_test_multisampling(MultisamplingStatus* status)
 {
     *status = CurrentMultisamplingStatus();
 }
+
+extern "C" void __cdecl vf_test_probe_depth_copy(IDirect3D9* d3d, DepthCopyProbe* probe)
+{
+    *probe = ProbeDepthCopy(d3d, D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL);
+}
