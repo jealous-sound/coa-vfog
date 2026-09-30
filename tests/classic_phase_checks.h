@@ -13,7 +13,12 @@ constexpr float kSlabEmissive = 0.3f;
 constexpr float kSlabIntensity = 0.6f;
 constexpr float kSlabTolerance = 2.0f / 255.0f;
 constexpr uint32_t kSelectedLayerFlag = 0x8;
-constexpr int kEnergyNormalisedPhase = 1;
+constexpr float kSunAboveViewCentreDegrees = 20.0f;
+constexpr float kHaloDegreesBelowSun = 6.0f;
+constexpr UINT kHaloViewWidth = 1280;
+constexpr UINT kHaloViewHeight = 688;
+constexpr int kHaloSampleRadius = 2;
+constexpr float kMinHaloChannelStep = 8.0f;
 
 void CheckPhaseScale()
 {
@@ -162,25 +167,83 @@ void CheckIsotropicSlabSaturation(IDirect3DDevice9* device)
         shader->Release();
 }
 
-void CheckShippedPhaseIsEnergyNormalised(const std::wstring& shippedIni)
+struct SunsetHalo
 {
-    ConfigStore shipped;
-    shipped.Load(NarrowPath(shippedIni));
-    const std::string text = ReadText(shippedIni);
-    std::printf("     ClassicPhase: built-in default %d, shipped INI %d\n", Config().classicPhase,
-                shipped.Get().classicPhase);
-    Check(Config().classicPhase == kEnergyNormalisedPhase && shipped.Get().classicPhase == kEnergyNormalisedPhase &&
-              text.find("\nClassicPhase=1") != std::string::npos &&
-              text.find("\nClassicPhase=0") == std::string::npos &&
-              text.find("1 = energy-normalised, the default") != std::string::npos,
-          "the Classic layers scatter with the energy-normalised phase by default, in the DLL and the shipped INI, "
-          "whose comment names it the default");
+    bool rendered = false;
+    const char* skip = "";
+    Rgb colour = {};
+};
+
+int PixelOf(float ndc, UINT extent)
+{
+    return static_cast<int>((ndc * 0.5f + 0.5f) * extent);
 }
 
-void CheckClassicPhase(const std::wstring& shippedIni)
+SunsetHalo RenderHarbourSunsetHalo(Harness& h, Config config)
+{
+    config.temporal = 0.0f;
+    vf_test_set_config(&config);
+    const Vec3 toLight = Norm(kHarbourToLight);
+    const float sunAzimuth = std::atan2(toLight.y, toLight.x) / kDegree;
+    const float sunElevation = std::asin(toLight.z) / kDegree;
+    const Vec3 at = Add(kHarbourEye, Dir(sunAzimuth, sunElevation - kSunAboveViewCentreDegrees));
+    const D3DVIEWPORT9 world = {0, 0, kHaloViewWidth, kHaloViewHeight, 0.0f, 1.0f};
+    float view[16];
+    float proj[16];
+    CameraRelativeLookAt(kHarbourEye, at, view);
+    EngineGlDepthProjection(kHarbourLoggedP11, static_cast<float>(kHaloViewWidth) / kHaloViewHeight, kHarbourNear,
+                            kHarbourFar, proj);
+    const FrameInputs in = HarbourSunsetInputs(view, proj, at, world, 0.0f);
+    const D3DCOLOR clientClear = h.clearColor;
+    h.clearColor = kHarbourSky;
+    h.BeginFrame();
+    h.dev->SetViewport(&world);
+    SunsetHalo halo;
+    halo.rendered = vf_test_render(&in, &halo.skip) != 0;
+    const Image image = Capture(h.dev);
+    h.dev->EndScene();
+    h.dev->Present(nullptr, nullptr, nullptr, nullptr);
+    h.clearColor = clientClear;
+    const Vec3 d = Dir(sunAzimuth, sunElevation - kHaloDegreesBelowSun);
+    const float vx = d.x * view[0] + d.y * view[4] + d.z * view[8];
+    const float vy = d.x * view[1] + d.y * view[5] + d.z * view[9];
+    const float vz = d.x * view[2] + d.y * view[6] + d.z * view[10];
+    const int x = PixelOf(vx / vz * proj[0] + proj[8], kHaloViewWidth);
+    const int y = PixelOf(-(vy / vz * proj[5] + proj[9]), kHaloViewHeight);
+    halo.colour = SampleRgb(image, x, y, kHaloSampleRadius);
+    return halo;
+}
+
+bool KeepsSunsetHue(const SunsetHalo& halo)
+{
+    const Rgb& c = halo.colour;
+    return halo.rendered && c.r >= c.g + kMinHaloChannelStep && c.g >= c.b + kMinHaloChannelStep;
+}
+
+void CheckSunsetHaloKeepsItsHue(Harness& h, const std::wstring& shippedIni)
+{
+    Config saved;
+    vf_test_get_config(&saved);
+    ConfigStore shipped;
+    shipped.Load(NarrowPath(shippedIni));
+    const SunsetHalo fromIni = RenderHarbourSunsetHalo(h, shipped.Get());
+    const SunsetHalo builtIn = RenderHarbourSunsetHalo(h, Config());
+    vf_test_set_config(&saved);
+    std::printf("     harbour sunset %.0f deg below the sun: %.0f %.0f %.0f with the shipped INI (ClassicPhase %d), "
+                "%.0f %.0f %.0f with the built-in defaults (ClassicPhase %d)\n",
+                kHaloDegreesBelowSun, fromIni.colour.r, fromIni.colour.g, fromIni.colour.b,
+                shipped.Get().classicPhase, builtIn.colour.r, builtIn.colour.g, builtIn.colour.b,
+                Config().classicPhase);
+    Check(KeepsSunsetHue(fromIni) && KeepsSunsetHue(builtIn),
+          (std::string("the harbour's sunset halo keeps its warm hue, red over green over blue, with the shipped "
+                       "settings and the built-in defaults instead of clipping to white ") +
+           fromIni.skip + builtIn.skip)
+              .c_str());
+}
+
+void CheckClassicPhase()
 {
     CheckPhaseScale();
     CheckOnlyTheScatterChanges();
-    CheckShippedPhaseIsEnergyNormalised(shippedIni);
 }
 }

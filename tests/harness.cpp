@@ -296,6 +296,27 @@ Image Capture(IDirect3DDevice9* dev)
     return img;
 }
 
+struct Rgb
+{
+    float r, g, b;
+};
+
+Rgb SampleRgb(const Image& img, int cx, int cy, int radius)
+{
+    Rgb sum = {};
+    int n = 0;
+    for (int y = cy - radius; y <= cy + radius; ++y)
+        for (int x = cx - radius; x <= cx + radius; ++x)
+        {
+            const unsigned char* p = img.At(static_cast<UINT>(x), static_cast<UINT>(y));
+            sum.r += p[2];
+            sum.g += p[1];
+            sum.b += p[0];
+            ++n;
+        }
+    return {sum.r / n, sum.g / n, sum.b / n};
+}
+
 constexpr DWORD kFogPassTextureStages = 11;
 constexpr UINT kFogPassPixelConstants = 100;
 
@@ -814,6 +835,46 @@ constexpr float kContinentFarClip = 791.6f;
 constexpr Vec3 kHarbourEye = {-8576.0f, 1007.0f, 104.0f};
 constexpr float kHarbourDayFraction = 0.7802f;
 constexpr Vec3 kHarbourToLight = {0.673f, 0.673f, 0.307f};
+constexpr float kHarbourNear = 0.2f;
+constexpr float kHarbourFar = 791.6f;
+constexpr float kHarbourLoggedP11 = 1.511f;
+constexpr D3DCOLOR kHarbourSky = 0xFFFFD890;
+constexpr float kDegree = kPi / 180.0f;
+
+Vec3 Dir(float azimuthDeg, float elevationDeg)
+{
+    float a = azimuthDeg * kDegree;
+    float e = elevationDeg * kDegree;
+    return {std::cos(e) * std::cos(a), std::cos(e) * std::sin(a), std::sin(e)};
+}
+
+FrameInputs HarbourSunsetInputs(const float* view, const float* proj, Vec3 at, const D3DVIEWPORT9& vp,
+                                float stormBlend)
+{
+    const Vec3 toLight = Norm(kHarbourToLight);
+    FrameInputs in = MakeInputs(view, proj, kHarbourEye, at, vp);
+    Vec3 clientTargetOneYardAhead = Add(kHarbourEye, Norm(Sub(at, kHarbourEye)));
+    in.camTarget[0] = clientTargetOneYardAhead.x;
+    in.camTarget[1] = clientTargetOneYardAhead.y;
+    in.camTarget[2] = clientTargetOneYardAhead.z;
+    in.dayFraction = kHarbourDayFraction;
+    in.toLight[0] = toLight.x;
+    in.toLight[1] = toLight.y;
+    in.toLight[2] = toLight.z;
+    in.lightIsMoon = false;
+    in.fogColor = 0xFF574C5C;
+    in.sunColor = 0xFFFFE7B6;
+    in.directColor = 0xFFFF7400;
+    in.ambientColor = 0xFF676680;
+    in.fogStart = kContinentFogStart;
+    in.fogEnd = 791.7f;
+    in.zoneFogDistance = 791.7f;
+    in.farClip = kHarbourFar;
+    in.inLiquid = false;
+    in.mapId = kEasternKingdoms;
+    in.lightParams = Storm(stormBlend);
+    return in;
+}
 
 FrameInputs ContinentFrame(int map, Vec3 eye, float dayFraction, Vec3 toLight, bool lightIsMoon)
 {
@@ -1623,7 +1684,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckFogThinsIntoFoglessClassicLight(classic);
     authored_fog::CheckAuthoredFogExtras(classic);
     authored_noise::CheckAuthoredNoise(classic);
-    classic_phase::CheckClassicPhase(FullPath(iniPath));
+    classic_phase::CheckClassicPhase();
 
     CreateDirectoryW(outDir.c_str(), nullptr);
     g_harnessLog = FullPath(outDir + L"\\harness.log");
@@ -1717,6 +1778,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckTemporalQuality(h.dev);
     CheckLightDisappearanceHistory(h);
     CheckSunOccluderLeavesFogLit(h);
+    classic_phase::CheckSunsetHaloKeepsItsHue(h, FullPath(iniPath));
     water_fft_checks::CheckWaterFft(h.dev);
     const float aspect = 1280.0f / 688.0f;
     const D3DVIEWPORT9 world = {0, 0, 1280, 688, 0.0f, 1.0f};
@@ -2094,22 +2156,10 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     return g_failures ? 1 : 0;
 }
 
-constexpr float kHarbourNear = 0.2f;
-constexpr float kHarbourFar = 791.6f;
-constexpr float kHarbourLoggedP11 = 1.511f;
 constexpr UINT kHarbourWidth = 2560;
 constexpr UINT kHarbourHeight = 1440;
 constexpr int kHarbourSettleFrames = 24;
-constexpr D3DCOLOR kHarbourSky = 0xFFFFD890;
 constexpr D3DCOLOR kHarbourSea = 0xFF1A2430;
-constexpr float kDegree = kPi / 180.0f;
-
-Vec3 Dir(float azimuthDeg, float elevationDeg)
-{
-    float a = azimuthDeg * kDegree;
-    float e = elevationDeg * kDegree;
-    return {std::cos(e) * std::cos(a), std::cos(e) * std::sin(a), std::sin(e)};
-}
 
 D3DCOLOR Shade(D3DCOLOR c, float s)
 {
@@ -2258,27 +2308,6 @@ bool DepthViewIsSky(const Image& depth, int x, int y)
     return depth.At(x, y)[2] >= 254;
 }
 
-struct Rgb
-{
-    float r, g, b;
-};
-
-Rgb SampleRgb(const Image& img, int cx, int cy, int radius)
-{
-    Rgb sum = {};
-    int n = 0;
-    for (int y = cy - radius; y <= cy + radius; ++y)
-        for (int x = cx - radius; x <= cx + radius; ++x)
-        {
-            const unsigned char* p = img.At(static_cast<UINT>(x), static_cast<UINT>(y));
-            sum.r += p[2];
-            sum.g += p[1];
-            sum.b += p[0];
-            ++n;
-        }
-    return {sum.r / n, sum.g / n, sum.b / n};
-}
-
 void ReferenceUnshadowedLayerOpticalDepths(const FogParams& fog, float camZ, Vec3 dirW, float viewZ, float rayLen,
                                            bool sky, float* tau)
 {
@@ -2402,28 +2431,7 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath, const Ha
     shippedCfg.classicPhase = options.classicPhase;
 
     auto inputsFor = [&](const float* view, Vec3 at) {
-        FrameInputs in = MakeInputs(view, proj, kHarbourEye, at, vp);
-        Vec3 clientTargetOneYardAhead = Add(kHarbourEye, Norm(Sub(at, kHarbourEye)));
-        in.camTarget[0] = clientTargetOneYardAhead.x;
-        in.camTarget[1] = clientTargetOneYardAhead.y;
-        in.camTarget[2] = clientTargetOneYardAhead.z;
-        in.dayFraction = kHarbourDayFraction;
-        in.toLight[0] = toLight.x;
-        in.toLight[1] = toLight.y;
-        in.toLight[2] = toLight.z;
-        in.lightIsMoon = false;
-        in.fogColor = 0xFF574C5C;
-        in.sunColor = 0xFFFFE7B6;
-        in.directColor = 0xFFFF7400;
-        in.ambientColor = 0xFF676680;
-        in.fogStart = kContinentFogStart;
-        in.fogEnd = 791.7f;
-        in.zoneFogDistance = 791.7f;
-        in.farClip = kHarbourFar;
-        in.inLiquid = false;
-        in.mapId = kEasternKingdoms;
-        in.lightParams = Storm(options.stormBlend);
-        return in;
+        return HarbourSunsetInputs(view, proj, at, vp, options.stormBlend);
     };
 
     {
