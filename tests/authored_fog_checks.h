@@ -115,7 +115,8 @@ void CheckGlowWithoutClassicFog(const FogData& data)
     AuthoredFog outland = {};
     const bool lairFog = data.Resolve(kBlackwingLair, kInsideBlackwingLair, kNoon, kClearWeather, lair);
     const bool outlandFog = data.Resolve(kOutland, kInsideBlackwingLair, kNoon, kClearWeather, outland);
-    std::printf("     Blackwing Lair: Classic fog %d, lights %d (first %u), coverage %.2f, glow %.2f (%s), grading %s\n",
+    std::printf("     Blackwing Lair: Classic fog %d, lights %d (first %u), coverage %.2f, glow %.2f (%s), "
+                "grading %s\n",
                 lairFog, lair.lightCount, lair.lightCount > 0 ? lair.lightIds[0] : 0u, lair.coverage, lair.glow,
                 lair.hasGlow ? "resolved" : "none", lair.hasGradingCurve ? "resolved" : "none");
     Check(!lairFog && lair.layerCount == 0 && lair.lightCount == 1 && lair.lightIds[0] == kBlackwingLairLight &&

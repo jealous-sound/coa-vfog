@@ -829,8 +829,9 @@ At start-up the log says whether `Forever glow` and `colour grading` are availab
 differ. `Forever glow: the glow composite gets 0 where the client set 102 (Classic weight 1.00)` is logged when the
 override starts and `the client's own glow applies` when it stops. Grading logs `colour grading skipped: <reason>`
 once per reason and its idle states (ghost effect, camera under water, no Classic light covers the camera, no Classic
-light around the camera carries a grading curve) like the water's. `LogLevel=2` adds every 600 frames `Forever look: glow byte 0 (client 102, Classic weight 1.00), colour
-grading 0.60`, with the grading's reason instead of its strength when it did not draw.
+light around the camera carries a grading curve) like the water's. `LogLevel=2` adds every 600 frames `Forever look:
+glow byte 0 (client 102, Classic weight 1.00), colour grading 0.60`, with the grading's reason instead of its strength
+when it did not draw.
 
 Every 60 s the water adds `water gpu 1.24 ms (median of 3500 frames, 0 skipped), classes lake+ocean, waves 256
 (7 tiles), ripples 512 at 0.125 yd, 30 Hz, up to 3 contacts, 0 steps dropped`: its GPU time without the client's
