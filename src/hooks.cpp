@@ -33,6 +33,7 @@ constexpr int kNorthrendMap = 571;
 constexpr size_t kDrawnWaterClassesTextSize = 64;
 constexpr unsigned kFlatWavesBit = 1u << 31;
 constexpr const char* kCameraUnderLiquid = "camera under liquid";
+constexpr const char* kWorldNotCaptured = "the world render inputs were not captured";
 constexpr DWORD kTransparentFogStatsIntervalMs = 60000;
 constexpr size_t kGlarePassEntryTextSize = 64;
 constexpr double kPercent = 100.0;
@@ -495,19 +496,22 @@ const char* EarlyCompositeBlocked(const Config& cfg)
     return nullptr;
 }
 
-void NoteTransparentFogPath(const Config& cfg, const char* blocked)
+void NoteEarlyCompositeBlocked(const Config& cfg, const char* blocked)
 {
     if (!cfg.transparentFog)
         return;
-    if (!blocked)
-    {
-        g_transparentFogLog.Drawn();
-        return;
-    }
     const StatusLogLine line = g_transparentFogLog.Idle(blocked);
     if (line.write)
         LogWrite(line.level, "transparent fog: the fog is drawn after the world because %s%s", blocked,
                  line.level == LogLevel::Info ? " (repeats are logged at LogLevel 2)" : "");
+}
+
+void NoteEarlyCompositeSkipped(const char* reason)
+{
+    const StatusLogLine line = g_transparentFogLog.Skip(reason);
+    if (line.write)
+        LogWrite(line.level, "transparent fog: the early composite was skipped: %s; the fog is drawn after the world",
+                 reason);
 }
 
 void DrawGlareBeforeTheFog()
@@ -537,13 +541,19 @@ void OnTransparentsBegin()
     FogDevice* device = blocked ? nullptr : g_fogClient->device();
     if (!blocked && !device)
         blocked = "there is no fog device";
-    NoteTransparentFogPath(cfg, blocked);
     if (blocked)
+    {
+        NoteEarlyCompositeBlocked(cfg, blocked);
         return;
+    }
     DrawGlareBeforeTheFog();
     const FogAttempt attempt = RenderWorldFog(device, FogPass::BeforeTransparents);
     if (!attempt.rendered)
+    {
+        NoteEarlyCompositeSkipped(attempt.tried ? attempt.skip : kWorldNotCaptured);
         return;
+    }
+    g_transparentFogLog.Drawn();
     RecordFogAttempt(attempt);
     ArmTransparentFog(device);
 }

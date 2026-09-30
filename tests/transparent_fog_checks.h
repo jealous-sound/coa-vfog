@@ -51,6 +51,9 @@ constexpr float kRaySunRegion = 60.0f;
 constexpr float kMinRayGain = 0.01f;
 constexpr int kMaxRayDarkening = 1;
 constexpr int kMaxLateRayDifference = 2;
+constexpr int kLoggedFailingFrames = 4;
+constexpr const char* kEarlyCompositeDepthUnboundLine =
+    "transparent fog: the early composite was skipped: fog depth surface not bound; the fog is drawn after the world";
 constexpr float kRaysOn = 1.0f;
 constexpr uint32_t kSentinelEsi = 0x51515151u;
 constexpr uint32_t kSentinelEdi = 0x5D5D5D5Du;
@@ -933,6 +936,26 @@ void CheckWholeFrameFallbacks(Harness& h)
           "draw");
 }
 
+void CheckEarlyCompositeFailureLogged(Harness& h)
+{
+    const View v;
+    Config cfg = HookConfig(true);
+    cfg.logLevel = static_cast<int>(LogLevel::Info);
+    RenderHookedFrame(h, v, cfg, FrameOptions());
+    FrameOptions failing;
+    failing.unbindDepthAtLiquidEnd = true;
+    const size_t start = water_settings_checks::DllLogSize();
+    for (int i = 0; i < kLoggedFailingFrames; ++i)
+        RenderHookedFrame(h, v, cfg, failing);
+    const std::string text = runtime_cost::LogWrittenSince(start);
+    const size_t skipped = water_settings_checks::CountOf(text, kEarlyCompositeDepthUnboundLine);
+    const size_t drawnAfter = water_settings_checks::CountOf(text, "fog skipped: ");
+    std::printf("     %d frames whose early composite fails: %zu lines \"%s\", %zu fog skips\n", kLoggedFailingFrames,
+                skipped, kEarlyCompositeDepthUnboundLine, drawnAfter);
+    Check(skipped == 1 && drawnAfter == 0,
+          "a failed early composite is logged once with its reason while the fog is drawn after the world");
+}
+
 void CheckThunksAndGlarePass(Harness& h)
 {
     const void* thunk = vf_test_m2_batch_fog_thunk(reinterpret_cast<uintptr_t>(&RecordM2BatchFog));
@@ -995,6 +1018,7 @@ void CheckTransparentFog(Harness& h)
     CheckGodRaysAfterTheWorld(h);
     CheckHookedFogRestoresState(h);
     CheckWholeFrameFallbacks(h);
+    CheckEarlyCompositeFailureLogged(h);
     CheckThunksAndGlarePass(h);
     vf_test_set_config(&saved);
 }

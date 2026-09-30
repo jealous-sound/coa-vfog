@@ -688,7 +688,9 @@ times (every 30 s without limit at `LogLevel=2`); its rows are read back on a la
 fog draw is skipped is logged as `fog skipped: <reason>`; a camera under water is logged once as `fog idle`.
 
 With `TransparentFog=1` each reason the fog is drawn after the world instead is logged once, for example
-`transparent fog: the fog is drawn after the world because camera under liquid`. At `LogLevel=2` the transparent
+`transparent fog: the fog is drawn after the world because camera under liquid`, and an early composite that fails
+is logged with its reason, like the fog's skips, as `transparent fog: the early composite was skipped: <reason>; the
+fog is drawn after the world`. At `LogLevel=2` the transparent
 fog hooks count every 60 s, even with `TransparentFog=0`: M2 batch fog calls before the liquid pass ends, after
 it and outside the world render, how many were rewritten, the share of lighting, black, white, grey and other fog
 colours, the share of fog exponents at, below and above 1 with the lowest and highest, the glare pass drawn
