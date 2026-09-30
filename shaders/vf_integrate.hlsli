@@ -288,7 +288,7 @@ float4 IntegrateFogAtDepth(float2 pixel, float depth, float jitter)
     float riseLevelledAtHorizon = lerp(directionWorld.z, upward, horizonBlend);
     MarchRay ray = {viewDirection, directionWorld, cameraWorld.z, riseLevelledAtHorizon};
     ChordCoverage lightCoverage = {0, false, 0, LocalLightCount()};
-    LayerLightWeights lightWeights = LayerLightWeightsAlongRay(skyMask, upward);
+    float4 lightDensityScales = LayerLightDensityScales(skyMask, upward);
 
     float layersEnd = LayersMarchEnd();
     float3 inScatteredRadiance = 0;
@@ -310,7 +310,8 @@ float4 IntegrateFogAtDepth(float2 pixel, float depth, float jitter)
         [branch] if (kMarchesLocalLights && lightCoverage.nextEndpoint <= stepStart)
             lightCoverage = ChordCoverageFrom(lightCoverage, viewDirection, stepStart, marchLength);
         [branch] if (kMarchesLocalLights && StepMeetsLocalLights(lightCoverage, stepEnd))
-            stepRadiance += LocalLightScattering(lightCoverage, lightWeights, ray, stepStart, stepEnd, noiseDensities);
+            stepRadiance += LocalLightScattering(lightCoverage, lightDensityScales, ray, stepStart, stepEnd,
+                                                 noiseDensities);
         [branch] if (stepOpticalDepth > 0)
         {
             float stepOpacity = stepOpticalDepth < 1e-3

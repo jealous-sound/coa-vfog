@@ -83,6 +83,10 @@ constexpr float kHistoryMaxSeconds = 0.25f;
 constexpr float kHistoryMaxMove = 30.0f;
 constexpr float kHistoryMinForwardDot = 0.70710678f;
 constexpr float kLoggedStormBlendSteps = 10.0f;
+constexpr unsigned kLocalLightSetSettleFrames = 30;
+constexpr uint64_t kLightIdMixMultiplier = 0x9E3779B97F4A7C15ull;
+constexpr unsigned kLightSetCaptureShift = 32;
+constexpr size_t kCaptureRejectionText = 80;
 
 const D3DRENDERSTATETYPE kRenderStates[] = {
     D3DRS_ZENABLE,          D3DRS_ZWRITEENABLE,  D3DRS_ALPHATESTENABLE,   D3DRS_ALPHABLENDENABLE,
@@ -263,6 +267,50 @@ void LogAuthoredExtras(const AuthoredFog& fog, const FogParams& drawn, const Con
                     n.velocity[1][0], n.velocity[1][1], n.velocity[1][2], n.fade[0], n.fade[1], n.fade[2]);
     }
 }
+
+uint64_t MixedLightId(uintptr_t nativeId)
+{
+    const uint64_t mixed = (static_cast<uint64_t>(nativeId) + 1) * kLightIdMixMultiplier;
+    return mixed ^ (mixed >> 29);
+}
+
+uint64_t UploadedLightSet(const LocalLightInputs& lights, uint32_t uploaded)
+{
+    uint64_t set = uploaded + (static_cast<uint64_t>(lights.capture) << kLightSetCaptureShift);
+    for (uint32_t i = 0; i < uploaded; ++i)
+        set += MixedLightId(lights.pointLights[i].nativeId);
+    return set;
+}
+
+void DescribeCaptureRejection(LocalLightCapture capture, char* text, size_t size)
+{
+    text[0] = 0;
+    if (capture != LocalLightCapture::Captured)
+        std::snprintf(text, size, ", capture rejected (%s)", engine::LocalLightCaptureName(capture));
+}
+
+float PeakUploadedColor(const LocalPointLight& light)
+{
+    return std::max({light.uploadedColor[0], light.uploadedColor[1], light.uploadedColor[2]});
+}
+
+float CameraDistance(const LocalPointLight& light, const float* camera)
+{
+    const double dx = static_cast<double>(light.position[0]) - camera[0];
+    const double dy = static_cast<double>(light.position[1]) - camera[1];
+    const double dz = static_cast<double>(light.position[2]) - camera[2];
+    return static_cast<float>(std::sqrt(dx * dx + dy * dy + dz * dz));
+}
+
+void LogUploadedLight(uint32_t index, const LocalPointLight& light, const float* camera)
+{
+    VF_LOG_DEBUG("  local light %u: at (%.2f %.2f %.2f), %.1f yd; diffuse (%.4g %.4g %.4g), attenuation %.4g %.4g "
+                 "%.4g, enabled %u; uploaded (%.4g %.4g %.4g), reach %.1f yd",
+                 index, light.position[0], light.position[1], light.position[2], CameraDistance(light, camera),
+                 light.color[0], light.color[1], light.color[2], light.attenuation[0], light.attenuation[1],
+                 light.attenuation[2], light.enabled, light.uploadedColor[0], light.uploadedColor[1],
+                 light.uploadedColor[2], light.cutoff);
+}
 }
 
 Renderer::~Renderer()
@@ -363,6 +411,57 @@ void Renderer::LogLightChange(const FrameInputs& in, const AuthoredFog& fog, boo
     VF_LOG_INFO("map %d at (%.0f %.0f %.0f): Classic lights %s, %d layers, storm %.1f, screen effect slot %d",
                 in.mapId, in.camPos[0], in.camPos[1], in.camPos[2], lights, fog.layerCount,
                 loggedStormStep / kLoggedStormBlendSteps, selection.screenEffectSlot);
+}
+
+void Renderer::LogFirstLocalLightRejection(LocalLightCapture capture)
+{
+    const uint32_t reason = 1u << static_cast<uint32_t>(capture);
+    if (capture == LocalLightCapture::Captured || (m_loggedLocalLightRejections & reason))
+        return;
+    m_loggedLocalLightRejections |= reason;
+    VF_LOG_INFO("local lights: capture rejected (%s), first on frame %u", engine::LocalLightCaptureName(capture),
+                m_frame);
+}
+
+void Renderer::LogUploadedLocalLights(const FrameInputs& in, const Config& cfg, uint32_t uploaded)
+{
+    if (!LogEnabled(LogLevel::Info))
+        return;
+    LogFirstLocalLightRejection(in.localLights.capture);
+    const uint64_t set = UploadedLightSet(in.localLights, uploaded);
+    if (set != m_pendingLocalLightSet)
+    {
+        m_pendingLocalLightSet = set;
+        m_pendingLocalLightFrames = 0;
+    }
+    const bool detailed = LogEnabled(LogLevel::Debug);
+    const bool alreadyLogged = set == m_loggedLocalLightSet && (m_loggedLocalLightDetail || !detailed);
+    if (alreadyLogged || ++m_pendingLocalLightFrames < kLocalLightSetSettleFrames)
+        return;
+    m_loggedLocalLightSet = set;
+    m_loggedLocalLightDetail = detailed || uploaded == 0;
+    if (uploaded == 0)
+    {
+        char rejection[kCaptureRejectionText];
+        DescribeCaptureRejection(in.localLights.capture, rejection, sizeof(rejection));
+        VF_LOG_INFO("local lights: none uploaded%s%s", cfg.localLights ? "" : " (LocalLights=0)", rejection);
+        return;
+    }
+    const LocalPointLight* lights = in.localLights.pointLights;
+    uint32_t brightest = 0;
+    float nearest = std::numeric_limits<float>::infinity();
+    for (uint32_t i = 0; i < uploaded; ++i)
+    {
+        if (PeakUploadedColor(lights[i]) > PeakUploadedColor(lights[brightest]))
+            brightest = i;
+        nearest = std::min(nearest, CameraDistance(lights[i], in.camPos));
+    }
+    const float* colour = lights[brightest].uploadedColor;
+    VF_LOG_INFO("local lights: %u uploaded, brightest %s (%.4g %.4g %.4g), nearest %.1f yd", uploaded,
+                LocalLightUpload(cfg).linear ? "linear" : "gamma", colour[0], colour[1], colour[2], nearest);
+    if (detailed)
+        for (uint32_t i = 0; i < uploaded; ++i)
+            LogUploadedLight(i, lights[i], in.camPos);
 }
 
 bool Renderer::Skip(const char* reason)
@@ -899,7 +998,9 @@ void Renderer::LogFrameSummary(IDirect3DDevice9* dev, long long now, const Frame
     char localPoints[32] = "not captured";
     if (cfg.localLights)
         std::snprintf(localPoints, sizeof(localPoints), "%u", in.localLights.pointLightCount);
-    VF_LOG_INFO("  local points %s enabled %d; interior %d blend %.3f", localPoints, cfg.localLights,
+    char rejection[kCaptureRejectionText];
+    DescribeCaptureRejection(in.localLights.capture, rejection, sizeof(rejection));
+    VF_LOG_INFO("  local points %s enabled %d%s; interior %d blend %.3f", localPoints, cfg.localLights, rejection,
                 in.localLights.cameraInterior, in.localLights.interiorBlend);
     for (int i = 0; i < kFogLayers; ++i)
     {
@@ -1098,11 +1199,7 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDir
         float position[3];
         TransformDirection(relative, in.cameraRelativeView, position);
         localConstants[i * 3] = {position[0], position[1], position[2], light.cutoff};
-        float color[3];
-        for (int channel = 0; channel < 3; ++channel)
-            color[channel] = (fog.linear ? std::pow(std::max(light.color[channel], 0.0f), 2.2f)
-                                         : light.color[channel]) * cfg.localLightIntensity;
-        localConstants[i * 3 + 1] = {color[0], color[1], color[2], 0.0f};
+        localConstants[i * 3 + 1] = {light.uploadedColor[0], light.uploadedColor[1], light.uploadedColor[2], 0.0f};
         localConstants[i * 3 + 2] = {light.attenuation[0], light.attenuation[1], light.attenuation[2], 0.0f};
     }
     if (pointLightCount > 0)
@@ -1128,7 +1225,8 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDir
         const float limit = static_cast<float>(std::sqrt(x * x + y * y + z * z) + positionRadius.w + 0.001);
         marchLightLimit = std::max(marchLightLimit, std::nextafter(limit, std::numeric_limits<float>::infinity()));
     }
-    const Float4 localControl = {static_cast<float>(pointLightCount), marchLightLimit, 0.0f, 0.0f};
+    LogUploadedLocalLights(in, cfg, pointLightCount);
+    const Float4 localControl = {static_cast<float>(pointLightCount), marchLightLimit, cfg.localLightPhase, 0.0f};
     const bool marchesLocalLights = pointLightCount > 0;
     IDirect3DPixelShader9* const* marches = marchesLocalLights ? (samplesNoise ? m_litNoisyMarch : m_litMarch)
                                                                : (samplesNoise ? m_noisyMarch : m_march);

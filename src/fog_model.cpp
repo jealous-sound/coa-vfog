@@ -62,6 +62,11 @@ void Scale(const float* rgb, float s, float* out)
     out[2] = rgb[2] * s;
 }
 
+bool ScattersInLinearLight(const Config& cfg)
+{
+    return cfg.colorSpace == 1;
+}
+
 void Encode(float* rgb, bool linear)
 {
     if (linear)
@@ -329,7 +334,7 @@ void UnpackColor(uint32_t argb, float* rgb)
 FogParams BuildFogParams(const FrameInputs& in, const Config& cfg, const AuthoredFog* authored)
 {
     FogParams p = {};
-    p.linear = cfg.colorSpace == 1;
+    p.linear = ScattersInLinearLight(cfg);
     p.authored = authored != nullptr;
     const float interiorWeight = InteriorWeight(in, cfg);
     float fogColor[3];
@@ -376,6 +381,11 @@ float EnergyNormalisedPhaseScale(float g)
 {
     const float capped = std::min(g, kMaxEnergyNormalisedPhaseG);
     return (1.0f + capped) / (kFourPi * (1.0f - capped) * (1.0f - capped));
+}
+
+PointLightUpload LocalLightUpload(const Config& cfg)
+{
+    return {ScattersInLinearLight(cfg), cfg.localLightIntensity};
 }
 
 bool AnyLayerNoise(const FogParams& fog)

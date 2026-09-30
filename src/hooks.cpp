@@ -4,6 +4,7 @@
 #include "config.h"
 #include "d3d9_wrap.h"
 #include "engine.h"
+#include "fog_model.h"
 #include "log.h"
 #include "water_classify.h"
 #include "water_renderer.h"
@@ -181,7 +182,7 @@ struct WaterClient
 
 bool GameWaterFrameInputs(FrameInputs& in)
 {
-    if (!engine::BuildFrameInputs(in, false))
+    if (!engine::BuildFrameInputs(in, false, {}))
         return false;
     if (g_stockFogPushed)
         UseClientFogRangeInsteadOfPushed(in);
@@ -278,7 +279,7 @@ bool RenderCurrentWorldFog(FogDevice* device)
 
     const Config& cfg = GlobalConfig().Get();
     FrameInputs in = {};
-    bool valid = engine::BuildFrameInputs(in, cfg.localLights);
+    bool valid = engine::BuildFrameInputs(in, cfg.localLights, LocalLightUpload(cfg));
     if (g_stockFogPushed)
         UseClientFogRangeInsteadOfPushed(in);
     const char* skip = "invalid frame inputs";

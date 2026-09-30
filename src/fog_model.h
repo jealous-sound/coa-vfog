@@ -78,6 +78,7 @@ struct FogParams
 
 void UnpackColor(uint32_t argb, float* rgb);
 FogParams BuildFogParams(const FrameInputs& in, const Config& cfg, const AuthoredFog* authored);
+PointLightUpload LocalLightUpload(const Config& cfg);
 bool AnyLayerNoise(const FogParams& fog);
 float EnergyNormalisedPhaseScale(float g);
 

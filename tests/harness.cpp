@@ -20,9 +20,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -1783,6 +1785,8 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     h.CreateEngineObjects();
     CheckFogIntegration(h.dev);
     CheckLocalLightInputs();
+    CheckPointLightTableCapture();
+    CheckHdrLocalLightColours();
     CheckInteriorFogInputs();
     CheckNoiseVariation(h.dev);
     authored_noise::CheckAuthoredNoiseOnTheGpu(h.dev);
@@ -1793,6 +1797,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     grazing_upsample::CheckGrazingGroundUpsample(h.dev);
     god_ray_quality::CheckGodRays(h.dev);
     CheckTemporalQuality(h.dev);
+    CheckTemporalFallbackNoise(h.dev);
     CheckLightDisappearanceHistory(h);
     CheckSunOccluderLeavesFogLit(h);
     classic_phase::CheckSunsetHaloKeepsItsHue(h, FullPath(iniPath));
@@ -2165,6 +2170,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckRendererSwitchesLitShaders(h);
     authored_noise::CheckRendererDrawsStormNoise(h);
     runtime_cost::CheckFrameSummaryLogsClassicExtras(h);
+    runtime_cost::CheckLocalLightLogLines(h);
     runtime_cost::CheckDepthProbeAndGpuTimeLog(h, eye, at);
     runtime_cost::CheckGpuTimerRetriesTransientCreationFailures(h.dev);
     runtime_cost::CheckGpuTimerReportsUnsupportedBeforeFirstSummary(h.dev);

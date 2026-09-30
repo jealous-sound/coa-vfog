@@ -96,7 +96,7 @@ void CaptureOpaqueState(IDirect3DDevice9* device);
 bool HasOpaqueState();
 void ClearOpaqueState();
 
-bool BuildFrameInputs(FrameInputs& out, bool withPointLights);
+bool BuildFrameInputs(FrameInputs& out, bool withPointLights, const PointLightUpload& upload);
 bool BuildWaterInputs(WaterInputs& out);
 bool WaterClientLayoutMatches();
 bool TransparentLiquidsQueued(const void* liquidRenderer);

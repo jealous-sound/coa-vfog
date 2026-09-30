@@ -31,7 +31,7 @@ void CheckLightDisappearanceHistory(Harness& harness)
         light.color[2] = 0.05f;
         light.attenuation[0] = 1;
         light.attenuation[2] = 0.005f;
-        engine::SelectLocalPointLight(input.localLights, light, input.camPos);
+        engine::SelectLocalPointLight(input.localLights, light, input.camPos, LocalLightUpload(config));
     }
     const uint32_t counts[] = {kMaxLocalPointLights, 0, 0};
     const bool adaptive[] = {true, true, false};
@@ -89,7 +89,7 @@ void CheckRendererSwitchesLitShaders(Harness& harness)
         light.color[2] = 0.05f;
         light.attenuation[0] = 1;
         light.attenuation[2] = 0.005f;
-        engine::SelectLocalPointLight(input.localLights, light, input.camPos);
+        engine::SelectLocalPointLight(input.localLights, light, input.camPos, LocalLightUpload(config));
     }
     const uint32_t lightCounts[] = {kMaxLocalPointLights, 0, kMaxLocalPointLights, 0};
     Image frames[4];
