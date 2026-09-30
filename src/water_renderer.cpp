@@ -1122,12 +1122,15 @@ bool WaterRenderer::SimulateRipples(IDirect3DDevice9* dev, double seconds)
         return false;
     }
     m_loggedRippleFailure = "";
+    if (!m_ripples.Running())
+        m_contacts.PlaceFootprints(seconds);
     const WaterRippleSchedule schedule = m_ripples.Schedule(seconds);
     const float centre[2] = {m_in.camTarget[0], m_in.camTarget[1]};
     WaterRippleDisturbance disturbances[kMaxWaterRippleDisturbances];
     for (int step = 0; step < schedule.steps; ++step)
     {
-        const uint32_t count = m_contacts.TakeDisturbances(disturbances, kMaxWaterRippleDisturbances);
+        const uint32_t count =
+            m_contacts.TakeDisturbances(schedule.stepSeconds[step], disturbances, kMaxWaterRippleDisturbances);
         m_ripples.Step(dev, centre, disturbances, count);
     }
     m_summaryRippleTexels = std::max(m_summaryRippleTexels, texels);

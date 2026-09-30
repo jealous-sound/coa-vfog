@@ -32,7 +32,7 @@ constexpr double kRippleDetailFadeTexels = 2.0;
 constexpr double kMinRayRise = 1e-4;
 constexpr float kDepthCopyPrecision = 1e-3f;
 constexpr double kMaxNormalLevels = 1.0;
-constexpr double kMaxOutlierNormalLevels = 6.0;
+constexpr double kMaxOutlierNormalLevels = 10.0;
 constexpr double kMaxOutlierShare = 5e-3;
 constexpr double kMinTiltLevels = 8.0;
 constexpr size_t kMinTiltedPixels = 50;
@@ -40,9 +40,7 @@ constexpr double kMinDistinctWeight = 0.1;
 constexpr BYTE kFlatNormalLow = 127;
 constexpr BYTE kFlatNormalHigh = 128;
 constexpr BYTE kFlatNormalUp = 255;
-constexpr uint32_t kRippleForwardFlag = 0x1;
-constexpr uint32_t kRippleWorldMs = 3600000;
-constexpr double kRippleMsPerSecond = 1000.0;
+constexpr float kFreshMapPeak = 0.01f;
 
 WaterContact BasinContact(uint64_t guid, float x, float y, float depth)
 {
@@ -55,7 +53,6 @@ WaterContact BasinContact(uint64_t guid, float x, float y, float depth)
     contact.surface = kWaterSurfaceZ + kGameLikeWorldOffset.z;
     contact.radius = kRippleUnitRadius;
     contact.height = kRippleUnitHeight;
-    contact.speed = kRippleUnitSpeed;
     return contact;
 }
 
@@ -81,26 +78,18 @@ float RippleUnitY(int frame)
     return kRippleUnitStartY + kRippleUnitSpeed * static_cast<float>(frame * kRippleFrame);
 }
 
-WaterContact WadingUnit(int frame, double seconds, water_contact_checks::ClientRippleClock& clock)
+WaterContact WadingUnit(int frame)
 {
-    WaterContact unit = BasinContact(1, kRippleUnitX, RippleUnitY(frame), kRippleWadingDepth);
-    unit.movementFlags = kRippleForwardFlag;
-    unit.nextRippleMs =
-        clock.Due(kRippleWorldMs + static_cast<uint32_t>(std::lround(seconds * kRippleMsPerSecond)), unit);
-    return unit;
+    return BasinContact(1, kRippleUnitX, RippleUnitY(frame), kRippleWadingDepth);
 }
 
 WaterFrameResult RunUnitThroughWater(BasinClient& client, const WaterView& view, double start,
                                      const WaterFrame& frame = WaterFrame())
 {
     RenderRippleFrame(client, view, start, {}, frame);
-    water_contact_checks::ClientRippleClock clock;
     WaterFrameResult last;
     for (int k = 1; k <= kRippleFrames; ++k)
-    {
-        const double seconds = start + k * kRippleFrame;
-        last = RenderRippleFrame(client, view, seconds, ContactsOf({WadingUnit(k, seconds, clock)}), frame);
-    }
+        last = RenderRippleFrame(client, view, start + k * kRippleFrame, ContactsOf({WadingUnit(k)}), frame);
     return last;
 }
 
@@ -388,8 +377,8 @@ void CheckRippleSlopeFollowsForever(Harness& h, BasinClient& client, const Confi
               c.outliers <= kMaxOutlierShare * c.compared && c.worst <= kMaxOutlierNormalLevels,
           "the shaded ripple normals follow Forever's one-map slope: lerp(G, R, w) between steps, forward differences, "
           "(dx, dy)/sqrt((1 + dx^2)(1 + dy^2)) times 3 WaterRipples and the fade, to within the precision of the water "
-          "depth copy except at most 0.5% of the compared pixels, none more than 6/255 off (the GPU's bilinear "
-          "weight precision next to fresh impulses)");
+          "depth copy except at most 0.5% of the compared pixels, none more than 10/255 off (the GPU's bilinear "
+          "weight precision beside the steep rim of a held footprint)");
     ReleaseRipples(client, base, between + kRippleGap);
 }
 
@@ -440,6 +429,7 @@ struct QualitySwitch
     WaterRippleStats switched;
     WaterRippleStats resumed;
     bool cleared = false;
+    float peak = 0.0f;
 };
 
 QualitySwitch SwitchRippleQuality(Harness& h, BasinClient& client, const Config& on, int quality, double& seconds)
@@ -459,7 +449,8 @@ QualitySwitch SwitchRippleQuality(Harness& h, BasinClient& client, const Config&
     vf_test_water_ripple_shading(&shading);
     water_ripple_checks::RippleState map;
     result.cleared = water_ripple_checks::ReadRippleMap(h.dev, shading.map, map) &&
-                     water_ripple_checks::MaxDifference(map, water_ripple_checks::ZeroState(map.texels)) == 0.0f;
+                     water_ripple_checks::Peak(map) <= kFreshMapPeak;
+    result.peak = water_ripple_checks::Peak(map);
     return result;
 }
 
@@ -479,15 +470,15 @@ void CheckLiveQualitySwitchRestartsRipples(Harness& h, BasinClient& client, cons
     const QualitySwitch lower = SwitchRippleQuality(h, client, on, 1, seconds);
     const QualitySwitch higher = SwitchRippleQuality(h, client, on, 2, seconds);
     std::printf("     live WaterQuality 2 -> 1 -> 2: %d -> %d -> %d texels, shaded on the switch frames %d and %d, "
-                "cleared maps %d and %d\n",
+                "peaks of the new maps %.4f and %.4f\n",
                 started.texels, lower.switched.texels, higher.switched.texels, lower.switched.shaded,
-                higher.switched.shaded, lower.cleared, higher.cleared);
+                higher.switched.shaded, lower.peak, higher.peak);
     Check(started.shaded && started.texels == kWaterRippleTexels &&
               RestartedAtSize(lower, started, kWaterRippleTexelsLow) &&
               RestartedAtSize(higher, started, kWaterRippleTexels),
           "WaterQuality 1 simulates ripples on 256 x 256 texels and WaterQuality 2 on 512 x 512 (32 and 64 yd); "
           "switching it while ripples run restarts them on the new map at once, which is cleared by its first step "
-          "before it is sampled");
+          "before it is sampled and holds only the unit's footprint fading in again");
 }
 
 void CheckRippleResets(Harness& h, BasinClient& client, const Config& base)
@@ -583,7 +574,6 @@ void CheckRippleSummaryAndCost(Harness& h, BasinClient& client, const Config& ba
     bool parsed = true;
     for (int active = 0; active < 2; ++active)
     {
-        water_contact_checks::ClientRippleClock clock;
         WarmUpGpuKeepingTheFrame(h.dev);
         vf_test_force_water_summary();
         RenderRippleFrame(client, view, seconds, {});
@@ -592,7 +582,7 @@ void CheckRippleSummaryAndCost(Harness& h, BasinClient& client, const Config& ba
         {
             seconds += kRippleFrame;
             const WaterContactFrame contacts =
-                active ? ContactsOf({WadingUnit(k % kRippleFrames, seconds, clock)}) : WaterContactFrame();
+                active ? ContactsOf({WadingUnit(k % kRippleFrames)}) : WaterContactFrame();
             RenderRippleFrame(client, view, seconds, contacts);
         }
         vf_test_force_water_summary();

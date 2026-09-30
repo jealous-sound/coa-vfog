@@ -18,8 +18,6 @@ constexpr size_t kFlippedGuard = 2;
 constexpr uint64_t kWaderGuid = 7;
 constexpr float kWaderX = 65.0f;
 constexpr float kWaderY = 0.0f;
-constexpr uint32_t kWaderForwardFlag = 0x1;
-constexpr uint32_t kWaderClockMs = 3600000;
 constexpr int kNoRippleFault = 0;
 constexpr int kUnsupportedRipples = 1;
 constexpr int kFailingRippleMaps = 2;
@@ -62,8 +60,6 @@ struct SpriteFrames
     Config cfg;
     double seconds = kSpriteStart;
 
-    uint32_t emitted = 0;
-
     int32_t After(const Config& settings, bool underWater = false, const WaterContactFrame& contacts = {})
     {
         cfg = settings;
@@ -91,10 +87,8 @@ struct SpriteFrames
         int32_t gate = g_gate;
         for (int i = 0; i < frames; ++i)
         {
-            WaterContact wader =
+            const WaterContact wader =
                 water_checks::BasinContact(kWaderGuid, kWaderX, kWaderY, water_checks::kRippleWadingDepth);
-            wader.movementFlags = kWaderForwardFlag;
-            wader.nextRippleMs = kWaderClockMs + ++emitted;
             gate = After(settings, false, water_checks::ContactsOf({wader}));
         }
         return gate;
@@ -182,19 +176,19 @@ void CheckUnavailableRipplesKeepTheSprites(SpriteFrames& frames, const Config& o
 
     frames.After(released);
     vf_test_inject_water_ripple_fault(kFailingRippleMaps);
-    const int32_t beforeRings = frames.Wading(hide, 1);
+    const int32_t beforeUnits = frames.After(hide);
     const int32_t failing = frames.Wading(hide, 1);
     const int32_t stillFailing = frames.Wading(hide, 1);
     const int32_t failingDry = frames.After(hide);
     vf_test_inject_water_ripple_fault(kNoRippleFault);
     const int32_t retried = frames.Wading(hide, 1);
-    std::printf("     ripple map creation failing: waterRipples %d before the first ring, %d and %d with rings, %d "
-                "without units; %d once created\n",
-                beforeRings, failing, stillFailing, failingDry, retried);
-    Check(beforeRings == 0 && failing == kPlayerChoice && stillFailing == kPlayerChoice &&
+    std::printf("     ripple map creation failing: waterRipples %d before any unit, %d and %d with a unit in the "
+                "water, %d while its track fades; %d once created\n",
+                beforeUnits, failing, stillFailing, failingDry, retried);
+    Check(beforeUnits == 0 && failing == kPlayerChoice && stillFailing == kPlayerChoice &&
               failingDry == kPlayerChoice && retried == 0,
-          "a failed ripple map creation puts the client's waterRipples value back at the end of that frame and the "
-          "hold resumes once the map is created");
+          "a failed ripple map creation puts the client's waterRipples value back at the end of the first frame with "
+          "a unit in the water and the hold resumes once the map is created");
 }
 
 void CheckGuardMismatchLeavesTheGate(SpriteFrames& frames, const Config& on, SyntheticClientCode code)

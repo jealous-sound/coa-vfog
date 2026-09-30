@@ -12,24 +12,39 @@ using water_checks::WaterView;
 
 constexpr float kShinDepth = 0.5f;
 constexpr float kWaistDepth = 1.0f;
+constexpr float kSwimDepth = 1.5f;
 constexpr float kRunSpeed = 7.0f;
 constexpr float kWalkSpeed = 2.5f;
+constexpr float kSwimSpeed = 4.72f;
 constexpr float kUnitHeight = 2.0f;
 constexpr float kUnitRadius = 0.35f;
 constexpr float kUnitHalfWidth = 0.3f;
 constexpr float kUnitTopAboveSurface = 1.2f;
+constexpr float kSwimmerHalfLength = 0.9f;
+constexpr float kSwimmerBelowSurface = 0.3f;
+constexpr float kSwimmerAboveSurface = 0.2f;
 constexpr DWORD kUnitColour = 0xFF3A2E28;
+constexpr DWORD kNpcColour = 0xFF5A3A5A;
 constexpr float kCameraBehind = 7.0f;
 constexpr float kCameraAbove = 4.5f;
 constexpr float kLookAtAbove = 1.0f;
 constexpr float kStartY = -20.0f;
+constexpr float kCrossingStartY = -12.0f;
+constexpr float kNpcLaneBeforePlayer = 2.5f;
+constexpr float kShallowsDepth = 0.15f;
+constexpr double kWadeInStandSeconds = 1.0;
+constexpr double kWadeInSeconds = 4.0;
 constexpr double kStartSeconds = 60.0;
 constexpr double kFrameSeconds = 1.0 / 60.0;
-constexpr double kCaptureSeconds[] = {0.5, 1.5, 3.0};
-constexpr int kCaptureCount = sizeof(kCaptureSeconds) / sizeof(kCaptureSeconds[0]);
+constexpr double kCheckFrameSeconds = 1.0 / 30.0;
+constexpr double kStandSeconds = 3.0;
+constexpr double kMoveSeconds = 3.0;
+constexpr double kStandAfterSeconds = 2.0;
 constexpr UINT kSceneWidth = 1280;
 constexpr UINT kSceneHeight = 720;
-constexpr uint64_t kWalkerGuid = 1;
+constexpr uint64_t kPlayerGuid = 1;
+constexpr uint64_t kSwimmerGuid = 2;
+constexpr uint64_t kNpcGuid = 3;
 constexpr int kNormalDebugView = 1;
 constexpr float kUnseenRippleGain = 1e-6f;
 constexpr float kPebbleSize = 0.125f;
@@ -42,32 +57,46 @@ constexpr float kPebbleShadeSpread = 0.15f;
 constexpr uint32_t kPebbleHashMultiplier = 0x9E3779B1u;
 constexpr uint32_t kPebbleHashShift = 15;
 constexpr uint32_t kPebbleShadeLevels = 256;
-constexpr uint32_t kWalkerForwardFlag = 0x1;
-constexpr uint32_t kWorldStartMs = 7200000;
-constexpr double kMsPerSecond = 1000.0;
-constexpr int kVisibilityCaptures = 2;
-constexpr int kVisibilityCapture = 1;
 constexpr double kVisibleRippleLevels = 8.0;
-constexpr float kRingCorridorYards = 5.0f;
-constexpr float kQuietYards = 8.0f;
-constexpr float kBandStartBehindYards = 0.5f;
-constexpr float kBandEndBehindYards = 5.0f;
-constexpr double kMinVisibleRingShare = 0.04;
-constexpr double kMaxVisibleRingShare = 0.4;
-constexpr int kMinRingBands = 5;
 constexpr double kLumaLevels = 255.0;
+constexpr float kDimpleYards = 1.5f;
+constexpr float kViewedYards = 12.0f;
+constexpr float kWedgeNearestBehind = 1.0f;
+constexpr float kWedgeFarthestBehind = 8.0f;
+constexpr float kWedgeMargin = 0.75f;
+constexpr double kMaxIdleMotion = 1e-3;
+constexpr double kMinWedgeShare = 0.1;
+constexpr double kMinSideShare = 0.05;
+constexpr double kMaxStrayShare = 5e-4;
+constexpr float kWakeRipples = 0.5f;
 
-struct Walk
+struct Mover
 {
-    const wchar_t* name;
-    float depth;
+    uint64_t guid;
+    float startX;
+    float startY;
+    float directionX;
+    float directionY;
     float speed;
+    bool swimming;
+    double standSeconds;
+    double moveSeconds;
+    DWORD colour;
 };
 
-const Walk kWalks[] = {
-    {L"shin-run", kShinDepth, kRunSpeed},
-    {L"waist-run", kWaistDepth, kRunSpeed},
-    {L"shin-walk", kShinDepth, kWalkSpeed},
+enum class CameraRig
+{
+    BehindFirstMover,
+    AcrossTheLanes,
+};
+
+struct Shot
+{
+    const wchar_t* name;
+    std::vector<Mover> movers;
+    CameraRig rig;
+    double seconds;
+    std::vector<double> captures;
 };
 
 float BeachXAtDepth(float depth)
@@ -78,6 +107,73 @@ float BeachXAtDepth(float depth)
 float BeachFloorZ(float x)
 {
     return kBasinFloorZ + (x - kBeachStartX) * kBeachRisePerYard + kPebbleLift;
+}
+
+float WaterDepthAt(float x)
+{
+    const float floor = x < kBeachStartX ? kBasinFloorZ : kBasinFloorZ + (x - kBeachStartX) * kBeachRisePerYard;
+    return std::max(0.0f, kWaterSurfaceZ - floor);
+}
+
+Mover Wader(float depth, float speed)
+{
+    return {kPlayerGuid, BeachXAtDepth(depth), kStartY, 0.0f, 1.0f, speed, false, kStandSeconds, kMoveSeconds,
+            kUnitColour};
+}
+
+Mover Crossing(uint64_t guid, float x, float speed, bool swimming, double standSeconds, DWORD colour)
+{
+    return {guid, x, kCrossingStartY, 0.0f, 1.0f, speed, swimming, standSeconds, 2.0 * -kCrossingStartY / speed,
+            colour};
+}
+
+std::vector<Shot> Shots()
+{
+    const double timeline = kStandSeconds + kMoveSeconds + kStandAfterSeconds;
+    const std::vector<double> timelineCaptures = {1.0, 2.9, 3.4, 4.5, 6.0, 6.4, 7.0, 8.0};
+    const float playerX = BeachXAtDepth(kShinDepth);
+    const float npcX = playerX - kNpcLaneBeforePlayer;
+    const Mover standing = {kPlayerGuid, playerX, 0.0f, 0.0f, 1.0f, 0.0f, false, 0.0, 0.0, kUnitColour};
+    const Mover swimmer = Crossing(kSwimmerGuid, BeachXAtDepth(kSwimDepth), kSwimSpeed, true, 0.0, kUnitColour);
+    const Mover npcWalking = Crossing(kNpcGuid, npcX, kWalkSpeed, false, 1.0, kNpcColour);
+    const Mover npcRunning = Crossing(kNpcGuid, npcX, kRunSpeed, false, 1.0, kNpcColour);
+    const Mover wadingIn = {kPlayerGuid, BeachXAtDepth(kShallowsDepth), 0.0f, -1.0f, 0.0f, kRunSpeed, false,
+                            kWadeInStandSeconds, kWadeInSeconds, kUnitColour};
+    return {
+        {L"wader-shin", {Wader(kShinDepth, kRunSpeed)}, CameraRig::BehindFirstMover, timeline, timelineCaptures},
+        {L"wader-waist", {Wader(kWaistDepth, kRunSpeed)}, CameraRig::BehindFirstMover, timeline, timelineCaptures},
+        {L"walker-shin", {Wader(kShinDepth, kWalkSpeed)}, CameraRig::BehindFirstMover, timeline, timelineCaptures},
+        {L"swimmer", {swimmer}, CameraRig::AcrossTheLanes, swimmer.moveSeconds + 1.0, {1.0, 2.5, 4.0, 5.0, 6.0}},
+        {L"npc-walk", {standing, npcWalking}, CameraRig::AcrossTheLanes, npcWalking.moveSeconds + 2.0,
+         {0.9, 3.0, 5.8, 8.0, 10.6}},
+        {L"npc-run", {standing, npcRunning}, CameraRig::AcrossTheLanes, npcRunning.moveSeconds + 3.0,
+         {0.9, 1.9, 2.7, 3.4, 4.4, 6.4}},
+        {L"wade-in", {wadingIn}, CameraRig::BehindFirstMover, kWadeInStandSeconds + kWadeInSeconds + 2.0,
+         {0.9, 2.5, 4.1, 4.4, 4.8, 5.3, 6.0, 7.0}},
+    };
+}
+
+double Travelled(const Mover& m, double seconds)
+{
+    return m.speed * std::clamp(seconds - m.standSeconds, 0.0, m.moveSeconds);
+}
+
+bool Moving(const Mover& m, double seconds)
+{
+    return m.speed > 0.0f && seconds > m.standSeconds && seconds <= m.standSeconds + m.moveSeconds;
+}
+
+Vec3 FeetAt(const Mover& m, double seconds)
+{
+    const float travelled = static_cast<float>(Travelled(m, seconds));
+    const float x = m.startX + m.directionX * travelled;
+    const float depth = m.swimming ? kSwimDepth : WaterDepthAt(x);
+    return {x, m.startY + m.directionY * travelled, kWaterSurfaceZ - depth};
+}
+
+bool MovesAlongY(const Mover& m)
+{
+    return m.directionX == 0.0f && m.directionY == 1.0f;
 }
 
 DWORD PebbleColour(int column, int row)
@@ -110,135 +206,82 @@ void AddPebbleField(std::vector<SceneVertex>& scene)
         }
 }
 
-Vec3 FeetAt(const Walk& walk, double seconds)
+const std::vector<SceneVertex>& PebbledBasin()
 {
-    return {BeachXAtDepth(walk.depth), kStartY + walk.speed * static_cast<float>(seconds),
-            kWaterSurfaceZ - walk.depth};
+    static const std::vector<SceneVertex> basin = [] {
+        std::vector<SceneVertex> scene = water_checks::BuildBasinScene();
+        AddPebbleField(scene);
+        return scene;
+    }();
+    return basin;
 }
 
-uint32_t WorldMs(double seconds)
+void AddMoverBody(std::vector<SceneVertex>& scene, const Mover& m, double seconds)
 {
-    return kWorldStartMs + static_cast<uint32_t>(std::lround(seconds * kMsPerSecond));
+    const Vec3 feet = FeetAt(m, seconds);
+    if (m.swimming)
+        AddBox(scene,
+               {feet.x - kUnitHalfWidth, feet.y - 2.0f * kSwimmerHalfLength, kWaterSurfaceZ - kSwimmerBelowSurface},
+               {feet.x + kUnitHalfWidth, feet.y, kWaterSurfaceZ + kSwimmerAboveSurface}, m.colour);
+    else
+        AddBox(scene, {feet.x - kUnitHalfWidth, feet.y - kUnitHalfWidth, feet.z},
+               {feet.x + kUnitHalfWidth, feet.y + kUnitHalfWidth, kWaterSurfaceZ + kUnitTopAboveSurface}, m.colour);
 }
 
-WaterContact WalkerContact(const Walk& walk, double seconds, water_contact_checks::ClientRippleClock& clock)
+WaterContact ContactOf(const Mover& m, double seconds)
 {
     WaterContact contact;
-    contact.guid = kWalkerGuid;
-    const Vec3 feet = Add(FeetAt(walk, seconds), kGameLikeWorldOffset);
+    contact.guid = m.guid;
+    const Vec3 feet = Add(FeetAt(m, seconds), kGameLikeWorldOffset);
     contact.position[0] = feet.x;
     contact.position[1] = feet.y;
     contact.position[2] = feet.z;
     contact.surface = kWaterSurfaceZ + kGameLikeWorldOffset.z;
     contact.radius = kUnitRadius;
     contact.height = kUnitHeight;
-    contact.speed = walk.speed;
-    contact.movementFlags = kWalkerForwardFlag;
-    contact.nextRippleMs = clock.Due(WorldMs(seconds), contact);
+    contact.swimming = m.swimming;
     return contact;
 }
 
-WaterView ThirdPersonView(const Walk& walk, double seconds)
+WaterView ShotView(const Shot& shot, double seconds)
 {
-    const Vec3 feet = FeetAt(walk, seconds);
-    const Vec3 eye = {feet.x, feet.y - kCameraBehind, kWaterSurfaceZ + kCameraAbove};
-    const Vec3 at = {feet.x, feet.y, kWaterSurfaceZ + kLookAtAbove};
+    const Mover& first = shot.movers.front();
+    Vec3 eye;
+    Vec3 at;
+    if (shot.rig == CameraRig::BehindFirstMover)
+    {
+        const Vec3 feet = FeetAt(first, seconds);
+        eye = {feet.x - first.directionX * kCameraBehind, feet.y - first.directionY * kCameraBehind,
+               kWaterSurfaceZ + kCameraAbove};
+        at = {feet.x, feet.y, kWaterSurfaceZ + kLookAtAbove};
+    }
+    else
+    {
+        eye = {first.startX - kCameraBehind, 0.0f, kWaterSurfaceZ + kCameraAbove};
+        at = {first.startX, 0.0f, kWaterSurfaceZ + kLookAtAbove};
+    }
     WaterView view = water_checks::MakeWaterView(eye, at);
-    const Vec3 target = Add({feet.x, feet.y, kWaterSurfaceZ}, kGameLikeWorldOffset);
+    const Vec3 target = Add({at.x, at.y, kWaterSurfaceZ}, kGameLikeWorldOffset);
     view.in.camTarget[0] = target.x;
     view.in.camTarget[1] = target.y;
     view.in.camTarget[2] = target.z;
     return view;
 }
 
-std::vector<SceneVertex> BasinWithWalker(const Walk& walk, double seconds)
+WaterFrameResult RenderShotFrame(BasinClient& client, const Shot& shot, double seconds, bool inWater)
 {
-    std::vector<SceneVertex> scene = water_checks::BuildBasinScene();
-    AddPebbleField(scene);
-    const Vec3 feet = FeetAt(walk, seconds);
-    AddBox(scene, {feet.x - kUnitHalfWidth, feet.y - kUnitHalfWidth, feet.z},
-           {feet.x + kUnitHalfWidth, feet.y + kUnitHalfWidth, kWaterSurfaceZ + kUnitTopAboveSurface}, kUnitColour);
-    return scene;
-}
-
-WaterFrameResult RenderWalkerFrame(BasinClient& client, const Walk& walk, double seconds,
-                                   water_contact_checks::ClientRippleClock* clock)
-{
-    client.UseScene(BasinWithWalker(walk, seconds));
+    std::vector<SceneVertex> scene = PebbledBasin();
     WaterContactFrame contacts;
-    if (clock)
-        contacts.contacts[contacts.count++] = WalkerContact(walk, seconds, *clock);
+    for (const Mover& m : shot.movers)
+    {
+        AddMoverBody(scene, m, seconds);
+        if (inWater)
+            contacts.contacts[contacts.count++] = ContactOf(m, seconds);
+    }
+    client.UseScene(std::move(scene));
     water_checks::WaterFrame frame;
     frame.otherPass = false;
-    return water_checks::RenderRippleFrame(client, ThirdPersonView(walk, seconds), kStartSeconds + seconds, contacts,
-                                           frame);
-}
-
-struct WalkCaptures
-{
-    Image images[kCaptureCount];
-    Image normals[kCaptureCount];
-    Image calm[kCaptureCount];
-    bool shaded = true;
-};
-
-WalkCaptures RenderWalk(BasinClient& client, const Walk& walk, const Config& cfg, int captureCount = kCaptureCount)
-{
-    Config off = cfg;
-    off.waterRipples = 0.0f;
-    vf_test_set_config(&off);
-    RenderWalkerFrame(client, walk, 0.0, nullptr);
-    vf_test_set_config(&cfg);
-    water_contact_checks::ClientRippleClock clock;
-    WalkCaptures captures;
-    int next = 0;
-    for (int frame = 0; next < captureCount; ++frame)
-    {
-        const double seconds = frame * kFrameSeconds;
-        const WaterFrameResult result = RenderWalkerFrame(client, walk, seconds, &clock);
-        captures.shaded = captures.shaded && result.began;
-        if (seconds + kFrameSeconds * 0.5 < kCaptureSeconds[next])
-            continue;
-        captures.images[next] = result.image;
-        Config normals = cfg;
-        normals.waterDebugView = kNormalDebugView;
-        vf_test_set_config(&normals);
-        captures.normals[next] = RenderWalkerFrame(client, walk, seconds, &clock).image;
-        Config calm = cfg;
-        calm.waterRipples = kUnseenRippleGain;
-        vf_test_set_config(&calm);
-        captures.calm[next++] = RenderWalkerFrame(client, walk, seconds, &clock).image;
-        vf_test_set_config(&cfg);
-    }
-    return captures;
-}
-
-std::wstring CaptureName(const Walk& walk, int capture)
-{
-    wchar_t name[64];
-    std::swprintf(name, 64, L"ripples-%ls-%.1fs", walk.name, kCaptureSeconds[capture]);
-    return name;
-}
-
-struct RingVisibility
-{
-    size_t corridor = 0;
-    size_t visible = 0;
-    size_t disturbedFar = 0;
-    int bands = 0;
-
-    double Share() const { return corridor ? static_cast<double>(visible) / corridor : 0.0; }
-};
-
-float DistanceToPath(float x, float y, Vec3 from, Vec3 to)
-{
-    const float alongX = to.x - from.x;
-    const float alongY = to.y - from.y;
-    const float lengthSquared = alongX * alongX + alongY * alongY;
-    const float t =
-        lengthSquared > 0.0f ? std::clamp(((x - from.x) * alongX + (y - from.y) * alongY) / lengthSquared, 0.0f, 1.0f)
-                             : 0.0f;
-    return std::hypot(x - from.x - alongX * t, y - from.y - alongY * t);
+    return water_checks::RenderRippleFrame(client, ShotView(shot, seconds), kStartSeconds + seconds, contacts, frame);
 }
 
 bool WaterHit(const WaterView& view, UINT x, UINT y, float& hitX, float& hitY)
@@ -257,31 +300,71 @@ double LumaChange(const Image& a, const Image& b, UINT x, UINT y)
     return std::fabs(a.Luma(x, y) - b.Luma(x, y)) * kLumaLevels;
 }
 
-int BandsBehind(const WaterView& view, Vec3 feet, const Image& rippled, const Image& calm)
+double MachHalfAngle(float speed)
 {
-    const UINT column = static_cast<UINT>(view.world.Width / 2);
-    int bands = 0;
-    bool inBand = false;
-    for (UINT y = 0; y < view.world.Height; ++y)
-    {
-        float hitX = 0.0f;
-        float hitY = 0.0f;
-        if (!WaterHit(view, column, y, hitX, hitY) || hitY > feet.y - kBandStartBehindYards ||
-            hitY < feet.y - kBandEndBehindYards)
-            continue;
-        const bool changed = LumaChange(rippled, calm, column, y) >= kVisibleRippleLevels;
-        bands += changed && !inBand ? 1 : 0;
-        inBand = changed;
-    }
-    return bands;
+    return water_ripple_checks::MachDegrees(speed) * kPi / 180.0;
 }
 
-RingVisibility MeasureRings(const Walk& walk, double seconds, const Image& rippled, const Image& calm)
+bool OutrunsItsRipples(const Mover& m)
 {
-    const WaterView view = ThirdPersonView(walk, seconds);
-    const Vec3 from = FeetAt(walk, 0.0);
-    const Vec3 to = FeetAt(walk, seconds);
-    RingVisibility v;
+    return m.speed > water_ripple_checks::RippleSpeed();
+}
+
+struct CaptureMetrics
+{
+    double seconds = 0.0;
+    size_t viewed = 0;
+    size_t dimple = 0;
+    size_t waves = 0;
+    size_t wedge[2] = {};
+    size_t wedgeChanged[2] = {};
+    size_t ahead = 0;
+    float motion = 0.0f;
+
+    size_t Wedge() const { return wedge[0] + wedge[1]; }
+    size_t WedgeChanged() const { return wedgeChanged[0] + wedgeChanged[1]; }
+    double Share(size_t part, size_t whole) const { return whole ? static_cast<double>(part) / whole : 0.0; }
+    double WedgeShare() const { return Share(WedgeChanged(), Wedge()); }
+    double SideShare(int side) const { return Share(wedgeChanged[side], wedge[side]); }
+    double WaveShare() const { return Share(waves, viewed); }
+    double AheadShare() const { return Share(ahead, viewed); }
+    bool mapRead = false;
+    bool measuredV = false;
+    water_ripple_checks::WakeLines lines;
+};
+
+bool InWedge(float lateral, float behind, float halfAngle)
+{
+    if (behind < kWedgeNearestBehind || behind > kWedgeFarthestBehind)
+        return false;
+    const float arm = behind * std::tan(halfAngle);
+    return std::fabs(lateral) <= arm + kWedgeMargin;
+}
+
+struct Heading
+{
+    float behind;
+    float lateral;
+};
+
+Heading HeadingOf(const Mover& m, const Vec3& feet, float x, float y)
+{
+    const float dx = x - feet.x;
+    const float dy = y - feet.y;
+    return {-(dx * m.directionX + dy * m.directionY), dx * m.directionY - dy * m.directionX};
+}
+
+CaptureMetrics MeasureCapture(Harness& h, const Shot& shot, double seconds, const Image& rippled, const Image& calm)
+{
+    CaptureMetrics c;
+    c.seconds = seconds;
+    const WaterView view = ShotView(shot, seconds);
+    const Mover* moving = nullptr;
+    for (const Mover& m : shot.movers)
+        if (Moving(m, seconds))
+            moving = &m;
+    const Vec3 movingFeet = moving ? FeetAt(*moving, seconds) : Vec3{};
+    const double halfAngle = moving ? MachHalfAngle(moving->speed) : 0.0;
     for (UINT y = 0; y < view.world.Height; ++y)
         for (UINT x = 0; x < view.world.Width; ++x)
         {
@@ -289,49 +372,163 @@ RingVisibility MeasureRings(const Walk& walk, double seconds, const Image& rippl
             float hitY = 0.0f;
             if (!WaterHit(view, x, y, hitX, hitY))
                 continue;
-            const float distance = DistanceToPath(hitX, hitY, from, to);
-            const double change = LumaChange(rippled, calm, x, y);
-            if (distance <= kRingCorridorYards)
+            float nearest = std::numeric_limits<float>::infinity();
+            for (const Mover& m : shot.movers)
             {
-                ++v.corridor;
-                v.visible += change >= kVisibleRippleLevels ? 1 : 0;
+                const Vec3 feet = FeetAt(m, seconds);
+                nearest = std::min(nearest, std::hypot(hitX - feet.x, hitY - feet.y));
             }
-            else if (distance > kQuietYards)
-                v.disturbedFar += change > 0.0 ? 1 : 0;
+            if (nearest > kViewedYards)
+                continue;
+            ++c.viewed;
+            const bool changed = LumaChange(rippled, calm, x, y) >= kVisibleRippleLevels;
+            (nearest <= kDimpleYards ? c.dimple : c.waves) += changed ? 1 : 0;
+            if (!moving || nearest <= kDimpleYards)
+                continue;
+            const Heading heading = HeadingOf(*moving, movingFeet, hitX, hitY);
+            if (InWedge(heading.lateral, heading.behind, static_cast<float>(halfAngle)))
+            {
+                const int side = heading.lateral < 0.0f ? 0 : 1;
+                ++c.wedge[side];
+                c.wedgeChanged[side] += changed ? 1 : 0;
+            }
+            c.ahead += changed && -heading.behind > kDimpleYards ? 1 : 0;
         }
-    v.bands = BandsBehind(view, to, rippled, calm);
-    return v;
+    WaterRippleShading shading;
+    vf_test_water_ripple_shading(&shading);
+    water_ripple_checks::RippleState map;
+    c.mapRead = shading.map && water_ripple_checks::ReadRippleMap(h.dev, shading.map, map);
+    if (!c.mapRead)
+        return c;
+    for (size_t i = 0; i < map.r.size(); ++i)
+        c.motion = std::max(c.motion, std::fabs(map.r[i] - map.g[i]));
+    if (moving && OutrunsItsRipples(*moving) && MovesAlongY(*moving))
+    {
+        const Vec3 world = Add(movingFeet, kGameLikeWorldOffset);
+        const float px = (world.x - shading.window[0]) / kWaterRippleTexelYards;
+        const float py = (world.y - shading.window[1]) / kWaterRippleTexelYards;
+        c.lines = water_ripple_checks::MeasureWake(map, px, py);
+        c.measuredV = true;
+    }
+    return c;
 }
 
-void CheckRingsShowInShadedWater(Harness& h, const std::wstring& outDir, const std::string& waterDataPath)
+std::wstring CaptureName(const Shot& shot, double seconds)
+{
+    wchar_t name[96];
+    std::swprintf(name, 96, L"%ls-%04.1fs", shot.name, seconds);
+    return name;
+}
+
+void PrintMetrics(const Shot& shot, const CaptureMetrics& c)
+{
+    std::printf("     %ls %4.1f s: %zu water px within %.0f yd; changed by %.0f+ levels: %zu within %.1f yd of a unit, "
+                "%zu beyond; map |R - G| %.2e",
+                shot.name, c.seconds, c.viewed, kViewedYards, kVisibleRippleLevels, c.dimple, kDimpleYards, c.waves,
+                c.motion);
+    if (c.Wedge())
+        std::printf("; V wedge %zu of %zu (%.1f%%; left %.1f%%, right %.1f%%), %zu ahead", c.WedgeChanged(), c.Wedge(),
+                    100.0 * c.WedgeShare(), 100.0 * c.SideShare(0), 100.0 * c.SideShare(1), c.ahead);
+    if (c.measuredV)
+        std::printf("; map V front %.1f deg, brightest %.1f deg", c.lines.frontDegrees, c.lines.brightDegrees);
+    std::printf("\n");
+}
+
+Config WakeConfig(const Config& base)
+{
+    Config cfg = water_checks::WaterConfig(base);
+    cfg.waterRipples = kWakeRipples;
+    return cfg;
+}
+
+struct ShotResult
+{
+    bool shaded = true;
+    std::vector<CaptureMetrics> metrics;
+};
+
+ShotResult RenderShot(Harness& h, BasinClient& client, const Shot& shot, const Config& cfg, const std::wstring* outDir,
+                      double frameSeconds = kFrameSeconds)
+{
+    Config off = cfg;
+    off.waterRipples = 0.0f;
+    vf_test_set_config(&off);
+    RenderShotFrame(client, shot, 0.0, false);
+    vf_test_set_config(&cfg);
+    ShotResult result;
+    size_t next = 0;
+    for (int frame = 0; next < shot.captures.size(); ++frame)
+    {
+        const double seconds = frame * frameSeconds;
+        const WaterFrameResult rendered = RenderShotFrame(client, shot, seconds, true);
+        result.shaded = result.shaded && rendered.began;
+        if (seconds + frameSeconds * 0.5 < shot.captures[next])
+            continue;
+        Config calm = cfg;
+        calm.waterRipples = kUnseenRippleGain;
+        vf_test_set_config(&calm);
+        const Image calmImage = RenderShotFrame(client, shot, seconds, true).image;
+        vf_test_set_config(&cfg);
+        const WaterFrameResult again = RenderShotFrame(client, shot, seconds, true);
+        const CaptureMetrics metrics = MeasureCapture(h, shot, seconds, again.image, calmImage);
+        PrintMetrics(shot, metrics);
+        result.metrics.push_back(metrics);
+        if (outDir)
+        {
+            const std::wstring name = CaptureName(shot, shot.captures[next]);
+            water_checks::SaveImage(*outDir, name.c_str(), again.image);
+            water_checks::SaveImage(*outDir, (name + L"-calm").c_str(), calmImage);
+            Config normals = cfg;
+            normals.waterDebugView = kNormalDebugView;
+            vf_test_set_config(&normals);
+            water_checks::SaveImage(*outDir, (name + L"-normals").c_str(),
+                                    RenderShotFrame(client, shot, seconds, true).image);
+            vf_test_set_config(&cfg);
+        }
+        ++next;
+    }
+    return result;
+}
+
+void CheckWakesShowInShadedWater(Harness& h, const std::wstring& outDir, const std::string& waterDataPath)
 {
     Config base;
     vf_test_get_config(&base);
     const bool loaded = vf_test_load_water_data(waterDataPath.c_str()) != 0;
-    const Config cfg = water_checks::WaterConfig(base);
-    BasinClient client(h, ThirdPersonView(kWalks[0], 0.0));
-    bool visible = loaded;
-    for (const Walk* walk : {&kWalks[0], &kWalks[1]})
+    const Config cfg = WakeConfig(base);
+    const std::vector<Shot> shots = Shots();
+    BasinClient client(h, ShotView(shots[0], 0.0));
+    bool idleCalm = loaded;
+    bool wakeShows = loaded;
+    for (const Shot* shot : {&shots[0], &shots[1]})
     {
-        const WalkCaptures captures = RenderWalk(client, *walk, cfg, kVisibilityCaptures);
-        const Image& rippled = captures.images[kVisibilityCapture];
-        const RingVisibility v =
-            MeasureRings(*walk, kCaptureSeconds[kVisibilityCapture], rippled, captures.calm[kVisibilityCapture]);
-        water_checks::SaveImage(outDir, CaptureName(*walk, kVisibilityCapture).c_str(), rippled);
-        std::printf("     %ls at %.1f s: %zu of %zu water pixels within %.0f yd of the path change by %.0f+ levels "
-                    "(%.1f%%), %d bands behind the unit, %zu changed beyond %.0f yd\n",
-                    walk->name, kCaptureSeconds[kVisibilityCapture], v.visible, v.corridor, kRingCorridorYards,
-                    kVisibleRippleLevels, 100.0 * v.Share(), v.bands, v.disturbedFar, kQuietYards);
-        visible = visible && captures.shaded && v.Share() >= kMinVisibleRingShare &&
-                  v.Share() <= kMaxVisibleRingShare && v.bands >= kMinRingBands && v.disturbedFar == 0;
+        Shot checked = *shot;
+        checked.captures = {kStandSeconds - 0.1, kStandSeconds + 1.5};
+        const ShotResult result = RenderShot(h, client, checked, cfg, nullptr, kCheckFrameSeconds);
+        if (result.metrics.size() != 2)
+        {
+            idleCalm = wakeShows = false;
+            continue;
+        }
+        const CaptureMetrics& idle = result.metrics[0];
+        const CaptureMetrics& running = result.metrics[1];
+        idleCalm = idleCalm && result.shaded && idle.mapRead && idle.WaveShare() <= kMaxStrayShare &&
+                   idle.motion <= kMaxIdleMotion;
+        wakeShows = wakeShows && running.WedgeShare() >= kMinWedgeShare && running.SideShare(0) >= kMinSideShare &&
+                    running.SideShare(1) >= kMinSideShare && running.AheadShare() <= kMaxStrayShare;
     }
-    Check(visible, "rings from a unit running through shin- and waist-deep shaded water at WaterRipples 1 change 4% to "
-                   "40% of the water within 5 yd of its path by 8+ levels, in 5+ separate bands behind it, and nothing "
-                   "beyond 8 yd (a harness pebble floor and sky, not the in-game look)");
+    Check(idleCalm, "a unit standing shin- or waist-deep in shaded water at WaterRipples 0.5 leaves the ripple map "
+                    "still once its footprint has settled (no texel changes by more than 0.001 in a step) and changes "
+                    "at most 0.05% of the water pixels within 12 yd but farther than 1.5 yd from it by 8+ levels (a "
+                    "harness pebble floor and sky, not the in-game look)");
+    Check(wakeShows, "a unit running at 7 yd/s through shin- and waist-deep shaded water at WaterRipples 0.5 shows a V "
+                     "behind it: 10%+ of the water inside asin(2.65 / 7) + 0.75 yd between 1 and 8 yd behind changes "
+                     "by 8+ levels, 5%+ on each side of its path, and at most 0.05% of the water more than 1.5 yd "
+                     "ahead of it");
     vf_test_set_water_seconds(water_checks::kRealTime);
     vf_test_set_config(&base);
     Check(water_checks::AssignWaterData(water_checks::MakeSyntheticWaterData()),
-          "synthetic water data restored after the ring visibility check");
+          "synthetic water data restored after the wake visibility check");
 }
 
 bool CreateSceneDevice(Harness& h, const wchar_t* windowClass)
@@ -378,21 +575,15 @@ int RunRippleScene(const std::wstring& outDir, const std::string& waterDataPath)
     bool ok = CreateSceneDevice(h, wc.lpszClassName) && vf_test_load_water_data(waterDataPath.c_str()) != 0;
     if (ok)
     {
-        const Config cfg = water_checks::WaterConfig(startup);
-        const Walk& first = kWalks[0];
-        BasinClient client(h, ThirdPersonView(first, 0.0));
-        for (const Walk& walk : kWalks)
+        const Config cfg = WakeConfig(startup);
+        const std::vector<Shot> shots = Shots();
+        BasinClient client(h, ShotView(shots[0], 0.0));
+        for (const Shot& shot : shots)
         {
-            const WalkCaptures captures = RenderWalk(client, walk, cfg);
-            ok = ok && captures.shaded;
-            for (int i = 0; i < kCaptureCount; ++i)
-            {
-                water_checks::SaveImage(outDir, CaptureName(walk, i).c_str(), captures.images[i]);
-                water_checks::SaveImage(outDir, (CaptureName(walk, i) + L"-normals").c_str(), captures.normals[i]);
-                water_checks::SaveImage(outDir, (CaptureName(walk, i) + L"-calm").c_str(), captures.calm[i]);
-            }
-            std::printf("%ls: %s, %d captures\n", walk.name, captures.shaded ? "shaded" : "not shaded",
-                        kCaptureCount);
+            const ShotResult result = RenderShot(h, client, shot, cfg, &outDir);
+            ok = ok && result.shaded && result.metrics.size() == shot.captures.size();
+            std::printf("%ls: %s, %zu captures\n", shot.name, result.shaded ? "shaded" : "not shaded",
+                        result.metrics.size());
         }
         vf_test_set_water_seconds(water_checks::kRealTime);
     }

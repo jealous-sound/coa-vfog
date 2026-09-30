@@ -19,6 +19,8 @@ constexpr UINT kStepConstant = 0;
 constexpr UINT kFirstSegmentConstant = 1;
 constexpr UINT kFirstShapeConstant = kFirstSegmentConstant + kMaxWaterRippleDisturbances;
 constexpr float kMaxWindowCentreYards = 100000.0f;
+constexpr float kHeldFootprint = 1.0f;
+constexpr float kAddedImpulse = 0.0f;
 constexpr const char* kWithheldByHarness = "ripple support withheld by the harness";
 
 struct RenderStateSetting
@@ -332,7 +334,7 @@ uint32_t WaterRipples::UploadDisturbances(IDirect3DDevice9* dev, WindowShift shi
     {
         const WaterRippleDisturbance& d = disturbances[i];
         const float radius = d.radius / kWaterRippleTexelYards;
-        if (!(radius > 0.0f) || d.amplitude == 0.0f)
+        if (!(radius > 0.0f) || !std::isfinite(d.amplitude) || (d.amplitude == 0.0f && !d.held))
             continue;
         float from[2];
         float to[2];
@@ -349,6 +351,7 @@ uint32_t WaterRipples::UploadDisturbances(IDirect3DDevice9* dev, WindowShift shi
         segments[used][3] = to[1];
         shapes[used][0] = 1.0f / radius;
         shapes[used][1] = d.amplitude;
+        shapes[used][2] = d.held ? kHeldFootprint : kAddedImpulse;
         ++used;
     }
     const float step[4] = {static_cast<float>(shift.x), static_cast<float>(shift.y), 1.0f / m_texels,

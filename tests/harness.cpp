@@ -27,6 +27,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <string>
@@ -1681,6 +1682,7 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "water_ripple_checks.h"
 #include "water_checks.h"
 #include "water_ripple_pass_checks.h"
+#include "water_wake_checks.h"
 #include "ripple_scene.h"
 #include "client_sprite_checks.h"
 #include "forever_look_checks.h"
@@ -2181,11 +2183,13 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     vf_test_set_config(&restored);
     water_checks::CheckWaterRipplePass(h, outDir);
     vf_test_set_config(&restored);
+    water_wake_checks::CheckWakes(h);
+    vf_test_set_config(&restored);
     client_sprite_checks::CheckClientSprites(h);
     vf_test_set_config(&restored);
     water_checks::CheckWaterPass(h, outDir, waterDataPath);
     vf_test_set_config(&restored);
-    ripple_scene::CheckRingsShowInShadedWater(h, outDir, waterDataPath);
+    ripple_scene::CheckWakesShowInShadedWater(h, outDir, waterDataPath);
     vf_test_set_config(&restored);
 
     CheckOverlayInput(h);

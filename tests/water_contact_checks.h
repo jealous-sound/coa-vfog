@@ -7,7 +7,10 @@ constexpr float kSurfaceZ = 10.0f;
 constexpr float kUnitHeight = 2.0f;
 constexpr float kUnitRadius = 0.35f;
 constexpr float kWadingDepth = 0.5f;
+constexpr float kAnkleDepth = 0.25f;
 constexpr float kRunSpeed = 7.0f;
+constexpr float kChargeSpeed = 30.0f;
+constexpr float kBlinkYards = 20.0f;
 constexpr uintptr_t kManagerSize = 0xD8;
 constexpr uintptr_t kManagerLinkOffset = 0xA4;
 constexpr uintptr_t kManagerHeadLink = 0xA8;
@@ -21,15 +24,12 @@ constexpr uintptr_t kUnitMovementBlock = 0x788;
 constexpr uintptr_t kUnitTransportGuid = 0x790;
 constexpr uintptr_t kUnitPosition = 0x798;
 constexpr uintptr_t kUnitMovementFlags = 0x7CC;
-constexpr uintptr_t kUnitSpeed = 0x814;
 constexpr uintptr_t kUnitRadiusField = 0x850;
 constexpr uintptr_t kUnitHeightField = 0x854;
-constexpr uintptr_t kUnitNextRippleField = 0xA58;
-constexpr size_t kUnitBytes = 0xA60;
+constexpr size_t kUnitBytes = 0x860;
 constexpr size_t kSmallObjectBytes = 0x40;
 constexpr size_t kDescriptorBytes = 0x20;
 constexpr uintptr_t kDescriptorTypeMask = 0x08;
-constexpr uintptr_t kDescriptorScale = 0x10;
 constexpr uintptr_t kEntityPosition = 0x6C;
 constexpr uintptr_t kEntityLiquidFlags = 0x7C;
 constexpr uintptr_t kEntitySurface = 0x80;
@@ -42,30 +42,15 @@ constexpr uint32_t kInWaterLiquidFlags = 0x20 | 0x100;
 constexpr uint32_t kLiquidBelowFlags = 0x20;
 constexpr uint32_t kSwimmingFlag = 0x200000;
 constexpr uint32_t kForwardFlag = 0x1;
-constexpr float kLargeScale = 1.5f;
-constexpr uint32_t kWorldMs = 7200000;
-constexpr float kClientRippleReferenceSpeed = 2.5f;
-constexpr float kClientRippleMaxSpeed = 20.0f;
-constexpr float kClientRippleMinSpeed = 1e-4f;
-constexpr float kClientMovingRippleMsPerStrength = 250.0f;
-constexpr uint32_t kClientIdleRippleMs = 400;
-constexpr uint32_t kClientIdleRippleSpreadMs = 50;
-constexpr uint32_t kClientMoveFlags = 0xF;
 constexpr uint32_t kCappedObjects = 4100;
-constexpr uint32_t kDisturbanceCapacity = 32;
+constexpr uint32_t kDisturbanceCapacity = kMaxWaterRippleDisturbances;
 constexpr double kFrameSeconds = 1.0 / 60.0;
-constexpr double kMsPerSecond = 1000.0;
-constexpr int kRingFrameRates[] = {30, 60, 144};
-constexpr double kRingRunSeconds = 2.0;
-constexpr int kIdleFrameRate = 60;
-constexpr double kIdleRunSeconds = 3.0;
-constexpr uint32_t kMinIdleRipples = 6;
-constexpr uint32_t kMaxIdleRipples = 7;
-constexpr uint32_t kStampFrames = 7;
-constexpr uint32_t kJitterSamples = 1000;
-constexpr uint32_t kJitterStampStep = 89;
-constexpr float kMinJitterSpread = 0.15f;
-constexpr float kMinRingRadius = 0.25f;
+constexpr int kFrameRates[] = {30, 37, 60, 144};
+constexpr int kReferenceFrameRate = 60;
+constexpr double kStandSeconds = 2.0;
+constexpr double kRunSeconds = 2.0;
+constexpr double kStillSeconds = 3.0;
+constexpr float kPathTolerance = 2e-3f;
 constexpr int kPairFrames = 30;
 constexpr uint64_t kCrowdOverflow = 44;
 constexpr float kShoreDepth = 0.1f * kUnitHeight;
@@ -95,10 +80,7 @@ struct UnitFixture
     float surface = kSurfaceZ;
     float radius = kUnitRadius;
     float height = kUnitHeight;
-    float speed = 0.0f;
-    float scale = 1.0f;
     uint32_t movementFlags = 0;
-    uint32_t nextRippleMs = 0;
     uint32_t liquidFlags = kInWaterLiquidFlags;
     uint32_t typeMask = kUnitTypeMask;
     uint64_t transportGuid = 0;
@@ -114,7 +96,6 @@ UnitFixture WadingUnit(uint64_t guid, float x, float y)
     unit.position[1] = y;
     unit.position[2] = kSurfaceZ - kWadingDepth;
     std::copy(unit.position, unit.position + 3, unit.entityPosition);
-    unit.speed = kRunSpeed;
     return unit;
 }
 
@@ -131,12 +112,11 @@ public:
 
     uintptr_t Manager() const { return m_manager; }
 
-    uintptr_t AddObject(size_t bytes, uint32_t typeMask, float scale = 1.0f)
+    uintptr_t AddObject(size_t bytes, uint32_t typeMask)
     {
         const uintptr_t object = Allocate(bytes);
         const uintptr_t descriptors = Allocate(kDescriptorBytes);
         Put<uint32_t>(descriptors + kDescriptorTypeMask, typeMask);
-        Put<float>(descriptors + kDescriptorScale, scale);
         Put<uintptr_t>(object + kObjectDescriptors, descriptors);
         Put<uintptr_t>(object + kListLinkOffset, m_lastLink);
         Put<uintptr_t>(object + kListLinkOffset + sizeof(uintptr_t), End());
@@ -147,16 +127,14 @@ public:
 
     uintptr_t AddUnit(const UnitFixture& unit)
     {
-        const uintptr_t object = AddObject(kUnitBytes, unit.typeMask, unit.scale);
+        const uintptr_t object = AddObject(kUnitBytes, unit.typeMask);
         Put<uint64_t>(object + kObjectGuid, unit.guid);
         Put<uintptr_t>(object + kUnitMovement, unit.movementInBlock ? object + kUnitMovementBlock : object);
         Put<uint64_t>(object + kUnitTransportGuid, unit.transportGuid);
         std::memcpy(reinterpret_cast<void*>(object + kUnitPosition), unit.position, sizeof(unit.position));
         Put<uint32_t>(object + kUnitMovementFlags, unit.movementFlags);
-        Put<float>(object + kUnitSpeed, unit.speed);
         Put<float>(object + kUnitRadiusField, unit.radius);
         Put<float>(object + kUnitHeightField, unit.height);
-        Put<uint32_t>(object + kUnitNextRippleField, unit.nextRippleMs);
         if (!unit.entity)
             return object;
         const uintptr_t entity = Allocate(kEntityBytes);
@@ -196,11 +174,10 @@ void CheckVisibleUnitWalk()
     SyntheticObjects world;
     UnitFixture wading = WadingUnit(1, 2.0f, 1.0f);
     wading.movementFlags = kSwimmingFlag | kForwardFlag;
-    wading.scale = kLargeScale;
-    wading.nextRippleMs = kWorldMs;
     world.AddUnit(wading);
     UnitFixture player = WadingUnit(2, -3.0f, 0.5f);
     player.typeMask = kPlayerTypeMask;
+    player.movementFlags = kForwardFlag;
     world.AddUnit(player);
     UnitFixture passenger = WadingUnit(3, 0.25f, 0.5f);
     passenger.transportGuid = 0xF120000000001234ull;
@@ -221,27 +198,26 @@ void CheckVisibleUnitWalk()
     unloaded.entity = false;
     UnitFixture broken = WadingUnit(10, 1.0f, 1.0f);
     broken.radius = std::numeric_limits<float>::quiet_NaN();
-    UnitFixture unscaled = WadingUnit(11, 1.0f, 1.0f);
-    unscaled.scale = std::numeric_limits<float>::quiet_NaN();
-    for (const UnitFixture* rejected :
-         {&dry, &above, &gameObject, &detached, &tooDeep, &unloaded, &broken, &unscaled})
+    UnitFixture flat = WadingUnit(11, 1.0f, 1.0f);
+    flat.height = 0.0f;
+    for (const UnitFixture* rejected : {&dry, &above, &gameObject, &detached, &tooDeep, &unloaded, &broken, &flat})
         world.AddUnit(*rejected);
     WaterContactFrame frame;
     const bool captured = engine::CaptureWaterContactsFrom(world.Manager(), centre, frame);
     const WaterContact* swimmer = ContactOf(frame, 1);
+    const WaterContact* walker = ContactOf(frame, 2);
     const WaterContact* rider = ContactOf(frame, 3);
     std::printf("     synthetic object manager: captured %d, %u contacts\n", captured, frame.count);
-    Check(captured && frame.count == 3 && swimmer && ContactOf(frame, 2) && rider && !frame.truncated,
+    Check(captured && frame.count == 3 && swimmer && walker && rider && !frame.truncated,
           "the unit walk keeps units and players whose entity has liquid (0x20) crossing the body (0x100) and skips "
           "dry units, units above the surface, game objects, units without the embedded movement block or a loaded "
-          "model, units deeper than max(1, 2h) and non-finite sizes or scales");
-    Check(swimmer && swimmer->position[0] == wading.position[0] && swimmer->surface == kSurfaceZ &&
-              swimmer->radius == kUnitRadius && swimmer->height == kUnitHeight && swimmer->speed == kRunSpeed &&
-              swimmer->swimming && !swimmer->onTransport && swimmer->scale == kLargeScale &&
-              swimmer->movementFlags == wading.movementFlags && swimmer->nextRippleMs == kWorldMs &&
+          "model, units deeper than max(1, 2h) and non-finite or empty sizes");
+    Check(swimmer && walker && swimmer->position[0] == wading.position[0] && swimmer->surface == kSurfaceZ &&
+              swimmer->radius == kUnitRadius && swimmer->height == kUnitHeight && swimmer->swimming &&
+              !walker->swimming && !swimmer->onTransport &&
               std::fabs(WaterContactDepth(*swimmer) - kWadingDepth) < 1e-5f,
-          "a captured contact carries the raw position, liquid surface, collision radius and height, current speed, "
-          "movement flags with the swimming flag, the object scale and the client's next ripple time (+0xA58)");
+          "a captured contact carries the raw position, the liquid surface, the collision radius and height and the "
+          "swimming flag (0x200000) of the movement flags");
     Check(rider && rider->onTransport && rider->position[0] == deck[0] && rider->position[1] == deck[1] &&
               rider->position[2] == deck[2],
           "a transport passenger takes its world entity's position instead of its transport-local one");
@@ -293,7 +269,6 @@ WaterContact ContactAt(uint64_t guid, float x, float y, float depth)
     contact.surface = kSurfaceZ;
     contact.radius = kUnitRadius;
     contact.height = kUnitHeight;
-    contact.speed = kRunSpeed;
     return contact;
 }
 
@@ -326,32 +301,6 @@ void CheckContactSelection()
           "rejected");
 }
 
-struct ClientRippleClock
-{
-    uint32_t next = 0;
-    uint32_t emitted = 0;
-
-    uint32_t Due(uint32_t nowMs, const WaterContact& contact)
-    {
-        if (next && static_cast<int32_t>(nowMs - next) < 0)
-            return next;
-        const float strength = ClientRippleStrength(WaterContactDepth(contact), contact.height);
-        next = nowMs + ((contact.movementFlags & kClientMoveFlags) != 0
-                            ? MovingInterval(contact.speed, strength)
-                            : kClientIdleRippleMs + (nowMs * 7) % kClientIdleRippleSpreadMs);
-        ++emitted;
-        return next;
-    }
-
-    static uint32_t MovingInterval(float speed, float strength)
-    {
-        const float pace = speed > kClientRippleMinSpeed
-                               ? kClientRippleReferenceSpeed / std::min(speed, kClientRippleMaxSpeed)
-                               : 1.0f;
-        return static_cast<uint32_t>(strength * pace * kClientMovingRippleMsPerStrength);
-    }
-};
-
 WaterContactFrame FrameOf(std::initializer_list<WaterContact> contacts)
 {
     WaterContactFrame frame;
@@ -360,204 +309,357 @@ WaterContactFrame FrameOf(std::initializer_list<WaterContact> contacts)
     return frame;
 }
 
-uint32_t DisturbancesNow(WaterContactTracker& tracker, WaterRippleDisturbance* out)
+struct StepDisturbances
 {
-    return tracker.TakeDisturbances(out, kDisturbanceCapacity);
-}
-
-uint32_t WorldMsAt(double seconds)
-{
-    return kWorldMs + static_cast<uint32_t>(std::lround((seconds - kStartSeconds) * kMsPerSecond));
-}
-
-WaterContact ClockedContact(uint64_t guid, float x, float y, uint32_t movementFlags, double seconds,
-                            ClientRippleClock& clock)
-{
-    WaterContact contact = ContactAt(guid, x, y, kWadingDepth);
-    contact.movementFlags = movementFlags;
-    contact.speed = movementFlags ? kRunSpeed : 0.0f;
-    contact.nextRippleMs = clock.Due(WorldMsAt(seconds), contact);
-    return contact;
-}
-
-bool SameDisturbance(const WaterRippleDisturbance& a, const WaterRippleDisturbance& b)
-{
-    return a.from[0] == b.from[0] && a.from[1] == b.from[1] && a.to[0] == b.to[0] && a.to[1] == b.to[1] &&
-           a.radius == b.radius && a.amplitude == b.amplitude;
-}
-
-WaterRippleDisturbance ExpectedRing(const WaterContact& contact)
-{
-    const float strength = ClientRippleStrength(WaterContactDepth(contact), contact.height);
-    const ClientRipple ripple = ClientRippleOf(ClientRippleKindOf(contact.movementFlags), contact.scale, strength,
-                                               ClientRippleSizeJitter(contact.guid, contact.nextRippleMs));
-    return WaterRingImpulse(contact.position, ripple);
-}
-
-struct RingRun
-{
-    uint32_t advances = 0;
-    uint32_t rings = 0;
-    bool matched = true;
+    double seconds = 0.0;
+    std::vector<WaterRippleDisturbance> footprints;
+    std::vector<WaterRippleDisturbance> impulses;
 };
 
-RingRun RunWithClientClock(int framesPerSecond, double seconds, uint32_t movementFlags)
+class StepRecorder
 {
-    WaterContactTracker tracker;
-    ClientRippleClock clock;
-    RingRun run;
-    const int frames = static_cast<int>(seconds * framesPerSecond);
-    for (int frame = 0; frame <= frames; ++frame)
+public:
+    void Frame(WaterContactTracker& tracker, const WaterContactFrame& frame, double seconds)
     {
-        const double t = kStartSeconds + static_cast<double>(frame) / framesPerSecond;
-        const float x = movementFlags ? static_cast<float>(kRunSpeed * (t - kStartSeconds)) : 0.0f;
-        const uint32_t emittedBefore = clock.emitted;
-        const WaterContact contact = ClockedContact(1, x, 0.0f, movementFlags, t, clock);
-        tracker.Update(FrameOf({contact}), t);
-        WaterRippleDisturbance d[kDisturbanceCapacity];
-        const uint32_t count = DisturbancesNow(tracker, d);
-        const bool advanced = frame > 0 && clock.emitted != emittedBefore;
-        run.matched = run.matched && count == (advanced ? 1u : 0u) &&
-                      (count == 0 || SameDisturbance(d[0], ExpectedRing(contact)));
-        run.rings += count;
+        tracker.Update(frame, seconds);
+        while (StepSeconds(m_steps + 1) <= seconds + 1e-9)
+        {
+            StepDisturbances step;
+            step.seconds = StepSeconds(++m_steps);
+            WaterRippleDisturbance d[kDisturbanceCapacity];
+            const uint32_t count = tracker.TakeDisturbances(step.seconds, d, kDisturbanceCapacity);
+            for (uint32_t i = 0; i < count; ++i)
+                (d[i].held ? step.footprints : step.impulses).push_back(d[i]);
+            m_log.push_back(step);
+        }
     }
-    run.advances = clock.emitted - 1;
-    return run;
+
+    const std::vector<StepDisturbances>& Steps() const { return m_log; }
+
+private:
+    static double StepSeconds(uint64_t step) { return kStartSeconds + step * kWaterRippleStepSeconds; }
+
+    uint64_t m_steps = 0;
+    std::vector<StepDisturbances> m_log;
+};
+
+float SegmentLength(const WaterRippleDisturbance& d)
+{
+    return std::hypot(d.to[0] - d.from[0], d.to[1] - d.from[1]);
 }
 
-uint32_t RingsForStamps(std::initializer_list<uint32_t> stamps, uint32_t* rings)
+bool SameFootprint(const WaterRippleDisturbance& a, const WaterRippleDisturbance& b)
 {
-    WaterContactTracker tracker;
-    WaterRippleDisturbance d[kDisturbanceCapacity];
-    double t = kStartSeconds;
-    uint32_t frame = 0;
-    for (uint32_t stamp : stamps)
-    {
-        WaterContact contact = ContactAt(1, static_cast<float>(frame), 0.0f, kWadingDepth);
-        contact.movementFlags = kForwardFlag;
-        contact.nextRippleMs = stamp;
-        tracker.Update(FrameOf({contact}), t);
-        rings[frame++] = DisturbancesNow(tracker, d);
-        t += kFrameSeconds;
-    }
-    return frame;
+    return a.from[0] == b.from[0] && a.from[1] == b.from[1] && a.to[0] == b.to[0] && a.to[1] == b.to[1] &&
+           a.radius == b.radius && a.amplitude == b.amplitude && a.held == b.held;
 }
 
-void CheckOneRingPerClientRipple()
+bool At(const float point[2], float x, float y)
 {
-    bool same = true;
-    for (int framesPerSecond : kRingFrameRates)
-    {
-        const RingRun run = RunWithClientClock(framesPerSecond, kRingRunSeconds, kForwardFlag);
-        std::printf("     running unit at %3d fps: %u client ripples after the first frame, %u rings\n",
-                    framesPerSecond, run.advances, run.rings);
-        same = same && run.matched && run.rings == run.advances && run.advances > 0;
-    }
-    Check(same, "at 30, 60 and 144 fps a running unit makes one ring impulse in each frame its client ripple time "
-                "(+0xA58) advances, at its position in that frame, and none in the other frames or the first");
-
-    const RingRun idle = RunWithClientClock(kIdleFrameRate, kIdleRunSeconds, 0);
-    std::printf("     standing unit: %u client ripples in %.0f s, %u rings\n", idle.advances, kIdleRunSeconds,
-                idle.rings);
-    Check(idle.matched && idle.rings == idle.advances && idle.advances >= kMinIdleRipples &&
-              idle.advances <= kMaxIdleRipples,
-          "a unit standing in the water rings once per client idle ripple (every 400 to 449 ms), with the idle "
-          "ripple's size and alpha");
-
-    uint32_t rings[kStampFrames] = {};
-    RingsForStamps({kWorldMs, kWorldMs, kWorldMs, 0, 0, kWorldMs + kClientIdleRippleMs, kWorldMs}, rings);
-    std::printf("     client ripple times t, t, t, 0, 0, t + 400, t: rings %u %u %u %u %u %u %u\n", rings[0], rings[1],
-                rings[2], rings[3], rings[4], rings[5], rings[6]);
-    Check(rings[0] == 0 && rings[1] == 0 && rings[2] == 0 && rings[3] == 0 && rings[4] == 0 && rings[5] == 1 &&
-              rings[6] == 1,
-          "a moving unit whose client ripple time does not change, or is cleared to 0 without an emission, makes no "
-          "ring; every change to another non-zero time makes one");
+    return std::fabs(point[0] - x) <= kPathTolerance && std::fabs(point[1] - y) <= kPathTolerance;
 }
 
-void CheckClientRippleMapping()
+void CheckFootprintShape()
 {
-    const bool kinds = ClientRippleKindOf(0x1) == ClientRippleKind::Moving &&
-                       ClientRippleKindOf(0x2) == ClientRippleKind::Moving &&
-                       ClientRippleKindOf(0x4) == ClientRippleKind::Moving &&
-                       ClientRippleKindOf(0x8) == ClientRippleKind::Moving &&
-                       ClientRippleKindOf(0x11) == ClientRippleKind::Moving &&
-                       ClientRippleKindOf(0x10) == ClientRippleKind::Turning &&
-                       ClientRippleKindOf(0x20) == ClientRippleKind::Turning &&
-                       ClientRippleKindOf(0) == ClientRippleKind::Idle &&
-                       ClientRippleKindOf(kSwimmingFlag) == ClientRippleKind::Idle;
-    Check(kinds, "movement flags 0xF make a moving ripple, 0x30 without them a turning ripple and anything else an "
-                 "idle ripple, as at 0x71CC0B");
-
-    float lowest = 2.0f;
-    float highest = 0.0f;
-    bool repeatable = true;
-    for (uint32_t i = 1; i <= kJitterSamples; ++i)
-    {
-        const uint32_t stamp = kWorldMs + i * kJitterStampStep;
-        const float jitter = ClientRippleSizeJitter(i, stamp);
-        repeatable = repeatable && jitter == ClientRippleSizeJitter(i, stamp);
-        lowest = std::min(lowest, jitter);
-        highest = std::max(highest, jitter);
-    }
-    std::printf("     size jitter over %u ripples: %.4f to %.4f\n", kJitterSamples, lowest, highest);
-    Check(repeatable && lowest >= 0.9f && highest <= 1.1f && highest - lowest > kMinJitterSpread,
-          "the ripple size jitter spans the client's U(0.9, 1.1) and repeats for the same unit and ripple time");
-
-    const ClientRipple moving = ClientRippleOf(ClientRippleKind::Moving, 1.0f, 1.0f, 1.0f);
-    const ClientRipple turning = ClientRippleOf(ClientRippleKind::Turning, 1.0f, 1.0f, 1.0f);
-    const ClientRipple idle = ClientRippleOf(ClientRippleKind::Idle, 1.0f, 1.0f, 1.0f);
-    const ClientRipple huge = ClientRippleOf(ClientRippleKind::Moving, 6.0f, 1.0f, 1.1f);
-    const ClientRipple smallest = ClientRippleOf(ClientRippleKind::Moving, 0.5f, 1.0f, 0.9f);
-    const ClientRipple deep = ClientRippleOf(ClientRippleKind::Moving, 3.0f, 0.5f, 1.0f);
-    const bool sizes = Near(moving.size, 1.0f / 3.0f) && Near(turning.size, moving.size) &&
-                       Near(idle.size, 0.6f * moving.size) && Near(huge.size, 5.0f / 3.0f) &&
-                       Near(smallest.size, 1.0f / 3.0f) && Near(deep.size, 0.5f);
-    const bool alphas =
-        moving.alpha == 1.0f && turning.alpha == 1.0f && Near(idle.alpha, 0.8f) && deep.alpha == 0.5f;
-    Check(sizes && alphas, "a ripple's size is clamp(scale / 3 * jitter, 1/3, 5/3) times the depth strength, 0.6 of "
-                           "that when idle, and its alpha is the strength, 0.8 of it when idle (0x71CD11-0x71CE3A)");
     Check(ClientRippleStrength(0.9f, kUnitHeight) == 1.0f && Near(ClientRippleStrength(3.0f, kUnitHeight), 0.75f) &&
               Near(ClientRippleStrength(3.99f, kUnitHeight), 0.5025f),
           "the depth strength is 1 down to half of max(1, 2h) and falls to 0.5 at that depth (0x71CDCF-0x71CDF5)");
+    const float full = WaterFootprintLevel(1.0f, kUnitHeight);
+    std::printf("     footprint of a 0.35 yd, 2 yd unit: radius %.3f yd; level %.3f dry, %.3f ankle-deep, %.3f "
+                "shin-deep, %.3f waist-deep, %.3f swimming at 1.5 yd, %.3f at 3 yd\n",
+                WaterFootprintRadius(kUnitRadius), WaterFootprintLevel(0.0f, kUnitHeight),
+                WaterFootprintLevel(kAnkleDepth, kUnitHeight), WaterFootprintLevel(kWadingDepth, kUnitHeight), full,
+                WaterFootprintLevel(1.5f, kUnitHeight), WaterFootprintLevel(3.0f, kUnitHeight));
+    Check(Near(WaterFootprintRadius(kUnitRadius), 1.25f * kUnitRadius) && WaterFootprintRadius(0.1f) == 0.3f &&
+              WaterFootprintRadius(5.0f) == 6.0f,
+          "a footprint's radius is 1.25 collision radii, 0.3 to 6 yd, so its weight falls to a half at about the "
+          "collision radius");
+    Check(full < 0.0f && WaterFootprintLevel(0.0f, kUnitHeight) == 0.0f &&
+              Near(WaterFootprintLevel(kAnkleDepth, kUnitHeight), 0.5f * full) &&
+              Near(WaterFootprintLevel(kWadingDepth, kUnitHeight), full) &&
+              Near(WaterFootprintLevel(1.5f, kUnitHeight), full) &&
+              Near(WaterFootprintLevel(3.0f, kUnitHeight), 0.75f * full),
+          "a footprint holds the surface down in proportion to the depth up to a quarter of the unit's height and by "
+          "the client's depth strength beyond");
+    Check(WaterFootprintFade(0.0, 0.0) == 0.0f && Near(WaterFootprintFade(0.5, 0.0), 0.5f) &&
+              WaterFootprintFade(1.0, 0.0) == 1.0f && WaterFootprintFade(5.0, -1.0) == 1.0f &&
+              Near(WaterFootprintFade(5.0, 0.25), 0.5f) && WaterFootprintFade(5.0, 0.5) == 0.0f,
+          "a footprint fades in smoothly over 1 s after it is placed and out over the 0.5 s a missing unit is kept");
+    Check(PlausibleWaterWakeStep(kRunSpeed / 60.0f, 1.0 / 60.0) &&
+              PlausibleWaterWakeStep(kChargeSpeed / 60.0f, 1.0 / 60.0) &&
+              !PlausibleWaterWakeStep(kBlinkYards, 1.0 / 60.0) && PlausibleWaterWakeStep(0.4f, 0.0) &&
+              !PlausibleWaterWakeStep(1.0f, 0.0),
+          "a move is followed up to 40 yd/s plus 0.5 yd; a longer jump is a teleport");
+}
 
-    const float at[2] = {3.0f, -2.0f};
-    const WaterRippleDisturbance movingRing = WaterRingImpulse(at, moving);
-    const WaterRippleDisturbance idleRing = WaterRingImpulse(at, idle);
-    const WaterRippleDisturbance deepRing = WaterRingImpulse(at, deep);
-    const WaterRippleDisturbance hugeRing = WaterRingImpulse(at, huge);
-    std::printf("     rings: moving r %.3f yd a %.2f, idle r %.3f a %.2f, half strength r %.3f a %.2f, largest r "
-                "%.3f\n",
-                movingRing.radius, movingRing.amplitude, idleRing.radius, idleRing.amplitude, deepRing.radius,
-                deepRing.amplitude, hugeRing.radius);
-    Check(movingRing.from[0] == at[0] && movingRing.to[0] == at[0] && movingRing.from[1] == at[1] &&
-              movingRing.to[1] == at[1] && Near(movingRing.radius, moving.size) && Near(hugeRing.radius, huge.size) &&
-              idleRing.radius == kMinRingRadius && movingRing.amplitude < 0.0f &&
-              Near(idleRing.amplitude, 0.8f * movingRing.amplitude) &&
-              Near(deepRing.amplitude, 0.5f * movingRing.amplitude),
-          "a ring impulse is a point stamp at the ripple's position whose radius is the ripple's size (at least two "
-          "0.125 yd texels) and whose depression is proportional to its alpha");
-
+StepRecorder StandRunStop(int framesPerSecond)
+{
     WaterContactTracker tracker;
-    WaterContact large = ContactAt(9, 1.0f, 2.0f, 3.0f);
-    large.scale = kLargeScale;
-    large.nextRippleMs = kWorldMs;
-    tracker.Update(FrameOf({large}), kStartSeconds);
-    large.nextRippleMs = kWorldMs + kClientIdleRippleMs;
-    tracker.Update(FrameOf({large}), kStartSeconds + kFrameSeconds);
+    StepRecorder recorder;
+    const double end = kStandSeconds + kRunSeconds + kStillSeconds;
+    const int frames = static_cast<int>(std::lround(end * framesPerSecond));
+    for (int frame = 0; frame <= frames; ++frame)
+    {
+        const double elapsed = static_cast<double>(frame) / framesPerSecond;
+        const double running = std::clamp(elapsed - kStandSeconds, 0.0, kRunSeconds);
+        const WaterContact unit = ContactAt(1, static_cast<float>(kRunSpeed * running), 0.0f, kWadingDepth);
+        recorder.Frame(tracker, FrameOf({unit}), kStartSeconds + elapsed);
+    }
+    return recorder;
+}
+
+struct FootprintHistory
+{
+    int steps = 0;
+    int single = 0;
+    int moves = 0;
+    int changesWhileStill = 0;
+    int transitions = 0;
+    bool chained = true;
+    bool onPath = true;
+    float longest = 0.0f;
+    float runningLevel = 0.0f;
+    float standingLevel = 0.0f;
+};
+
+FootprintHistory HistoryOf(const StepRecorder& recorder)
+{
+    FootprintHistory h;
+    const std::vector<StepDisturbances>& steps = recorder.Steps();
+    bool wasMoving = false;
+    double stillSince = kStartSeconds;
+    for (size_t i = 0; i < steps.size(); ++i)
+    {
+        const StepDisturbances& step = steps[i];
+        ++h.steps;
+        if (step.footprints.size() != 1 || !step.impulses.empty())
+            continue;
+        ++h.single;
+        const WaterRippleDisturbance& f = step.footprints[0];
+        const double elapsed = step.seconds - kStartSeconds;
+        const float x = static_cast<float>(kRunSpeed * std::clamp(elapsed - kStandSeconds, 0.0, kRunSeconds));
+        h.onPath = h.onPath && At(f.to, x, 0.0f);
+        const float length = SegmentLength(f);
+        h.longest = std::max(h.longest, length);
+        const bool moving = length > kPathTolerance;
+        h.moves += moving ? 1 : 0;
+        (moving ? h.runningLevel : h.standingLevel) = f.amplitude;
+        if (i == 0)
+        {
+            wasMoving = moving;
+            continue;
+        }
+        const WaterRippleDisturbance& previous = steps[i - 1].footprints.empty() ? f : steps[i - 1].footprints[0];
+        h.chained = h.chained && At(f.from, previous.to[0], previous.to[1]);
+        h.transitions += moving != wasMoving ? 1 : 0;
+        stillSince = moving || !wasMoving ? stillSince : step.seconds;
+        const bool settled = elapsed > kWaterFootprintFadeSeconds + kWaterRippleStepSeconds &&
+                             step.seconds - stillSince > kWaterWakeRampSeconds + kWaterRippleStepSeconds;
+        h.changesWhileStill += !moving && !wasMoving && settled && !SameFootprint(f, previous) ? 1 : 0;
+        wasMoving = moving;
+    }
+    return h;
+}
+
+void CheckStandingAndMovingFootprints()
+{
+    WaterContactTracker tracker;
+    StepRecorder standing;
+    for (int frame = 0; frame <= static_cast<int>(kStillSeconds * kReferenceFrameRate); ++frame)
+        standing.Frame(tracker, FrameOf({ContactAt(1, 2.0f, 3.0f, kWadingDepth)}),
+                       kStartSeconds + static_cast<double>(frame) / kReferenceFrameRate);
+    const float full = WaterFootprintLevel(kWadingDepth, kUnitHeight);
+    const float level = full * WaterFootprintDepthShare(0.0f);
+    bool still = !standing.Steps().empty();
+    bool deepening = true;
+    float last = 0.0f;
+    for (const StepDisturbances& step : standing.Steps())
+    {
+        const bool one = step.footprints.size() == 1 && step.impulses.empty();
+        still = still && one;
+        if (!one)
+            continue;
+        const WaterRippleDisturbance& f = step.footprints[0];
+        const double since = step.seconds - kStartSeconds;
+        still = still && At(f.from, 2.0f, 3.0f) && At(f.to, 2.0f, 3.0f) &&
+                f.radius == WaterFootprintRadius(kUnitRadius);
+        deepening = deepening && f.amplitude <= last && f.amplitude >= level &&
+                    (since < kWaterFootprintFadeSeconds + kWaterRippleStepSeconds || f.amplitude == level);
+        last = f.amplitude;
+    }
+    const long steps = std::lround(kStillSeconds / kWaterRippleStepSeconds);
+    Check(still && deepening && last == level && standing.Steps().size() == static_cast<size_t>(steps),
+          "a unit standing in the water holds one footprint at its position in every 30 Hz step, deepening "
+          "smoothly over 1 s and unchanged after that");
+
+    const FootprintHistory h = HistoryOf(StandRunStop(kReferenceFrameRate));
+    const int runSteps = static_cast<int>(std::lround(kRunSeconds / kWaterRippleStepSeconds));
+    std::printf("     stand %.0f s, run %.0f s at %.0f yd/s, stand %.0f s: %d steps, %d with one footprint, %d moving "
+                "(longest %.3f yd), %d start or stop, %d changes while standing\n",
+                kStandSeconds, kRunSeconds, kRunSpeed, kStillSeconds, h.steps, h.single, h.moves, h.longest,
+                h.transitions, h.changesWhileStill);
+    Check(h.single == h.steps && h.moves == runSteps && h.transitions == 2 && h.changesWhileStill == 0 && h.chained &&
+              h.onPath && std::fabs(h.longest - kRunSpeed * kWaterRippleStepSeconds) <= kPathTolerance,
+          "a unit that stands, runs and stops changes its footprint only while it moves and while its depth follows "
+          "its speed: each step holds it along the segment from where the last step left it to where the unit is, "
+          "so the footprint starts moving once and stops once");
+    std::printf("     footprint level standing %.3f, running at %.0f yd/s %.3f, standing again %.3f\n", level,
+                kRunSpeed, h.runningLevel, h.standingLevel);
+    Check(Near(h.runningLevel, full) && Near(h.standingLevel, level) && Near(WaterFootprintDepthShare(0.0f), 0.2f) &&
+              WaterFootprintDepthShare(1.0f) == 1.0f && Near(WaterWakeMotion(2.25f), 0.5f) &&
+              WaterWakeMotion(kRunSpeed) == 1.0f && WaterWakeMotion(0.0f) == 0.0f,
+          "a standing unit holds a fifth of its footprint's depth and one moving at 4.5 yd/s or faster all of it, "
+          "the depth following the speed over 0.3 s");
+}
+
+void CheckFootprintsFollowThePathAtAnyFrameRate()
+{
+    bool same = true;
+    for (int framesPerSecond : kFrameRates)
+    {
+        const FootprintHistory h = HistoryOf(StandRunStop(framesPerSecond));
+        std::printf("     %3d fps: %d steps, %d moving, longest %.4f yd, chained %d, on the path %d\n", framesPerSecond,
+                    h.steps, h.moves, h.longest, h.chained, h.onPath);
+        same = same && h.single == h.steps && h.chained && h.onPath && h.transitions == 2 &&
+               h.longest <= kRunSpeed * kWaterRippleStepSeconds + kPathTolerance;
+    }
+    Check(same, "at 30, 37, 60 and 144 fps every step holds the footprint where the unit is at that step's time, "
+                "interpolated between the frames around it, from where the last step left it");
+}
+
+void CheckTeleportRestartsTheFootprint()
+{
+    WaterContactTracker tracker;
+    StepRecorder recorder;
+    const double jumpAt = 1.0;
+    for (int frame = 0; frame <= 2 * kReferenceFrameRate; ++frame)
+    {
+        const double elapsed = static_cast<double>(frame) / kReferenceFrameRate;
+        const float y = elapsed >= jumpAt ? kBlinkYards : 0.0f;
+        recorder.Frame(tracker, FrameOf({ContactAt(1, static_cast<float>(kRunSpeed * elapsed), y, kWadingDepth)}),
+                       kStartSeconds + elapsed);
+    }
+    float longest = 0.0f;
+    bool restarted = false;
+    for (const StepDisturbances& step : recorder.Steps())
+        for (const WaterRippleDisturbance& f : step.footprints)
+        {
+            longest = std::max(longest, SegmentLength(f));
+            restarted = restarted || (At(f.from, f.to[0], f.to[1]) && f.to[1] == kBlinkYards && f.amplitude == 0.0f);
+        }
+    const WaterContactTrack* blinked = tracker.Find(1);
+
+    WaterContactTracker charging;
+    StepRecorder charge;
+    for (int frame = 0; frame <= kReferenceFrameRate; ++frame)
+    {
+        const double elapsed = static_cast<double>(frame) / kReferenceFrameRate;
+        charge.Frame(charging, FrameOf({ContactAt(2, static_cast<float>(kChargeSpeed * elapsed), 0.0f, kWadingDepth)}),
+                     kStartSeconds + elapsed);
+    }
+    float chargeLongest = 0.0f;
+    for (const StepDisturbances& step : charge.Steps())
+        for (const WaterRippleDisturbance& f : step.footprints)
+            chargeLongest = std::max(chargeLongest, SegmentLength(f));
+    std::printf("     running unit blinking %.0f yd: longest footprint %.3f yd, placed %u times; unit charging at %.0f "
+                "yd/s: longest %.3f yd, placed %u times\n",
+                kBlinkYards, longest, blinked ? blinked->placements : 0, kChargeSpeed, chargeLongest,
+                charging.Find(2) ? charging.Find(2)->placements : 0);
+    Check(blinked && blinked->placements == 2 && restarted &&
+              longest <= kRunSpeed * kWaterRippleStepSeconds + kPathTolerance && charging.Find(2) &&
+              charging.Find(2)->placements == 1 &&
+              std::fabs(chargeLongest - kChargeSpeed * kWaterRippleStepSeconds) <= kPathTolerance,
+          "a unit that jumps farther than 40 yd/s allows in a frame drags no footprint across the jump: its footprint "
+          "starts again where it landed and fades in; a unit charging at 30 yd/s is followed step by step");
+}
+
+void CheckMissingUnitFadesOut()
+{
+    WaterContactTracker tracker;
+    StepRecorder recorder;
+    const int present = 2 * kReferenceFrameRate;
+    for (int frame = 0; frame <= 3 * kReferenceFrameRate; ++frame)
+    {
+        const double elapsed = static_cast<double>(frame) / kReferenceFrameRate;
+        const WaterContactFrame frameContacts =
+            frame <= present ? FrameOf({ContactAt(1, 4.0f, -1.0f, kWadingDepth)}) : FrameOf({});
+        recorder.Frame(tracker, frameContacts, kStartSeconds + elapsed);
+    }
+    const double lastSeen = kStartSeconds + static_cast<double>(present) / kReferenceFrameRate;
+    bool fading = true;
+    float previous = WaterFootprintLevel(kWadingDepth, kUnitHeight);
+    int afterDrop = 0;
+    int held = 0;
+    for (const StepDisturbances& step : recorder.Steps())
+    {
+        if (step.seconds <= lastSeen)
+            continue;
+        if (step.seconds > lastSeen + kStaleWaterTrackSeconds + kFrameSeconds)
+        {
+            afterDrop += static_cast<int>(step.footprints.size() + step.impulses.size());
+            continue;
+        }
+        for (const WaterRippleDisturbance& f : step.footprints)
+        {
+            ++held;
+            fading = fading && At(f.to, 4.0f, -1.0f) && f.amplitude >= previous && f.amplitude <= 0.0f;
+            previous = f.amplitude;
+        }
+    }
+    std::printf("     unit gone after %.0f s: %d fading footprints, last level %.4f, %d disturbances after its track "
+                "was dropped\n",
+                static_cast<double>(present) / kReferenceFrameRate, held, previous, afterDrop);
+    Check(fading && held > 0 && previous > -1e-3f && afterDrop == 0 && tracker.Tracks() == 0,
+          "a unit that is no longer seen keeps its footprint where it was last seen, rising back to the surface over "
+          "the 0.5 s its track is kept, and then nothing");
+}
+
+void CheckUnitsAreFollowedAlike()
+{
+    WaterContactTracker tracker;
+    StepRecorder recorder;
+    for (int frame = 0; frame <= 2 * kReferenceFrameRate; ++frame)
+    {
+        const double elapsed = static_cast<double>(frame) / kReferenceFrameRate;
+        const float x = static_cast<float>(kRunSpeed * elapsed);
+        recorder.Frame(tracker, FrameOf({ContactAt(7, x, 8.0f, kWadingDepth), ContactAt(1, x, -8.0f, kWadingDepth),
+                                         ContactAt(3, 0.0f, 20.0f, kWadingDepth)}),
+                       kStartSeconds + elapsed);
+    }
+    bool alike = !recorder.Steps().empty();
+    for (const StepDisturbances& step : recorder.Steps())
+    {
+        alike = alike && step.footprints.size() == 3;
+        if (step.footprints.size() != 3)
+            continue;
+        const WaterRippleDisturbance& npc = step.footprints[0];
+        const WaterRippleDisturbance& player = step.footprints[1];
+        const WaterRippleDisturbance& still = step.footprints[2];
+        alike = alike && npc.from[0] == player.from[0] && npc.to[0] == player.to[0] && npc.from[1] == 8.0f &&
+                player.from[1] == -8.0f && npc.radius == player.radius && npc.amplitude == player.amplitude &&
+                At(still.from, 0.0f, 20.0f) && At(still.to, 0.0f, 20.0f);
+    }
+    Check(alike && tracker.Tracks() == 3,
+          "units are followed independently and alike: two units of the same size and depth running side by side hold "
+          "the same footprints at their own positions while a third stands still");
+}
+
+StepDisturbances TakeStep(WaterContactTracker& tracker, double seconds)
+{
+    StepDisturbances step;
+    step.seconds = seconds;
     WaterRippleDisturbance d[kDisturbanceCapacity];
-    const uint32_t count = DisturbancesNow(tracker, d);
-    const WaterRippleDisturbance expected = WaterRingImpulse(
-        large.position, ClientRippleOf(ClientRippleKind::Idle, kLargeScale, ClientRippleStrength(3.0f, kUnitHeight),
-                                       ClientRippleSizeJitter(9, kWorldMs + kClientIdleRippleMs)));
-    Check(count == 1 && SameDisturbance(d[0], expected) && tracker.Find(9) && tracker.Find(9)->rings == 1,
-          "the tracker queues the ring of the unit's kind, scale, depth strength and jitter at its new client ripple "
-          "time");
+    const uint32_t count = tracker.TakeDisturbances(seconds, d, kDisturbanceCapacity);
+    for (uint32_t i = 0; i < count; ++i)
+        (d[i].held ? step.footprints : step.impulses).push_back(d[i]);
+    return step;
 }
 
 struct ImpulseLog
 {
     int impulses = 0;
     float amplitude = 0.0f;
+    float radius = 0.0f;
 };
 
 void Descend(WaterContactTracker& tracker, double& t, float depth, bool swimming, ImpulseLog& log)
@@ -565,12 +667,11 @@ void Descend(WaterContactTracker& tracker, double& t, float depth, bool swimming
     WaterContact contact = ContactAt(1, 0.0f, 0.0f, depth);
     contact.swimming = swimming;
     tracker.Update(FrameOf({contact}), t);
-    WaterRippleDisturbance d[kDisturbanceCapacity];
-    const uint32_t count = DisturbancesNow(tracker, d);
-    for (uint32_t i = 0; i < count; ++i)
+    for (const WaterRippleDisturbance& impulse : TakeStep(tracker, t).impulses)
     {
         ++log.impulses;
-        log.amplitude = d[i].amplitude;
+        log.amplitude = impulse.amplitude;
+        log.radius = impulse.radius;
     }
     t += 1.0 / 60.0;
 }
@@ -590,35 +691,44 @@ void CheckEntryImpulses()
     ImpulseLog swimming;
     for (float depth : {0.6f, 1.2f, 1.5f, 0.3f})
         Descend(tracker, t, depth, true, swimming);
-    std::printf("     entry impulses: %d entering (amplitude %.3f), %d leaving, %d while swimming\n",
-                entering.impulses, entering.amplitude, leaving.impulses, swimming.impulses);
+    std::printf("     entry impulses: %d entering (amplitude %.3f over %.2f yd), %d leaving, %d while swimming\n",
+                entering.impulses, entering.amplitude, entering.radius, leaving.impulses, swimming.impulses);
     Check(entering.impulses == 1 && entering.amplitude < 0.0f && leaving.impulses == 0 && swimming.impulses == 0,
           "a unit that is not swimming makes one entry impulse when its depth rises from the shallows across 0.4 of "
           "its height, none when it crosses back on the way out (where the client's 0x730D10 splashes too) and none "
           "while it swims");
+    Check(Near(entering.radius, WaterSplashRadius(kUnitRadius)) &&
+              WaterSplashRadius(kUnitRadius) > WaterFootprintRadius(kUnitRadius) &&
+              Near(WaterEntryImpulse(1.2f, kUnitHeight), entering.amplitude),
+          "the entry splash reaches beyond the unit's footprint (three collision radii, 0.75 to 9 yd), so the "
+          "footprint's hold does not swallow it");
 
     WaterContactTracker fresh;
     t = kStartSeconds;
     fresh.Update(FrameOf({ContactAt(1, 0.0f, 0.0f, kDeepDepth)}), t);
-    WaterRippleDisturbance d[kDisturbanceCapacity];
-    const uint32_t seeded = DisturbancesNow(fresh, d);
-    uint32_t appeared = 0;
+    const size_t seeded = TakeStep(fresh, t).impulses.size();
+    size_t appeared = 0;
     for (int frame = 0; frame < kPairFrames; ++frame)
     {
         t += kFrameSeconds;
         fresh.Update(FrameOf({ContactAt(1, 0.0f, 0.0f, kDeepDepth), ContactAt(2, 3.0f, 0.0f, kDeepDepth)}), t);
-        appeared += DisturbancesNow(fresh, d);
+        appeared += TakeStep(fresh, t).impulses.size();
     }
-    uint32_t wadedIn = 0;
+    size_t wadedIn = 0;
+    float splashX = 0.0f;
     for (float depth : {kShoreDepth, kWaistDepth})
     {
         t += kFrameSeconds;
         fresh.Update(FrameOf({ContactAt(3, 6.0f, 0.0f, depth)}), t);
-        wadedIn += DisturbancesNow(fresh, d);
+        for (const WaterRippleDisturbance& impulse : TakeStep(fresh, t).impulses)
+        {
+            ++wadedIn;
+            splashX = impulse.to[0];
+        }
     }
-    std::printf("     first seen at 0.75h: %u impulses at the start, %u later; first seen at 0.1h, then 0.7h: %u\n",
+    std::printf("     first seen at 0.75h: %zu impulses at the start, %zu later; first seen at 0.1h, then 0.7h: %zu\n",
                 seeded, appeared, wadedIn);
-    Check(seeded == 0 && appeared == 0 && wadedIn == 1 && d[0].to[0] == 6.0f,
+    Check(seeded == 0 && appeared == 0 && wadedIn == 1 && splashX == 6.0f,
           "a unit first seen deeper than 0.4 of its height, when the tracker starts or later, makes no impulse then "
           "or while it stays there; a unit first seen in the shallows makes one when it wades in (the client, from "
           "its zeroed +0x784, also splashes a unit created deep)");
@@ -641,10 +751,8 @@ int ImpulsesOver(WaterContactTracker& tracker, double& t, uint64_t guid, const W
         WaterContact contact = ContactAt(guid, 0.0f, 0.0f, stage.depth);
         contact.swimming = stage.swimming;
         tracker.Update(stage.present ? FrameOf({contact}) : FrameOf({}), t);
-        WaterRippleDisturbance d[kDisturbanceCapacity];
-        const uint32_t count = DisturbancesNow(tracker, d);
-        for (uint32_t k = 0; k < count; ++k)
-            impulses += d[k].amplitude < 0.0f ? 1 : 0;
+        for (const WaterRippleDisturbance& impulse : TakeStep(tracker, t).impulses)
+            impulses += impulse.amplitude < 0.0f ? 1 : 0;
     }
     return impulses;
 }
@@ -711,40 +819,7 @@ void CheckReturningUnitsKeepTheirEntryState()
           "the tracker remembers at most 256 departed entry states and forgets the oldest first");
 }
 
-void CheckSplashTakesTheClientRippleOfItsFrame()
-{
-    WaterContactTracker tracker;
-    ClientRippleClock clock;
-    double t = kStartSeconds;
-    uint32_t disturbances = 0;
-    uint32_t splashes = 0;
-    uint32_t rings = 0;
-    const float wader = WaterSplashRadius(kUnitRadius);
-    for (float depth : {0.2f, 0.5f, 1.1f, 1.2f})
-    {
-        WaterContact contact = ContactAt(1, 0.0f, 0.0f, depth);
-        contact.movementFlags = kForwardFlag;
-        contact.nextRippleMs = clock.Due(WorldMsAt(t), contact);
-        clock.next = 0;
-        tracker.Update(FrameOf({contact}), t);
-        WaterRippleDisturbance d[kDisturbanceCapacity];
-        const uint32_t count = DisturbancesNow(tracker, d);
-        for (uint32_t i = 0; i < count; ++i)
-        {
-            ++disturbances;
-            splashes += d[i].radius == wader ? 1 : 0;
-            rings += d[i].radius == wader ? 0 : 1;
-        }
-        t += kFrameSeconds;
-    }
-    std::printf("     wading in with a client ripple every frame: %u disturbances, %u splash, %u rings\n", disturbances,
-                splashes, rings);
-    Check(splashes == 1 && rings == 2 && disturbances == 3,
-          "the frame whose depth crosses 0.4 of the height makes one splash and no ring for the client ripple it "
-          "emitted there (the 0xC9 splash of 0x730E42), and the frames around it one ring each");
-}
-
-void CheckStaleTracksAndIndependentUnits()
+void CheckStaleTracksAndCapacity()
 {
     WaterContactTracker tracker;
     double t = kStartSeconds;
@@ -758,24 +833,28 @@ void CheckStaleTracksAndIndependentUnits()
     Check(kept == 2 && dropped == 1 && tracker.Find(1) == nullptr && tracker.Find(2),
           "a unit missing for 0.3 s keeps its track and one missing for 0.6 s is dropped");
 
-    WaterContactTracker pair;
-    ClientRippleClock running;
-    WaterRippleDisturbance d[kDisturbanceCapacity];
+    WaterContactTracker crowd;
     t = kStartSeconds;
-    uint32_t fromRunner = 0;
-    uint32_t fromStill = 0;
-    for (int i = 0; i < kPairFrames; ++i, t += kFrameSeconds)
+    WaterContactFrame first;
+    WaterContactFrame second;
+    for (uint32_t i = 0; i < kMaxWaterContacts; ++i)
     {
-        const float x = static_cast<float>(kRunSpeed * (t - kStartSeconds));
-        WaterContact still = ContactAt(2, 0.0f, 8.0f, kWadingDepth);
-        still.nextRippleMs = kWorldMs;
-        pair.Update(FrameOf({ClockedContact(1, x, 0.0f, kForwardFlag, t, running), still}), t);
-        const uint32_t count = DisturbancesNow(pair, d);
-        for (uint32_t k = 0; k < count; ++k)
-            (d[k].to[1] == 0.0f ? fromRunner : fromStill) += 1;
+        first.contacts[first.count++] = ContactAt(100 + i, static_cast<float>(i), 0.0f, kShoreDepth);
+        second.contacts[second.count++] = ContactAt(200 + i, static_cast<float>(i), 5.0f, kWaistDepth);
     }
-    Check(fromRunner == running.emitted - 1 && fromRunner > 0 && fromStill == 0 && pair.Tracks() == 2,
-          "two units are tracked independently: only the one whose client ripple time advances rings");
+    crowd.Update(first, t);
+    TakeStep(crowd, t);
+    t += kFrameSeconds;
+    crowd.Update(second, t);
+    const StepDisturbances full = TakeStep(crowd, t);
+    bool freshFirst = full.footprints.size() == kDisturbanceCapacity;
+    for (uint32_t i = 0; freshFirst && i < kMaxWaterContacts; ++i)
+        freshFirst = full.footprints[i].to[1] == 5.0f;
+    std::printf("     32 units replaced by 32 others: %zu footprints in the step, fresh ones first %d\n",
+                full.footprints.size(), freshFirst);
+    Check(freshFirst && full.impulses.empty(),
+          "a step holds the footprints of the units seen in the last frame first and fills the rest of its 48 slots "
+          "with units still fading out");
 }
 
 class Wader
@@ -784,9 +863,6 @@ public:
     void Wade(float depth, double seconds) { Frames(depth, seconds, true); }
     void Leave(double seconds) { Frames(0.0f, seconds, false); }
     uint32_t Splashes() const { return m_splashes; }
-    uint32_t Rings() const { return m_rings; }
-    uint32_t Emissions() const { return m_clock.emitted; }
-    bool RingsAtClientCadence() const { return m_ringsAtCadence; }
     bool Tracked() const { return m_tracker.Find(kGuid) != nullptr; }
 
 private:
@@ -800,32 +876,15 @@ private:
     void Step(float depth, bool present)
     {
         m_t += kFrameSeconds;
-        const bool tracked = m_tracker.Find(kGuid) != nullptr;
-        const uint32_t emittedBefore = m_clock.emitted;
         WaterContact contact = ContactAt(kGuid, static_cast<float>(kRunSpeed * (m_t - kStartSeconds)), 0.0f, depth);
-        contact.movementFlags = kForwardFlag;
-        if (present)
-            contact.nextRippleMs = m_clock.Due(WorldMsAt(m_t), contact);
         m_tracker.Update(present ? FrameOf({contact}) : FrameOf({}), m_t);
-        WaterRippleDisturbance d[kDisturbanceCapacity];
-        const uint32_t count = DisturbancesNow(m_tracker, d);
-        uint32_t splashes = 0;
-        for (uint32_t i = 0; i < count; ++i)
-            splashes += d[i].radius == WaterSplashRadius(kUnitRadius) ? 1 : 0;
-        const bool emitted = present && tracked && m_clock.emitted != emittedBefore;
-        const uint32_t expectedRings = emitted && splashes == 0 ? 1 : 0;
-        m_ringsAtCadence = m_ringsAtCadence && splashes <= 1 && count - splashes == expectedRings;
-        m_splashes += splashes;
-        m_rings += count - splashes;
+        m_splashes += static_cast<uint32_t>(TakeStep(m_tracker, m_t).impulses.size());
     }
 
     static constexpr uint64_t kGuid = 1;
     WaterContactTracker m_tracker;
-    ClientRippleClock m_clock;
     double m_t = kStartSeconds;
     uint32_t m_splashes = 0;
-    uint32_t m_rings = 0;
-    bool m_ringsAtCadence = true;
 };
 
 void CheckUnevenFloorSplashesOnce()
@@ -839,19 +898,16 @@ void CheckUnevenFloorSplashesOnce()
         wader.Wade(kAboveSplashDepth, kUnevenFloorHalfPeriod);
         wader.Wade(kBelowSplashDepth, kUnevenFloorHalfPeriod);
     }
-    std::printf("     wading in from the shore, then 0.35h <-> 0.45h every %.1f s for %.1f s: %u splashes, %u rings "
-                "for %u client ripples\n",
-                kUnevenFloorHalfPeriod, 2.0 * kUnevenFloorHalfPeriod * cycles, wader.Splashes(), wader.Rings(),
-                wader.Emissions());
-    Check(onShore == 0 && wader.Splashes() == 1 && wader.RingsAtClientCadence(),
+    std::printf("     wading in from the shore, then 0.35h <-> 0.45h every %.1f s for %.1f s: %u splashes\n",
+                kUnevenFloorHalfPeriod, 2.0 * kUnevenFloorHalfPeriod * cycles, wader.Splashes());
+    Check(onShore == 0 && wader.Splashes() == 1,
           "a unit wading in from the shore over a floor that takes its depth back and forth across 0.4 of its height "
-          "splashes once on entering; its wake keeps one ring per client ripple in every other frame");
+          "splashes once on entering");
 }
 
 struct Reentry
 {
     uint32_t splashes = 0;
-    bool ringsAtCadence = false;
     bool dropped = false;
 };
 
@@ -862,7 +918,7 @@ Reentry WadeOutAndBack(float outDepth, double sinceSplash)
     wader.Wade(kWaistDepth, 0.5 * sinceSplash);
     wader.Wade(outDepth, 0.5 * sinceSplash);
     wader.Wade(kWaistDepth, kLaterThanSplashInterval);
-    return {wader.Splashes(), wader.RingsAtClientCadence(), false};
+    return {wader.Splashes(), false};
 }
 
 Reentry StepAshoreAndBack(double sinceSplash)
@@ -875,7 +931,7 @@ Reentry StepAshoreAndBack(double sinceSplash)
     const bool dropped = !wader.Tracked();
     wader.Wade(kShoreDepth, kShoreStepSeconds);
     wader.Wade(kWaistDepth, kLaterThanSplashInterval);
-    return {wader.Splashes(), wader.RingsAtClientCadence(), dropped};
+    return {wader.Splashes(), dropped};
 }
 
 void CheckEntrySplashNeedsRearming()
@@ -895,9 +951,7 @@ void CheckEntrySplashNeedsRearming()
                 "splashes\n",
                 ashoreLater.dropped, ashoreSooner.dropped, kLaterThanSplashInterval, kSoonerThanSplashInterval,
                 ashoreLater.splashes, ashoreSooner.splashes);
-    const bool cadence = later.ringsAtCadence && belowRearm.ringsAtCadence && aboveRearm.ringsAtCadence &&
-                         sooner.ringsAtCadence && ashoreLater.ringsAtCadence && ashoreSooner.ringsAtCadence;
-    Check(later.splashes == 2 && belowRearm.splashes == 2 && aboveRearm.splashes == 1 && cadence,
+    Check(later.splashes == 2 && belowRearm.splashes == 2 && aboveRearm.splashes == 1,
           "a unit that splashed, waded out below 0.15 of its height and back in 2.5 s later splashes again, while one "
           "that only came up to 0.17 of its height does not; wading out never splashes");
     Check(sooner.splashes == 1 && ashoreSooner.splashes == 1 && ashoreSooner.dropped && ashoreLater.splashes == 2 &&
@@ -910,13 +964,16 @@ void CheckWaterContacts()
 {
     CheckContactSelection();
     CheckVisibleUnitWalk();
-    CheckClientRippleMapping();
-    CheckOneRingPerClientRipple();
+    CheckFootprintShape();
+    CheckStandingAndMovingFootprints();
+    CheckFootprintsFollowThePathAtAnyFrameRate();
+    CheckTeleportRestartsTheFootprint();
+    CheckMissingUnitFadesOut();
+    CheckUnitsAreFollowedAlike();
     CheckEntryImpulses();
     CheckUnevenFloorSplashesOnce();
     CheckEntrySplashNeedsRearming();
-    CheckSplashTakesTheClientRippleOfItsFrame();
     CheckReturningUnitsKeepTheirEntryState();
-    CheckStaleTracksAndIndependentUnits();
+    CheckStaleTracksAndCapacity();
 }
 }

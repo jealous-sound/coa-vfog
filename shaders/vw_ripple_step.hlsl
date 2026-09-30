@@ -1,10 +1,10 @@
 float4 cRippleStep : register(c0);
-float4 cRippleSegments[32] : register(c1);
-float4 cRippleShapes[32] : register(c33);
+float4 cRippleSegments[48] : register(c1);
+float4 cRippleShapes[48] : register(c49);
 
 sampler2D sRippleState : register(s0);
 
-static const int kMaxDisturbances = 32;
+static const int kMaxDisturbances = 48;
 static const float kDamping = 0.97;
 static const float kEdgeRampPerUv = 16;
 static const float kNeighbourWeight = 0.5;
@@ -62,22 +62,22 @@ float Footprint(float distance, float inverseRadius)
     return 1 - smoothstep(kFootprintCore, kFootprintRim, distance * inverseRadius);
 }
 
-float Injection(float2 texelCentre)
+float2 Disturb(float2 state, float2 texelCentre, float4 segment, float4 shape)
 {
-    float sum = 0;
-    [unroll] for (int i = 0; i < kMaxDisturbances; i++)
-    {
-        [branch] if (i < DisturbanceCount())
-            sum += cRippleShapes[i].y *
-                   Footprint(SegmentDistance(texelCentre, cRippleSegments[i].xy, cRippleSegments[i].zw),
-                             cRippleShapes[i].x);
-    }
-    return sum;
+    float weight = Footprint(SegmentDistance(texelCentre, segment.xy, segment.zw), shape.x);
+    float held = weight * shape.z;
+    float height = lerp(state.x, shape.y, held) + shape.y * (weight - held);
+    return float2(height, lerp(state.y, height, held));
 }
 
 float4 main(float2 pixel : VPOS) : COLOR0
 {
     float2 texel = floor(pixel);
     float2 state = Propagate((texel + WindowShift() + 0.5) * InverseTexels());
-    return float4(state.x + Injection(texel + 0.5), state.y, 0, 0);
+    [unroll] for (int i = 0; i < kMaxDisturbances; i++)
+    {
+        [branch] if (i < DisturbanceCount())
+            state = Disturb(state, texel + 0.5, cRippleSegments[i], cRippleShapes[i]);
+    }
+    return float4(state, 0, 0);
 }

@@ -8,8 +8,33 @@ using water_contact_checks::kStartSeconds;
 constexpr int kReferenceFrameRates[] = {144, 37};
 constexpr double kTrackedSeconds = 2.0;
 constexpr double kRingStart = -6.0;
-constexpr int kStepsPerRing = 3;
 constexpr int kTexels = kWaterRippleTexelsLow;
+constexpr float kWakeShinDepth = 0.5f;
+constexpr float kWakeSwimDepth = 1.5f;
+constexpr float kSwimSpeed = 4.72f;
+constexpr int kHeldReferenceSteps = 60;
+constexpr float kHeldRadius = 0.7f;
+constexpr float kHeldLevel = -0.5f;
+constexpr float kStandingX = 2.0f;
+constexpr float kStandingY = 3.0f;
+constexpr int kWakeFrameRate = 60;
+constexpr double kWakeRunSeconds = 3.0;
+constexpr float kWakeNearestBehind = 2.0f;
+constexpr float kWakeFarthestBehind = 8.0f;
+constexpr float kWakeRowYards = 0.25f;
+constexpr float kWakeLateralYards = 10.0f;
+constexpr double kWakeFrontShare = 0.1;
+constexpr float kWakeAheadYards = 1.5f;
+constexpr double kWakeAngleTolerance = 3.0;
+constexpr float kCalmAhead = 1e-3f;
+constexpr float kMinWakeSlope = 0.02f;
+constexpr uint64_t kPlayerGuid = 1;
+constexpr uint64_t kNpcGuid = 0xF130000000001234ull;
+constexpr float kSideBySideYards = 5.0f;
+constexpr double kBlinkAt = 1.0;
+constexpr double kAfterBlinkSeconds = 0.5;
+constexpr float kBlinkYards = 8.0f;
+constexpr float kBlinkCorridorYards = 1.0f;
 constexpr int kLongRunSteps = 3000;
 constexpr int kLongRunImpulsePeriod = 10;
 constexpr float kLongRunBound = 8.0f;
@@ -34,7 +59,7 @@ constexpr float kReferenceTolerance = 2e-3f;
 constexpr int kRecentreSteps = 40;
 constexpr int kRecentreShiftPerStep = 3;
 constexpr int kTimedSteps = 32;
-constexpr int kTimedDisturbances[] = {0, 4, 32};
+constexpr int kTimedDisturbances[] = {0, 4, 32, 48};
 
 enum class HalfRounding
 {
@@ -200,7 +225,7 @@ float ReferenceFootprint(float x, float y, const WaterRippleDisturbance& d)
     const float dx = x - d.from[0] - along[0] * t;
     const float dy = y - d.from[1] - along[1] * t;
     const float s = std::clamp((std::sqrt(dx * dx + dy * dy) / d.radius - 0.20f) / (0.79f - 0.20f), 0.0f, 1.0f);
-    return d.amplitude * (1.0f - s * s * (3.0f - 2.0f * s));
+    return 1.0f - s * s * (3.0f - 2.0f * s);
 }
 
 RippleState ReferenceStep(const RippleState& in, int shiftX, int shiftY,
@@ -219,10 +244,20 @@ RippleState ReferenceStep(const RippleState& in, int shiftX, int shiftY,
             const float sum = ReferenceSample(in.r, n, sx - 1, sy) + ReferenceSample(in.r, n, sx, sy - 1) +
                               ReferenceSample(in.r, n, sx + 1, sy) + ReferenceSample(in.r, n, sx, sy + 1);
             float next = 0.97f * edge * (0.5f * sum - ReferenceSample(in.g, n, sx, sy));
+            float previous = ReferenceSample(in.r, n, sx, sy);
             for (const WaterRippleDisturbance& d : texelDisturbances)
-                next += ReferenceFootprint(x + 0.5f, y + 0.5f, d);
+            {
+                const float weight = ReferenceFootprint(x + 0.5f, y + 0.5f, d);
+                if (!d.held)
+                {
+                    next += d.amplitude * weight;
+                    continue;
+                }
+                next += (d.amplitude - next) * weight;
+                previous += (next - previous) * weight;
+            }
             out.r[static_cast<size_t>(y) * n + x] = RoundToHalf(next, rounding);
-            out.g[static_cast<size_t>(y) * n + x] = ReferenceSample(in.r, n, sx, sy);
+            out.g[static_cast<size_t>(y) * n + x] = RoundToHalf(previous, rounding);
         }
     return out;
 }
@@ -675,55 +710,328 @@ void CheckUnusableCentreKeepsTheWindow(IDirect3DDevice9* dev)
           "a non-finite or out-of-range window centre keeps the ripple window where it was and the ripples running");
 }
 
-uint32_t RingsOfStep(double stepSeconds, WaterRippleDisturbance* out)
+using ContactsAt = std::function<WaterContactFrame(double elapsed)>;
+
+class WakeRun
 {
-    const double elapsed = stepSeconds - kStartSeconds;
-    const long step = std::lround(elapsed * kWaterRippleStepsPerSecond);
-    if (step % kStepsPerRing != 0)
-        return 0;
-    const float at[2] = {static_cast<float>(kRingStart + kRunSpeed * elapsed), 0.0f};
-    out[0] = WaterRingImpulse(at, ClientRippleOf(ClientRippleKind::Moving, 1.0f, 1.0f, 1.0f));
-    return 1;
+public:
+    WakeRun(IDirect3DDevice9* dev, int texels) : m_dev(dev) { m_prepared = m_ripples.Prepare(dev, texels); }
+
+    bool Prepared() const { return m_prepared; }
+    const WaterRipples& Ripples() const { return m_ripples; }
+
+    void Run(const ContactsAt& contacts, int framesPerSecond, double seconds)
+    {
+        const double end = kStartSeconds + seconds;
+        const float centre[2] = {};
+        for (int frame = 0; m_prepared; ++frame)
+        {
+            const double t = std::min(kStartSeconds + static_cast<double>(frame) / framesPerSecond, end);
+            m_tracker.Update(contacts(t - kStartSeconds), t);
+            const WaterRippleSchedule schedule = m_ripples.Schedule(t);
+            for (int step = 0; step < schedule.steps; ++step)
+            {
+                WaterRippleDisturbance d[kMaxWaterRippleDisturbances];
+                const uint32_t count =
+                    m_tracker.TakeDisturbances(schedule.stepSeconds[step], d, kMaxWaterRippleDisturbances);
+                m_ripples.Step(m_dev, centre, d, count);
+            }
+            if (t >= end)
+                break;
+        }
+    }
+
+    RippleState Read() const
+    {
+        RippleState state;
+        ReadRipples(m_dev, m_ripples, state);
+        return state;
+    }
+
+private:
+    IDirect3DDevice9* m_dev;
+    WaterRipples m_ripples;
+    WaterContactTracker m_tracker;
+    bool m_prepared = false;
+};
+
+WaterContact WakeUnit(float x, float y, float depth, bool swimming)
+{
+    WaterContact unit = water_contact_checks::ContactAt(1, x, y, depth);
+    unit.swimming = swimming;
+    return unit;
 }
 
-RippleState RunAtFrameRate(IDirect3DDevice9* dev, int framesPerSecond, uint64_t& steps)
+WaterContactFrame RunningAlongX(double elapsed)
 {
-    RippleState state;
-    WaterRipples ripples;
-    const bool prepared = ripples.Prepare(dev, kTexels);
-    const double end = kStartSeconds + kTrackedSeconds + 0.01;
-    const float centre[2] = {};
-    for (int frame = 0; prepared; ++frame)
-    {
-        const double t = std::min(kStartSeconds + static_cast<double>(frame) / framesPerSecond, end);
-        const WaterRippleSchedule schedule = ripples.Schedule(t);
-        for (int step = 0; step < schedule.steps; ++step)
-        {
-            WaterRippleDisturbance d[kMaxWaterRippleDisturbances];
-            ripples.Step(dev, centre, d, RingsOfStep(schedule.stepSeconds[step], d));
-        }
-        if (t >= end)
-            break;
-    }
-    steps = ripples.StepsRun();
-    ReadRipples(dev, ripples, state);
-    return state;
+    return water_contact_checks::FrameOf(
+        {WakeUnit(static_cast<float>(kRingStart + kRunSpeed * elapsed), 0.0f, kWakeShinDepth, false)});
 }
 
 void CheckSimulationFrameRateIndependence(IDirect3DDevice9* dev)
 {
-    uint64_t steps[2] = {};
-    const RippleState fast = RunAtFrameRate(dev, kReferenceFrameRates[0], steps[0]);
-    const RippleState slow = RunAtFrameRate(dev, kReferenceFrameRates[1], steps[1]);
-    const float difference = MaxDifference(fast, slow);
-    const float peak = Peak(fast);
-    std::printf("     rings along a 7 yd/s path for %.2f s at %d and %d fps: %llu and %llu steps, peak %.4f, largest "
+    WakeRun fast(dev, kTexels);
+    WakeRun slow(dev, kTexels);
+    fast.Run(RunningAlongX, kReferenceFrameRates[0], kTrackedSeconds + 0.01);
+    slow.Run(RunningAlongX, kReferenceFrameRates[1], kTrackedSeconds + 0.01);
+    const uint64_t steps[2] = {fast.Ripples().StepsRun(), slow.Ripples().StepsRun()};
+    const RippleState a = fast.Read();
+    const RippleState b = slow.Read();
+    const float difference = MaxDifference(a, b);
+    const float peak = Peak(a);
+    std::printf("     unit running at 7 yd/s for %.2f s at %d and %d fps: %llu and %llu steps, peak %.4f, largest "
                 "difference %.2e\n",
                 kTrackedSeconds + 0.01, kReferenceFrameRates[0], kReferenceFrameRates[1],
                 static_cast<unsigned long long>(steps[0]), static_cast<unsigned long long>(steps[1]), peak,
                 difference);
-    Check(steps[0] == steps[1] && steps[0] > 0 && peak > 0.0f && difference <= kReferenceTolerance * peak,
-          "the same elapsed time runs the same 30 Hz steps and leaves the same ripples at 144 and 37 fps");
+    Check(fast.Prepared() && slow.Prepared() && steps[0] == steps[1] && steps[0] > 0 && peak > 0.0f &&
+              difference <= kReferenceTolerance * peak,
+          "the same elapsed time runs the same 30 Hz steps and leaves the same wake at 144 and 37 fps");
+}
+
+void CheckHeldFootprintsFollowTheReference(IDirect3DDevice9* dev)
+{
+    RippleBench bench(dev, kTexels);
+    const float centre[2] = {};
+    const int origin[2] = {-kTexels / 2, -kTexels / 2};
+    RippleState references[2] = {ZeroState(kTexels), ZeroState(kTexels)};
+    float worst[2] = {};
+    float peak = 0.0f;
+    float still = 0.0f;
+    for (int step = 1; step <= kHeldReferenceSteps; ++step)
+    {
+        WaterRippleDisturbance moving;
+        moving.from[0] = kRingStart + kRunSpeed * (step - 1) * kWaterRippleStepSeconds;
+        moving.to[0] = kRingStart + kRunSpeed * step * kWaterRippleStepSeconds;
+        moving.radius = kHeldRadius;
+        moving.amplitude = kHeldLevel;
+        moving.held = true;
+        WaterRippleDisturbance standing = moving;
+        standing.from[0] = standing.to[0] = kStandingX;
+        standing.from[1] = standing.to[1] = kStandingY;
+        standing.amplitude = 0.5f * kHeldLevel;
+        const std::vector<WaterRippleDisturbance> now = {moving, standing};
+        bench.Step(centre, now);
+        std::vector<WaterRippleDisturbance> texels;
+        for (const WaterRippleDisturbance& d : now)
+            texels.push_back(InTexels(d, origin));
+        for (int i = 0; i < 2; ++i)
+            references[i] = ReferenceStep(references[i], 0, 0, texels, kHalfRoundings[i]);
+        if (step % kSpreadSteps)
+            continue;
+        const RippleState gpu = bench.Read();
+        peak = std::max(peak, Peak(gpu));
+        for (int i = 0; i < 2; ++i)
+            worst[i] = std::max(worst[i], MaxDifference(gpu, references[i]) / std::max(Peak(references[i]), 1e-6f));
+    }
+    const RippleState gpu = bench.Read();
+    const int sx = static_cast<int>(std::floor(kStandingX / kWaterRippleTexelYards)) - origin[0];
+    const int sy = static_cast<int>(std::floor(kStandingY / kWaterRippleTexelYards)) - origin[1];
+    still = gpu.R(sx, sy);
+    const RoundingMatch match = ClosestRounding(worst);
+    std::printf("     held footprints, one moving at 7 yd/s and one standing: peak %.4f, standing centre %.4f; over %d "
+                "steps the GPU is %.2e of the peak from the CPU reference with %s\n",
+                peak, still, kHeldReferenceSteps, match.error, HalfRoundingName(match.rounding));
+    Check(bench.Prepared() && match.error <= kReferenceTolerance && still == RoundToHalf(0.5f * kHeldLevel,
+                                                                                         match.rounding),
+          (std::string("a held footprint pulls the propagated height and its previous value toward its level by its "
+                       "weight (R = lerp(R, level, k), G = lerp(G, R, k)), matching the CPU reference with FP16 "
+                       "storage (") +
+           HalfRoundingName(match.rounding) + " on this GPU), and holds its core exactly at the level")
+              .c_str());
+}
+
+struct WakeLines
+{
+    double frontDegrees = 0.0;
+    double frontOffset = 0.0;
+    double brightDegrees = 0.0;
+    float ahead = 0.0f;
+    float behind = 0.0f;
+};
+
+double SlopeAt(const RippleState& map, int x, int y)
+{
+    const float h = map.R(x, y);
+    return std::hypot(map.R(x + 1, y) - h, map.R(x, y + 1) - h);
+}
+
+double FittedDegrees(const std::vector<double>& behind, const std::vector<double>& lateral, double& offset)
+{
+    double sb = 0.0;
+    double sl = 0.0;
+    double sbb = 0.0;
+    double sbl = 0.0;
+    const double n = static_cast<double>(behind.size());
+    for (size_t i = 0; i < behind.size(); ++i)
+    {
+        sb += behind[i];
+        sl += lateral[i];
+        sbb += behind[i] * behind[i];
+        sbl += behind[i] * lateral[i];
+    }
+    const double slope = (n * sbl - sb * sl) / (n * sbb - sb * sb);
+    offset = (sl - slope * sb) / n;
+    return std::atan(slope) * 180.0 / kPi;
+}
+
+WakeLines MeasureWake(const RippleState& map, float px, float py)
+{
+    std::vector<double> behind;
+    std::vector<double> front;
+    std::vector<double> bright;
+    WakeLines lines;
+    const int reach = static_cast<int>(kWakeLateralYards / kWaterRippleTexelYards);
+    for (float b = kWakeNearestBehind; b <= kWakeFarthestBehind; b += kWakeRowYards)
+    {
+        const int row = static_cast<int>(std::floor(py - b / kWaterRippleTexelYards));
+        for (int side : {1, -1})
+        {
+            double peak = 0.0;
+            int peakAt = 0;
+            std::vector<double> slopes;
+            for (int k = 0; k < reach; ++k)
+            {
+                const int x = static_cast<int>(std::floor(px)) + side * k;
+                slopes.push_back(SlopeAt(map, x, row));
+                if (slopes.back() > peak)
+                {
+                    peak = slopes.back();
+                    peakAt = k;
+                }
+            }
+            int outermost = peakAt;
+            for (int k = peakAt; k < reach; ++k)
+                outermost = slopes[k] >= kWakeFrontShare * peak ? k : outermost;
+            const auto lateral = [&](int k) {
+                return std::fabs(std::floor(px) + side * k + 0.5 - px) * kWaterRippleTexelYards;
+            };
+            behind.push_back(b);
+            front.push_back(lateral(outermost));
+            bright.push_back(lateral(peakAt));
+            lines.behind = std::max(lines.behind, static_cast<float>(peak));
+        }
+    }
+    double unused = 0.0;
+    lines.frontDegrees = FittedDegrees(behind, front, lines.frontOffset);
+    lines.brightDegrees = FittedDegrees(behind, bright, unused);
+    const int aheadFrom = static_cast<int>(std::ceil(py + kWakeAheadYards / kWaterRippleTexelYards));
+    for (int y = aheadFrom; y < std::min(map.texels, aheadFrom + reach); ++y)
+        for (int x = static_cast<int>(px) - reach; x < static_cast<int>(px) + reach; ++x)
+            lines.ahead = std::max(lines.ahead, std::fabs(map.R(x, y)));
+    return lines;
+}
+
+struct WakeCase
+{
+    const char* name;
+    float speed;
+    float depth;
+    bool swimming;
+};
+
+double RippleSpeed()
+{
+    return std::sqrt(0.5) * kWaterRippleTexelYards * kWaterRippleStepsPerSecond;
+}
+
+double MachDegrees(float speed)
+{
+    return std::asin(std::min(1.0, RippleSpeed() / speed)) * 180.0 / kPi;
+}
+
+void CheckWakeIsAMachV(IDirect3DDevice9* dev)
+{
+    const WakeCase cases[] = {{"wader running shin-deep", kRunSpeed, kWakeShinDepth, false},
+                              {"swimmer", kSwimSpeed, kWakeSwimDepth, true}};
+    bool shaped = true;
+    for (const WakeCase& wake : cases)
+    {
+        WakeRun run(dev, kWaterRippleTexels);
+        run.Run(
+            [&wake](double elapsed) {
+                const float y = static_cast<float>(wake.speed * (elapsed - 0.5 * kWakeRunSeconds));
+                return water_contact_checks::FrameOf({WakeUnit(0.0f, y, wake.depth, wake.swimming)});
+            },
+            kWakeFrameRate, kWakeRunSeconds);
+        const RippleState map = run.Read();
+        const float endY = static_cast<float>(kWakeRunSeconds * wake.speed * 0.5);
+        const WakeLines lines =
+            MeasureWake(map, static_cast<float>(map.texels / 2), endY / kWaterRippleTexelYards + map.texels / 2);
+        const double mach = MachDegrees(wake.speed);
+        std::printf("     %s at %.2f yd/s: V front at %.1f deg (%.2f yd out at the unit), brightest line at %.1f deg, "
+                    "asin(c/v) %.1f deg; largest slope behind %.3f, largest height from %.1f yd ahead %.2e\n",
+                    wake.name, wake.speed, lines.frontDegrees, lines.frontOffset, lines.brightDegrees, mach,
+                    lines.behind, kWakeAheadYards, lines.ahead);
+        shaped = shaped && run.Prepared() && std::fabs(lines.frontDegrees - mach) <= kWakeAngleTolerance &&
+                 lines.brightDegrees <= lines.frontDegrees && lines.ahead <= kCalmAhead &&
+                 lines.behind >= kMinWakeSlope;
+    }
+    Check(shaped, "a unit moving faster than the ripples (2.65 yd/s) drags a V behind it and nothing ahead: the V's "
+                  "front, where the slope first reaches a tenth of its peak across each row 2 to 8 yd behind, opens "
+                  "at asin(2.65 / v) within 3 degrees for a 7 yd/s wader and a 4.72 yd/s swimmer");
+}
+
+WaterContact GuidedUnit(uint64_t guid, float x, float y)
+{
+    WaterContact unit = WakeUnit(x, y, kWakeShinDepth, false);
+    unit.guid = guid;
+    return unit;
+}
+
+void CheckEveryUnitMakesTheSameWake(IDirect3DDevice9* dev)
+{
+    WakeRun run(dev, kWaterRippleTexels);
+    run.Run(
+        [](double elapsed) {
+            const float y = static_cast<float>(kRunSpeed * (elapsed - 0.5 * kWakeRunSeconds));
+            return water_contact_checks::FrameOf(
+                {GuidedUnit(kNpcGuid, -kSideBySideYards, y), GuidedUnit(kPlayerGuid, kSideBySideYards, y)});
+        },
+        kWakeFrameRate, kWakeRunSeconds);
+    const RippleState map = run.Read();
+    const int apart = static_cast<int>(2.0f * kSideBySideYards / kWaterRippleTexelYards);
+    const int unitRow = map.texels / 2 + static_cast<int>(0.5 * kWakeRunSeconds * kRunSpeed / kWaterRippleTexelYards);
+    const int behind = static_cast<int>(kWakeFarthestBehind / kWaterRippleTexelYards);
+    const int ahead = static_cast<int>(kWakeAheadYards / kWaterRippleTexelYards);
+    float difference = 0.0f;
+    float peak = 0.0f;
+    for (int y = unitRow - behind; y <= unitRow + ahead; ++y)
+        for (int x = map.texels / 2 - apart + 1; x < map.texels / 2; ++x)
+        {
+            peak = std::max(peak, std::fabs(map.R(x, y)));
+            difference = std::max(difference, std::fabs(map.R(x, y) - map.R(x + apart, y)));
+        }
+    std::printf("     an NPC and a player running side by side %.0f yd apart: peak %.4f near each, largest difference "
+                "%.2e between their wakes\n",
+                2.0f * kSideBySideYards, peak, difference);
+    Check(run.Prepared() && peak > 0.0f && difference <= kReferenceTolerance * peak,
+          "an NPC and a player of the same size and depth running side by side leave the same wake, each around its "
+          "own path");
+}
+
+void CheckTeleportLeavesNoTrail(IDirect3DDevice9* dev)
+{
+    WakeRun run(dev, kWaterRippleTexels);
+    run.Run(
+        [](double elapsed) {
+            const float y = static_cast<float>(kRunSpeed * (elapsed - kBlinkAt) - kBlinkYards);
+            const float x = elapsed >= kBlinkAt ? kBlinkYards : -kBlinkYards;
+            return water_contact_checks::FrameOf({GuidedUnit(kPlayerGuid, x, y)});
+        },
+        kWakeFrameRate, kBlinkAt + kAfterBlinkSeconds);
+    const RippleState map = run.Read();
+    const int centre = map.texels / 2;
+    const int corridor = static_cast<int>(kBlinkCorridorYards / kWaterRippleTexelYards);
+    const int landingY = centre - static_cast<int>(kBlinkYards / kWaterRippleTexelYards);
+    float between = 0.0f;
+    for (int y = landingY - corridor; y <= landingY + corridor; ++y)
+        for (int x = centre - corridor; x <= centre + corridor; ++x)
+            between = std::max(between, std::fabs(map.R(x, y)));
+    std::printf("     unit blinking %.0f yd across its path while running: largest height midway %.2e, peak %.4f\n",
+                2.0f * kBlinkYards, between, Peak(map));
+    Check(run.Prepared() && Peak(map) > 0.0f && between <= kCalmAhead,
+          "a unit that blinks across the water leaves no footprint trail between where it left and where it landed");
 }
 
 void CheckQuietSimulationStops(IDirect3DDevice9* dev)
@@ -800,6 +1108,10 @@ void CheckWaterRipples(IDirect3DDevice9* dev)
         CheckRecentringKeepsRipplesInPlace(dev);
         CheckUnusableCentreKeepsTheWindow(dev);
         CheckSimulationFrameRateIndependence(dev);
+        CheckHeldFootprintsFollowTheReference(dev);
+        CheckWakeIsAMachV(dev);
+        CheckEveryUnitMakesTheSameWake(dev);
+        CheckTeleportLeavesNoTrail(dev);
         CheckQuietSimulationStops(dev);
         dev->EndScene();
         ReportStepCost(dev);
