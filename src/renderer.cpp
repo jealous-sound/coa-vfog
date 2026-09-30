@@ -310,17 +310,23 @@ void Renderer::LogLightChange(const FrameInputs& in, const AuthoredFog& fog, boo
         return;
     m_lightsLogged = true;
     m_lightSignature = signature;
-    if (!authored)
-    {
-        VF_LOG_INFO("map %d at (%.0f %.0f %.0f): no Classic fog data, derived layers", in.mapId, in.camPos[0],
-                    in.camPos[1], in.camPos[2]);
-        return;
-    }
     char lights[160] = {};
     int used = 0;
     for (int i = 0; i < fog.lightCount && used < static_cast<int>(sizeof(lights)) - 24; ++i)
         used += std::snprintf(lights + used, sizeof(lights) - used, "%s%u:%.2f", i ? " " : "", fog.lightIds[i],
                               fog.lightWeights[i]);
+    if (!authored && fog.lightCount == 0)
+    {
+        VF_LOG_INFO("map %d at (%.0f %.0f %.0f): no Classic fog data, derived layers", in.mapId, in.camPos[0],
+                    in.camPos[1], in.camPos[2]);
+        return;
+    }
+    if (!authored)
+    {
+        VF_LOG_INFO("map %d at (%.0f %.0f %.0f): Classic lights %s (coverage %.2f) without Classic fog, derived layers",
+                    in.mapId, in.camPos[0], in.camPos[1], in.camPos[2], lights, fog.coverage);
+        return;
+    }
     VF_LOG_INFO("map %d at (%.0f %.0f %.0f): Classic lights %s, %d layers, storm %.1f, screen effect slot %d",
                 in.mapId, in.camPos[0], in.camPos[1], in.camPos[2], lights, fog.layerCount,
                 loggedStormStep / kLoggedStormBlendSteps, selection.screenEffectSlot);
@@ -698,7 +704,7 @@ IDirect3DTexture9* Renderer::FilterWithHistory(IDirect3DDevice9* dev, IDirect3DT
 }
 
 void Renderer::LogFrameSummary(IDirect3DDevice9* dev, long long now, const FrameInputs& in, const Config& cfg,
-                               const FogParams& fog, const AuthoredFog* authored, const D3DSURFACE_DESC& depthDesc,
+                               const FogParams& fog, const AuthoredFog& authored, const D3DSURFACE_DESC& depthDesc,
                                const float* viewToWorld, const float* toLightInView, const float* sunPx,
                                float rayStrength)
 {
@@ -750,8 +756,8 @@ void Renderer::LogFrameSummary(IDirect3DDevice9* dev, long long now, const Frame
                     l.emissive[2], l.upperHeight, l.upperFalloff, l.lowerHeight, l.lowerFalloff, l.shadowed,
                     std::min(l.endDistance, 99999.0f));
     }
-    if (authored)
-        LogAuthoredExtras(*authored);
+    if (authored.lightCount > 0)
+        LogAuthoredExtras(authored);
 }
 
 bool Renderer::Render(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* boundDepthStencil,
@@ -891,8 +897,7 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     const float rayStrength = cfg.godRays * fog.lightVisibility * sunScreenFade;
     const bool rays = rayStrength > 0.005f;
 
-    LogFrameSummary(dev, now, in, cfg, fog, hasAuthored ? &authored : nullptr, depthDesc, viewToWorld, toLightInView,
-                    sunPx, rayStrength);
+    LogFrameSummary(dev, now, in, cfg, fog, authored, depthDesc, viewToWorld, toLightInView, sunPx, rayStrength);
 
     if (LogEnabled(LogLevel::Info))
         m_gpuTimer.Begin(dev);

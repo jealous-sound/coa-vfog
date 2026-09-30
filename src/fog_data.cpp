@@ -650,18 +650,17 @@ bool FogData::Resolve(int mapId, const float* position, float dayFraction, const
                       AuthoredFog& out) const
 {
     std::memset(&out, 0, sizeof(out));
+    GradingBlend{}.Result(out.gradingCurve);
     if (m_lights.empty() || mapId < 0)
         return false;
 
-    if (!std::binary_search(m_mapsWithFog.begin(), m_mapsWithFog.end(), mapId))
-        return false;
-
     const LightBlend blend = BlendLights(mapId, position);
-    float classicWeight = 0.0f;
     for (int i = 0; i < blend.count; ++i)
-        classicWeight += blend.lights[i].weight;
-    if (classicWeight < kMinimumClassicCoverage)
+        out.coverage += blend.lights[i].weight;
+    if (out.coverage <= 0.0f)
         return false;
+    const bool classicFog = std::binary_search(m_mapsWithFog.begin(), m_mapsWithFog.end(), mapId) &&
+                            out.coverage >= kMinimumClassicCoverage;
 
     const float halfMinuteOfDay = std::fmod(std::max(dayFraction, 0.0f), 1.0f) * kHalfMinutesPerDay;
     LayerBlend layerBlends[kMaxAuthoredLayers];
@@ -671,17 +670,19 @@ bool FogData::Resolve(int mapId, const float* position, float dayFraction, const
     for (int i = 0; i < blend.count; ++i)
     {
         const Light& light = *blend.lights[i].light;
-        const float weight = blend.lights[i].weight / classicWeight;
-        const ConditionFog fog = LightConditionFog(light, halfMinuteOfDay, selection);
-        for (int j = 0; j < fog.layerCount; ++j)
-            layerBlends[j].Add(fog.layers[j], weight);
-        directLight.Add(fog.directLight, fog.directLightPresence, weight);
-        glow.Add(fog.glow, fog.glowPresence, weight);
-        grading.Add(fog.grading, weight);
-        out.layerCount = std::max(out.layerCount, fog.layerCount);
+        const float weight = blend.lights[i].weight / out.coverage;
+        const ConditionFog condition = LightConditionFog(light, halfMinuteOfDay, selection);
+        glow.Add(condition.glow, condition.glowPresence, weight);
+        grading.Add(condition.grading, weight);
         out.lightIds[out.lightCount] = light.id;
         out.lightWeights[out.lightCount] = weight;
         ++out.lightCount;
+        if (!classicFog)
+            continue;
+        for (int j = 0; j < condition.layerCount; ++j)
+            layerBlends[j].Add(condition.layers[j], weight);
+        directLight.Add(condition.directLight, condition.directLightPresence, weight);
+        out.layerCount = std::max(out.layerCount, condition.layerCount);
     }
     for (int j = 0; j < out.layerCount; ++j)
         out.layers[j] = layerBlends[j].Result();
@@ -690,8 +691,7 @@ bool FogData::Resolve(int mapId, const float* position, float dayFraction, const
     out.hasGlow = glow.Presence() > 0.0f;
     out.glow = glow.Result();
     grading.Result(out.gradingCurve);
-    out.coverage = classicWeight;
-    return true;
+    return classicFog;
 }
 
 bool FogData::HasFogInAnySlot(const Light& light) const

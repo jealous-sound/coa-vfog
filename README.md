@@ -193,7 +193,12 @@ layers (the columns above plus the authored noise columns: fade colour c4, scrol
 pairs c27 and c28, and c24 carried raw); the zone lights and their outlines; and the grading curves. The loader
 rejects any other format and logs which one it found.
 
-Each light params also carries glow and colour grading, which the DLL resolves with the fog but does not render yet:
+Each light params also carries glow and colour grading, which the DLL resolves but does not render yet. They are
+blended from the Classic lights around the camera like the fog, but on every map with a placed light, not only where
+Classic fog applies: 219 light params without fog but with glow are placed on 3.3.5 maps, 167 of them only on the 17
+maps without Classic fog, such as Blackwing Lair (469) and Stratholme (329). `AuthoredFog::coverage` is the Classic
+lights' share of the blend, for the renderer to fade toward the client's own values; where no Classic light reaches
+there is no glow and the curve is the identity.
 
 - **Glow.** `LightParams.Glow`, blended like the fog by light weight, weather and screen-effect slot. Forever sets it
   to 0 on 130 of 131 Kalimdor and 59 of 80 Eastern Kingdoms clear-weather lights, where CoA's own 3.3.5 data holds
