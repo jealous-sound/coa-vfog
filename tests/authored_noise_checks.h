@@ -25,6 +25,7 @@ constexpr float kLayerLength = 200.0f;
 constexpr float kLayerDensity = 0.01f;
 constexpr float kFullStorm = 1.0f;
 constexpr float kNoiselessTile = 300.0f;
+constexpr double kMaxVolumeBuildMilliseconds = 40.0;
 const float kHyjalSummit[3] = {5458.0f, -2934.0f, 1481.0f};
 constexpr Vec3 kToMoonOverHyjal = {0.63f, 0.63f, 0.455f};
 
@@ -57,8 +58,24 @@ void CheckCurveMatchesForever()
           "the noise density curve is Forever's contrast-20 S-curve through (0.5, 0.5)");
 }
 
+double MillisecondsToPrepareTheVolume()
+{
+    LARGE_INTEGER frequency = {};
+    LARGE_INTEGER before = {};
+    LARGE_INTEGER after = {};
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&before);
+    PrepareAuthoredNoise();
+    QueryPerformanceCounter(&after);
+    return 1000.0 * static_cast<double>(after.QuadPart - before.QuadPart) / static_cast<double>(frequency.QuadPart);
+}
+
 void CheckVolumeIsBalancedAndTileable()
 {
+    const double buildMilliseconds = MillisecondsToPrepareTheVolume();
+    std::printf("     authored noise volume built in %.1f ms\n", buildMilliseconds);
+    Check(buildMilliseconds < kMaxVolumeBuildMilliseconds,
+          "the authored noise volume builds in a few milliseconds, too fast to stall a frame");
     const UINT n = kAuthoredNoiseSize;
     double sum = 0.0;
     double squares = 0.0;

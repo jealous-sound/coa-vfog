@@ -177,7 +177,8 @@ tiles, drift and fade colour, and `ClassicNoise=0` turns the noise off.
 The modern client's noise texture (`t_perlinNoise3D`) is not in the kit, so the volume is ours: a 64³ tileable
 gradient (Perlin) noise with detail layers of 4, 8 and 16 lattice cells per tile at gain 0.5, quantised about its
 median so the S-curve splits it evenly. Its features are about a quarter of a tile, 75 yd in the Eastern Kingdoms
-storm's 300-yd tiles and 1250 yd at Hyjal. The march samples the noise once per step at the step's sample point for all
+storm's 300-yd tiles and 1250 yd at Hyjal. The DLL builds it when it installs its hooks at load, in about 6 ms (each
+row sums its lattice gradients once), so the first frame with noise only uploads it. The march samples the noise once per step at the step's sample point for all
 three layers, as the modern client evaluates each froxel once, and the point lights scatter off the same noisy
 density. Where the noise is not sampled a noisy layer takes its mean, density ×(1 − alpha/2) with the emission
 weighted by where fog remains: in the water's reflection fog, which is integrated analytically, in the check of

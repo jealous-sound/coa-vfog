@@ -45,52 +45,113 @@ float QuinticFade(float t)
     return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
 }
 
-float CornerGradientDot(uint32_t hash, float dx, float dy, float dz)
+constexpr uint32_t kFinestLatticePeriod = kAuthoredNoiseBaseCells << (kAuthoredNoiseDetailLayers - 1);
+
+class GradientLattice
 {
-    const float* g = kEdgeGradients[hash % kEdgeGradientCount];
-    return g[0] * dx + g[1] * dy + g[2] * dz;
+public:
+    GradientLattice(uint32_t period, uint32_t detailLayer) : m_period(period), m_gradients(period * period * period)
+    {
+        for (uint32_t z = 0; z < period; ++z)
+            for (uint32_t y = 0; y < period; ++y)
+                for (uint32_t x = 0; x < period; ++x)
+                    m_gradients[x + period * (y + period * z)] =
+                        kEdgeGradients[LatticeHash(x, y, z, detailLayer) % kEdgeGradientCount];
+    }
+
+    uint32_t Period() const { return m_period; }
+
+    const float* const* Row(uint32_t y, uint32_t z) const
+    {
+        return &m_gradients[m_period * (y % m_period + m_period * (z % m_period))];
+    }
+
+private:
+    uint32_t m_period;
+    std::vector<const float*> m_gradients;
+};
+
+struct LatticeCoordinate
+{
+    uint32_t cell;
+    uint32_t nextCell;
+    float offset;
+    float fade;
+};
+
+std::vector<LatticeCoordinate> TexelLatticeCoordinates(uint32_t period)
+{
+    std::vector<LatticeCoordinate> coordinates(kAuthoredNoiseSize);
+    for (UINT texel = 0; texel < kAuthoredNoiseSize; ++texel)
+    {
+        const float position = (texel + 0.5f) / kAuthoredNoiseSize * period;
+        const float floored = std::floor(position);
+        const float offset = position - floored;
+        const uint32_t cell = static_cast<uint32_t>(floored) % period;
+        coordinates[texel] = {cell, (cell + 1) % period, offset, QuinticFade(offset)};
+    }
+    return coordinates;
 }
 
-float TileableGradientNoise(const float* position, uint32_t period, uint32_t detailLayer)
+struct RowGradientTerms
 {
-    uint32_t cell[3];
-    float offset[3];
-    float fade[3];
-    for (int axis = 0; axis < 3; ++axis)
+    float slope = 0.0f;
+    float intercept = 0.0f;
+};
+
+void AddGradientNoiseRow(const GradientLattice& lattice, const std::vector<LatticeCoordinate>& coordinates, UINT y,
+                         UINT z, float amplitude, float* row)
+{
+    const uint32_t period = lattice.Period();
+    const LatticeCoordinate& along = coordinates[y];
+    const LatticeCoordinate& across = coordinates[z];
+    RowGradientTerms terms[kFinestLatticePeriod];
+    for (uint32_t corner = 0; corner < 4; ++corner)
     {
-        const float floored = std::floor(position[axis]);
-        cell[axis] = static_cast<uint32_t>(floored) % period;
-        offset[axis] = position[axis] - floored;
-        fade[axis] = QuinticFade(offset[axis]);
+        const uint32_t stepY = corner & 1u;
+        const uint32_t stepZ = corner >> 1;
+        const float weight = (stepY ? along.fade : 1.0f - along.fade) * (stepZ ? across.fade : 1.0f - across.fade);
+        const float offsetY = along.offset - static_cast<float>(stepY);
+        const float offsetZ = across.offset - static_cast<float>(stepZ);
+        const float* const* gradients = lattice.Row(along.cell + stepY, across.cell + stepZ);
+        for (uint32_t x = 0; x < period; ++x)
+        {
+            const float* g = gradients[x];
+            terms[x].slope += weight * g[0];
+            terms[x].intercept += weight * (g[1] * offsetY + g[2] * offsetZ);
+        }
     }
-    float value = 0.0f;
-    for (int corner = 0; corner < 8; ++corner)
+    for (UINT x = 0; x < kAuthoredNoiseSize; ++x)
     {
-        const uint32_t step[3] = {corner & 1u, (corner >> 1) & 1u, (corner >> 2) & 1u};
-        const uint32_t hash = LatticeHash((cell[0] + step[0]) % period, (cell[1] + step[1]) % period,
-                                          (cell[2] + step[2]) % period, detailLayer);
-        float weight = 1.0f;
-        for (int axis = 0; axis < 3; ++axis)
-            weight *= step[axis] ? fade[axis] : 1.0f - fade[axis];
-        value += weight * CornerGradientDot(hash, offset[0] - step[0], offset[1] - step[1], offset[2] - step[2]);
+        const LatticeCoordinate& c = coordinates[x];
+        const RowGradientTerms& left = terms[c.cell];
+        const RowGradientTerms& right = terms[c.nextCell];
+        const float leftValue = left.slope * c.offset + left.intercept;
+        const float rightValue = right.slope * (c.offset - 1.0f) + right.intercept;
+        row[x] += amplitude * (leftValue + (rightValue - leftValue) * c.fade);
     }
-    return value;
 }
 
-float TileableGradientDetail(UINT x, UINT y, UINT z)
+std::vector<float> TileableGradientDetail()
 {
-    const float tileFraction[3] = {(x + 0.5f) / kAuthoredNoiseSize, (y + 0.5f) / kAuthoredNoiseSize,
-                                   (z + 0.5f) / kAuthoredNoiseSize};
-    float value = 0.0f;
+    std::vector<float> values(kAuthoredNoiseSize * kAuthoredNoiseSize * kAuthoredNoiseSize, 0.0f);
     float amplitude = 1.0f;
-    for (int layer = 0; layer < kAuthoredNoiseDetailLayers; ++layer)
+    for (uint32_t layer = 0; layer < kAuthoredNoiseDetailLayers; ++layer)
     {
-        const uint32_t period = kAuthoredNoiseBaseCells << layer;
-        const float position[3] = {tileFraction[0] * period, tileFraction[1] * period, tileFraction[2] * period};
-        value += amplitude * TileableGradientNoise(position, period, static_cast<uint32_t>(layer));
+        const GradientLattice lattice(kAuthoredNoiseBaseCells << layer, layer);
+        const std::vector<LatticeCoordinate> coordinates = TexelLatticeCoordinates(lattice.Period());
+        for (UINT z = 0; z < kAuthoredNoiseSize; ++z)
+            for (UINT y = 0; y < kAuthoredNoiseSize; ++y)
+                AddGradientNoiseRow(lattice, coordinates, y, z, amplitude,
+                                    &values[kAuthoredNoiseSize * (y + kAuthoredNoiseSize * z)]);
         amplitude *= kAuthoredNoiseDetailGain;
     }
-    return value;
+    return values;
+}
+
+BYTE NearestByte(float nonNegative)
+{
+    return static_cast<BYTE>(std::clamp(static_cast<int>(nonNegative + 0.5f), 0, 255));
 }
 
 std::vector<BYTE> QuantizedAroundMedian(const std::vector<float>& values)
@@ -105,21 +166,14 @@ std::vector<BYTE> QuantizedAroundMedian(const std::vector<float>& values)
     for (size_t i = 0; i < values.size(); ++i)
     {
         const float centred = extent > 0.0f ? (values[i] - median) / extent : 0.0f;
-        bytes[i] = static_cast<BYTE>(std::clamp(std::lround(kByteCentre + kByteCentre * centred), 0L, 255L));
+        bytes[i] = NearestByte(kByteCentre + kByteCentre * centred);
     }
     return bytes;
 }
 
 const std::vector<BYTE>& AuthoredNoiseTexels()
 {
-    static const std::vector<BYTE> texels = [] {
-        std::vector<float> values(kAuthoredNoiseSize * kAuthoredNoiseSize * kAuthoredNoiseSize);
-        for (UINT z = 0; z < kAuthoredNoiseSize; ++z)
-            for (UINT y = 0; y < kAuthoredNoiseSize; ++y)
-                for (UINT x = 0; x < kAuthoredNoiseSize; ++x)
-                    values[x + kAuthoredNoiseSize * (y + kAuthoredNoiseSize * z)] = TileableGradientDetail(x, y, z);
-        return QuantizedAroundMedian(values);
-    }();
+    static const std::vector<BYTE> texels = QuantizedAroundMedian(TileableGradientDetail());
     return texels;
 }
 
@@ -165,6 +219,11 @@ bool CreateDensityNoise(IDirect3DDevice9* device, IDirect3DVolumeTexture9** outp
     }
     *output = texture;
     return true;
+}
+
+void PrepareAuthoredNoise()
+{
+    AuthoredNoiseTexels();
 }
 
 BYTE AuthoredNoiseTexel(UINT x, UINT y, UINT z)
