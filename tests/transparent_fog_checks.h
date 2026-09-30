@@ -52,6 +52,8 @@ constexpr float kMinRayGain = 0.01f;
 constexpr int kMaxRayDarkening = 1;
 constexpr int kMaxLateRayDifference = 2;
 constexpr int kLoggedFailingFrames = 4;
+constexpr float kSteepClientExponent = 2.0f;
+constexpr uintptr_t kUnreadableAddress = 0x10;
 constexpr const char* kEarlyCompositeDepthUnboundLine =
     "transparent fog: the early composite was skipped: fog depth surface not bound; the fog is drawn after the world";
 constexpr float kRaysOn = 1.0f;
@@ -1009,6 +1011,105 @@ void CheckThunksAndGlarePass(Harness& h)
           "again in the next frame");
 }
 
+void CallM2BatchFog(uint32_t colour, float exponent)
+{
+    M2BatchFogArgs args = {kPushedStockFogStart, kPushedStockFogEnd, exponent, &colour};
+    vf_test_hook_m2_batch_fog(&args);
+}
+
+std::string CountedFrameLog(Harness& h, const View& v, bool transparentFog)
+{
+    RenderHookedFrame(h, v, HookConfig(transparentFog), FrameOptions());
+    Config counted = HookConfig(transparentFog);
+    counted.logLevel = static_cast<int>(LogLevel::Debug);
+    vf_test_set_config(&counted);
+    const size_t start = water_settings_checks::DllLogSize();
+    CallM2BatchFog(kModulate2xFogColour, kLinearStockFogExponent);
+    vf_test_hook_frame_begin();
+    h.BeginFrame();
+    h.DrawScene(v.eye, v.view, v.proj, v.world);
+    CallM2BatchFog(kLightingColour, kLinearStockFogExponent);
+    CallM2BatchFog(kAdditiveFogColour, kAuthoredClientExponent);
+    vf_test_hook_liquid_end();
+    CallM2BatchFog(kModulateFogColour, kSteepClientExponent);
+    CallM2BatchFog(kModulate2xFogColour, kLinearStockFogExponent);
+    CallM2BatchFog(kLightingColour, kLinearStockFogExponent);
+    CallGlarePassThunk();
+    vf_test_hook_world_done();
+    h.dev->EndScene();
+    vf_test_log_transparent_fog_stats();
+    vf_test_hook_frame_end();
+    h.dev->Present(nullptr, nullptr, nullptr, nullptr);
+    return runtime_cost::LogWrittenSince(start);
+}
+
+void CheckStageZeroCounts(Harness& h)
+{
+    const View v;
+    const std::string passThrough = CountedFrameLog(h, v, false);
+    const std::string early = CountedFrameLog(h, v, true);
+    const char* shares = "colours lighting 33.3%, black 16.7%, white 16.7%, grey 33.3%, other 0.0%";
+    const char* exponents = "fog exponent 1: 66.7%, below 1: 16.7%, above 1: 16.7% (lowest 0.600, highest 2.000)";
+    std::printf("%s%s", passThrough.c_str(), early.c_str());
+    Check(runtime_cost::HasLine(passThrough, "transparent fog: 1 frames, 0 early composites; M2 batch fog 2 before the "
+                                             "liquid end, 3 after, 1 outside the world render, 0 rewritten") &&
+              runtime_cost::HasLine(passThrough, shares) && runtime_cost::HasLine(passThrough, exponents) &&
+              runtime_cost::HasLine(passThrough,
+                                    "glare pass 0 drawn before the fog, 1 at its own call, 0 own calls skipped"),
+          "with TransparentFog=0 at LogLevel 2 the transparent fog counters sort M2 batch fog calls into before the "
+          "liquid end, after it and outside the world render, and count colour modes, exponents and glare calls");
+    Check(runtime_cost::HasLine(early, "transparent fog: 1 frames, 1 early composites; M2 batch fog 2 before the "
+                                       "liquid end, 3 after, 1 outside the world render, 3 rewritten") &&
+              runtime_cost::HasLine(early, shares) && runtime_cost::HasLine(early, exponents) &&
+              runtime_cost::HasLine(early, "glare pass 1 drawn before the fog, 0 at its own call, 1 own calls skipped"),
+          "with TransparentFog=1 the counters add the early composite, the rewritten batches after it and the glare "
+          "drawn before the fog and skipped at its own call");
+}
+
+void RenderFrameWithFaultingBatchFog(Harness& h, const View& v, const Config& cfg)
+{
+    vf_test_set_config(&cfg);
+    vf_test_use_fog_hook_client(&v.in);
+    vf_test_hook_frame_begin();
+    h.BeginFrame();
+    h.DrawScene(v.eye, v.view, v.proj, v.world);
+    vf_test_hook_liquid_end();
+    M2BatchFogArgs faulting = {kPushedStockFogStart, kPushedStockFogEnd, kAuthoredClientExponent,
+                               reinterpret_cast<const uint32_t*>(kUnreadableAddress)};
+    vf_test_hook_m2_batch_fog(&faulting);
+    CallGlarePassThunk();
+    vf_test_hook_world_done();
+    h.dev->EndScene();
+    vf_test_hook_frame_end();
+    h.dev->Present(nullptr, nullptr, nullptr, nullptr);
+}
+
+void CheckM2HookFaultKeepsTheFog(Harness& h)
+{
+    const View v;
+    const Config cfg = HookConfig(true);
+    RenderHookedFrame(h, v, cfg, FrameOptions());
+    const size_t start = water_settings_checks::DllLogSize();
+    RenderFrameWithFaultingBatchFog(h, v, cfg);
+    const HookedFrame after = RenderSettledHookedFrame(h, v, cfg, FrameOptions());
+    const Image direct = RenderWholeFrameDirectly(h, v, cfg, FrameOptions());
+    vf_test_clear_transparent_fog_failure();
+    const int difference = LargestDifference(after.image, direct, v.world);
+    const std::string text = runtime_cost::LogWrittenSince(start);
+    const size_t faults =
+        water_settings_checks::CountOf(text, "in M2 batch fog hook; transparent fog disabled for this session");
+    const size_t fallbacks = water_settings_checks::CountOf(
+        text, "transparent fog: the fog is drawn after the world because it stopped after an exception");
+    std::printf("     M2 batch fog hook fault: %zu fault lines, %zu fallback lines; next frames: M2 fog %s, glare %d "
+                "before the fog and %d at its own call, frame vs the fog pass alone %d/255\n",
+                faults, fallbacks, PassedThrough(after) ? "passed through" : "rewritten",
+                after.glarePassesBeforeTheFog, after.glarePassesAtOwnCall, difference);
+    Check(faults == 1 && fallbacks == 1 && PassedThrough(after) && after.glarePassesBeforeTheFog == 0 &&
+              after.glarePassesAtOwnCall == 1 && difference == 0,
+          "an exception in the M2 batch fog hook turns transparent fog off for the session and leaves the fog "
+          "drawn after the world, as with TransparentFog=0");
+}
+
 void CheckTransparentFog(Harness& h)
 {
     Config saved;
@@ -1020,6 +1121,8 @@ void CheckTransparentFog(Harness& h)
     CheckWholeFrameFallbacks(h);
     CheckEarlyCompositeFailureLogged(h);
     CheckThunksAndGlarePass(h);
+    CheckStageZeroCounts(h);
+    CheckM2HookFaultKeepsTheFog(h);
     vf_test_set_config(&saved);
 }
 

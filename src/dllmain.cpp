@@ -311,6 +311,16 @@ extern "C" const void* __cdecl vf_test_glare_pass_thunk(uintptr_t target)
     return RetargetGlarePassThunk(target);
 }
 
+extern "C" void __cdecl vf_test_log_transparent_fog_stats()
+{
+    LogTransparentFogStatsAtFrameEnd();
+}
+
+extern "C" void __cdecl vf_test_clear_transparent_fog_failure()
+{
+    ClearTransparentFogFailure();
+}
+
 extern "C" void __cdecl vf_test_force_fog_params(const FogParams* fog)
 {
     ForceFogParams(fog);

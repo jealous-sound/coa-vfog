@@ -47,6 +47,8 @@ void RecordHookedFogFrame(bool rendered, bool cameraUnderLiquid, const char* ski
 void UseTestFogClient(const FrameInputs& in);
 engine::StockFog TestClientStockFog();
 void SetTestClientStockFog(const engine::StockFog& fog);
+void LogTransparentFogStatsAtFrameEnd();
+void ClearTransparentFogFailure();
 const void* RetargetM2BatchFogThunk(uintptr_t target);
 const void* RetargetGlarePassThunk(uintptr_t target);
 void UseTestWaterClient(const FrameInputs& in, const WaterInputs& water);

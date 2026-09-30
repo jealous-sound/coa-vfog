@@ -99,6 +99,7 @@ struct TransparentFogStats
 
 TransparentFogStats g_transparentFogStats = {};
 DWORD g_transparentFogStatsTicks = 0;
+bool g_transparentFogStatsDue = false;
 
 uintptr_t g_waterPassTarget = engine::kWaterPassTarget;
 bool g_waterHooksInstalled = false;
@@ -320,8 +321,9 @@ void LogTransparentFogStatsWhenDue()
     const DWORD now = GetTickCount();
     if (!g_transparentFogStatsTicks)
         g_transparentFogStatsTicks = now;
-    if (now - g_transparentFogStatsTicks < kTransparentFogStatsIntervalMs)
+    if (!g_transparentFogStatsDue && now - g_transparentFogStatsTicks < kTransparentFogStatsIntervalMs)
         return;
+    g_transparentFogStatsDue = false;
     g_transparentFogStatsTicks = now;
     LogTransparentFogStats(g_transparentFogStats);
     g_transparentFogStats = {};
@@ -1512,6 +1514,16 @@ void UseTestFogClient(const FrameInputs& in)
 engine::StockFog TestClientStockFog()
 {
     return g_testStockFog;
+}
+
+void LogTransparentFogStatsAtFrameEnd()
+{
+    g_transparentFogStatsDue = true;
+}
+
+void ClearTransparentFogFailure()
+{
+    g_transparentFogFailed = false;
 }
 
 void SetTestClientStockFog(const engine::StockFog& fog)
