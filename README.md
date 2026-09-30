@@ -97,14 +97,18 @@ Westfall, Loch Modan, Durotar, Mulgore, the Barrens and the Eastern Kingdoms sto
 of the Un'Goro storm; the 152 params with fog that no 69876 light references cannot be placed and are left out.
 
 The converter keeps the fog rows the Classic client selects (flag 0x8), the lowest row ID at each layer index
-(0–2). The other flags are 0x1 shadowed, 0x2 heights relative to the camera and 0x4 authored noise; flag values are
-written in hex here, and the GPU flags above 0x4 are packed by the modern client's CPU. At run time the DLL
-blends the Classic lights around the camera: spheres at full weight inside the falloff start and linear to the
-falloff end, the rest to the zone light whose outline holds the camera (fading in over 100 yd, innermost outline on
-top), and otherwise to the map's global light. Each light uses the condition slot the client uses for its stock
-lighting: the slot a screen effect forces (the ghost effect forces slot 4, death),
-otherwise clear weather (slot 0) blended toward storm (slot 2) by the client's storm weight. The two time keys
-around the current time are interpolated and layers are paired by their Classic layer index.
+(0–2). The other flags are 0x1 shadowed, 0x2 relative heights and 0x4 authored noise; flag values are written in
+hex here, and the GPU flags above 0x4 are packed by the modern client's CPU. At run time the DLL blends the Classic
+lights around the camera: spheres at full weight inside the falloff start and linear to the falloff end, the rest to
+the zone light whose outline holds the camera (fading in over 100 yd, innermost outline on top), and otherwise to the
+map's global light. Each light uses the condition slot the client uses for its stock lighting: the slot a screen
+effect forces (the ghost effect forces slot 4, death), otherwise clear weather (slot 0) blended toward storm (slot 2)
+by the client's storm weight. The two time keys around the current time are interpolated and layers are paired by
+their Classic layer index.
+
+Classic data applies on maps where any Classic light has fog, wherever Classic lights hold at least half of the
+blend weight. A light without fog in the active slot counts with zero density, so the fog thins smoothly into it
+and the distance fog hides the far clip there. Other maps use the derived layers.
 
 Then the Classic transforms apply:
 
@@ -114,7 +118,8 @@ Then the Classic transforms apply:
   minus a yard. The modern interior layers add the camera height instead; the global layers' CPU offset is not in the
   kit, so which height the modern client uses there is inferred.
 - With flag 0x1, while the sun or moon is below the horizon, the shadow emissive colour and density multiplier;
-  this is the modern shader's form with its shadow term equal to the light's height above the horizon.
+  this is the modern shader's form with shadow maps on in open sky, where its shadow term is the light's
+  above-horizon ramp.
 - The distance curve `1 + strength·((d − start)/range)^exponent`, with `MaxDistance` as the range; the modern client
   uses its fog volume depth, whose value is not in the kit.
 - The authored scatter intensity (0–50 in the data) times a Henyey–Greenstein phase normalised to 1 toward the
@@ -175,10 +180,6 @@ weighted by where fog remains: in the water's reflection fog, which is integrate
 whether the Classic layers hide the far clip, and in the lit composite's full-resolution march at silhouettes, which
 has no temp register to spare in ps_3_0. Frames without noise use the shader variants without it, at their previous
 cost.
-
-Classic data applies on maps where any Classic light has fog, wherever Classic lights hold at least half of the
-blend weight. A light without fog in the active slot counts with zero density, so the fog thins smoothly into it
-and the distance fog hides the far clip there. Other maps use the derived layers.
 
 `fogdata.bin` format 4 holds, after a header of counts: the lights (id, map, position, falloff, eight light params
 slots); every light params a light references, with its `LightParams.Glow` and the range of its fog keys (none for
@@ -470,7 +471,9 @@ passes since the previous summary, for example
 The time covers the fog passes alone, god rays included, without the client's own rendering or any CPU work;
 compare it with the frame time to see the fog's share of a GPU-bound frame. `skipped` counts frames whose timing
 was lost, and `fog gpu no samples` means none finished in the interval. Without timestamp queries the log says
-so once and the summaries omit the time; at `LogLevel=0` no queries are issued.
+so once and the summaries omit the time; at `LogLevel=0` no queries are issued. With Classic data the summary
+adds the resolved glow and grading curve, for example `Classic glow 0.00, grading curve at inputs 8/31 16/31 24/31:
+0.267 0.565 0.890 (not rendered)`, and a line for each layer with authored noise.
 
 Every 60 s the water adds `water gpu 1.24 ms (median of 3500 frames, 0 skipped), classes lake+ocean, waves 256
 (7 tiles)`: its GPU time without the client's own water draws. `water:` lines name each liquid type the first
@@ -536,8 +539,9 @@ This is an atmospheric approximation, not a reproduction of WoW Forever's comple
 [Blizzard's official overview](
 https://news.blizzard.com/en-gb/article/24303862/world-of-warcraft-forever-whats-next-panel-recap)
 describes mist over water and moonlight through trees; matching those scenes needs matched camera, time, weather
-and exposure captures. Surface lighting, bloom and colour grading remain the client's own, and the modern
-client's LUT grading is not reproduced, so colours still differ from Classic.
+and exposure captures. Surface lighting, bloom and colour grading remain the client's own: the modern client's glow
+amounts and LUT grading are resolved from the Classic data but not applied yet, so colours still differ from
+Classic.
 
 - The fog has been tested in the client with native D3D9 on an RTX 2060 laptop. A first modern-water build ran
   there on Elwynn lakes and the Darkshore coast; the review fixes since (direct-light shading, narrower shore
