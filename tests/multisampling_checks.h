@@ -48,6 +48,11 @@ constexpr int kMaxSingleSampledDifference = 2;
 constexpr float kMinShadedWaterFraction = 0.9f;
 constexpr int kWaterEdgeMargin = 2;
 constexpr int kMaxCopiedSampleOffsetWaterDifference = 6;
+constexpr D3DFORMAT kListDisplayFormat = D3DFMT_X8R8G8B8;
+constexpr D3DFORMAT kListDepthFormats[] = {D3DFMT_D16, D3DFMT_D24X8, D3DFMT_D24S8, D3DFMT_D32};
+constexpr int kListSampleCounts[] = {0, 2, 4, 6, 8, 10, 12, 14, 16};
+constexpr double kMaxListCostFactor = 3.0;
+constexpr double kListCostAllowanceMs = 10.0;
 
 struct Targets
 {
@@ -329,6 +334,57 @@ void CheckVideoOptionsOffer(Harness& m, IDirect3D9* real, bool driverCopies)
         m.d3d->CheckDeviceMultiSampleType(0, D3DDEVTYPE_HAL, D3DFMT_X8R8G8B8, FALSE, D3DMULTISAMPLE_NONE, nullptr);
     Check(hidden == D3DERR_NOTAVAILABLE && noMethod == D3DERR_NOTAVAILABLE && SUCCEEDED(single),
           "Multisampling=0 or no depth copy method hides 4x from the game's Video options and keeps 1x");
+}
+
+struct ListCost
+{
+    int calls = 0;
+    double milliseconds = 0.0;
+};
+
+ListCost BuildVideoOptionsMultisampleList(IDirect3D9* d3d)
+{
+    ListCost cost;
+    LARGE_INTEGER start = {};
+    LARGE_INTEGER end = {};
+    QueryPerformanceCounter(&start);
+    const UINT modes = d3d->GetAdapterModeCount(0, kListDisplayFormat);
+    for (UINT i = 0; i < modes; ++i)
+    {
+        D3DDISPLAYMODE mode = {};
+        d3d->EnumAdapterModes(0, kListDisplayFormat, i, &mode);
+        for (const D3DFORMAT depth : kListDepthFormats)
+        {
+            if (FAILED(d3d->CheckDeviceFormat(0, D3DDEVTYPE_HAL, mode.Format, D3DUSAGE_DEPTHSTENCIL, D3DRTYPE_SURFACE,
+                                              depth)))
+                continue;
+            for (const int count : kListSampleCounts)
+            {
+                const auto samples = static_cast<D3DMULTISAMPLE_TYPE>(count);
+                DWORD levels = 0;
+                d3d->CheckDeviceMultiSampleType(0, D3DDEVTYPE_HAL, mode.Format, FALSE, samples, &levels);
+                d3d->CheckDeviceMultiSampleType(0, D3DDEVTYPE_HAL, depth, FALSE, samples, &levels);
+                cost.calls += 2;
+            }
+        }
+    }
+    QueryPerformanceCounter(&end);
+    cost.milliseconds = water_fft_checks::MillisecondsBetween(start, end);
+    return cost;
+}
+
+void CheckVideoOptionsListCost(Harness& m, IDirect3D9* real)
+{
+    Config keep = MultisamplingConfig(true);
+    vf_test_set_config(&keep);
+    const ListCost direct = BuildVideoOptionsMultisampleList(real);
+    const ListCost wrapped = BuildVideoOptionsMultisampleList(m.d3d);
+    std::printf("     the Video options' multisample list: %d CheckDeviceMultiSampleType calls, %.1f ms through the "
+                "wrapper, %.1f ms on the driver\n",
+                wrapped.calls, wrapped.milliseconds, direct.milliseconds);
+    Check(wrapped.calls > 0 && wrapped.milliseconds <= kMaxListCostFactor * direct.milliseconds + kListCostAllowanceMs,
+          "building the game's multisample list through the wrapper costs about what the driver's own checks cost "
+          "(the depth copy probe runs once per adapter)");
 }
 
 void CheckSingleSampledFallback(Harness& m, const char* what, const char* reason)
@@ -779,6 +835,7 @@ void CheckMultisampling(Direct3DCreate realCreate, HWND window, const std::wstri
     std::printf("     adapter vendor 0x%04lX: %s\n", id.VendorId,
                 driverCopies ? "a depth copy method is expected (NVAPI or RESZ)" : "no depth copy method expected");
     CheckVideoOptionsOffer(m, real, driverCopies);
+    CheckVideoOptionsListCost(m, real);
     CheckFallbacks(m, real);
     if (driverCopies)
     {

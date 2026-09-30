@@ -227,7 +227,10 @@ Engine notes behind the code:
   `0x54F2C1`) comes, for D3D9, from `0x68A170`, which creates its `IDirect3D9` through the wrapped slot and calls
   `CheckDeviceMultiSampleType` (`+0x2C`, adapter 0, HAL, windowed FALSE) for the display format (`0x68A2B9`) and
   the depth format (`0x68A2DE`) with each count of the table `0xAD8CE8` = {0, 2, 4, …, 16}; a failure drops the
-  entry (`jl 0x68A3F7`), which is why the list offered only 1x while the wrapper refused every count. The
+  entry (`jl 0x68A3F7`), which is why the list offered only 1x while the wrapper refused every count. With the
+  132 display modes of the RTX 2060 that is about 7,000 calls, so the wrapper probes the depth copy method once
+  per adapter (`GetAdapterIdentifier` alone costs about 0.19 ms). The list is built once per process: `0x54F1B0`
+  returns while `[0xBEA744]` is set, and only `0x54F3CF` in it writes that. The
   present-parameter builder `0x68E250` sets `MultiSampleType` to the chosen count when it is above 1 (`0x68E3BB`),
   `MultiSampleQuality` to (levels − 1)·`gxMultisampleQuality` from the device's own `CheckDeviceMultiSampleType`
   (`0x68E3DC`–`0x68E41E`) and `D3DPRESENTFLAG_LOCKABLE_BACKBUFFER` only without multisampling (`0x68E42D`);

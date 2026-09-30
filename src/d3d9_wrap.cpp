@@ -744,7 +744,7 @@ private:
             return {DepthCopyMethod::None, kGameMultisamplingOff};
         if (!GlobalConfig().Get().multisampling)
             return {DepthCopyMethod::None, kMultisamplingSettingOff};
-        const DepthCopyProbe probe = ProbeDepthCopy(m_real, adapter, type);
+        const DepthCopyProbe probe = m_depthCopyProbes.Probe(m_real, adapter, type);
         return {probe.method, probe.unavailable};
     }
 
@@ -802,6 +802,7 @@ private:
 
     LONG m_ref = 1;
     IDirect3D9* m_real;
+    DepthCopyProbes m_depthCopyProbes;
 };
 
 FogDevice* WrappedD3D9::CreateMultisampledFogDevice(UINT adapter, D3DDEVTYPE type, HWND window, DWORD flags,

@@ -21,6 +21,24 @@ struct DepthCopyProbe
 
 DepthCopyProbe ProbeDepthCopy(IDirect3D9* d3d, UINT adapter, D3DDEVTYPE type);
 void ForceDepthCopyMethod(int method);
+
+class DepthCopyProbes
+{
+public:
+    DepthCopyProbe Probe(IDirect3D9* d3d, UINT adapter, D3DDEVTYPE type);
+
+private:
+    struct Probed
+    {
+        UINT adapter = 0;
+        D3DDEVTYPE type = D3DDEVTYPE_HAL;
+        DepthCopyProbe probe;
+    };
+
+    static constexpr int kMaxProbed = 8;
+    Probed m_probed[kMaxProbed] = {};
+    int m_count = 0;
+};
 bool SameSampleCount(const D3DSURFACE_DESC& target, const D3DSURFACE_DESC& depth);
 
 class DepthCopy

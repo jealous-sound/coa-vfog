@@ -501,6 +501,37 @@ bool RunTestRounds(IDirect3DDevice9* dev, const DepthCopy& copy, IDirect3DSurfac
     dev->Clear(0, nullptr, DepthClearFlags(desc.Format), 0, kClearedDepth, 0);
     return true;
 }
+
+bool DepthCopyMethodForced()
+{
+    return g_forcedMethod != kDepthCopyMethodFromDriver;
+}
+
+DepthCopyProbe ForcedProbe()
+{
+    const auto forced = static_cast<DepthCopyMethod>(g_forcedMethod);
+    return {forced, forced == DepthCopyMethod::None ? "no depth copy method (forced by the harness)" : ""};
+}
+
+DepthCopyProbe ProbeDriver(IDirect3D9* d3d, UINT adapter, D3DDEVTYPE type)
+{
+    D3DDISPLAYMODE mode = {};
+    const D3DFORMAT adapterFormat =
+        SUCCEEDED(d3d->GetAdapterDisplayMode(adapter, &mode)) ? mode.Format : D3DFMT_X8R8G8B8;
+    if (SUCCEEDED(d3d->CheckDeviceFormat(adapter, type, adapterFormat, D3DUSAGE_RENDERTARGET, D3DRTYPE_SURFACE,
+                                         kResz)))
+        return {DepthCopyMethod::Resz, ""};
+    D3DADAPTER_IDENTIFIER9 id = {};
+    if (FAILED(d3d->GetAdapterIdentifier(adapter, 0, &id)) || id.VendorId != kNvidiaVendorId)
+        return {DepthCopyMethod::None, "the driver has no RESZ depth resolve and the adapter is not NVIDIA"};
+    if (!LoadedFromSystemFolder(FirstMethodOf(d3d)))
+        return {DepthCopyMethod::None, "d3d9.dll is not the system copy (DXVK or another wrapper), so NVAPI cannot "
+                                       "copy its depth"};
+    const NvapiD3D9& nvapi = Nvapi();
+    if (nvapi.unavailable[0])
+        return {DepthCopyMethod::None, nvapi.unavailable};
+    return {DepthCopyMethod::Nvapi, ""};
+}
 }
 
 const char* DepthCopyMethodName(DepthCopyMethod method)
@@ -528,27 +559,20 @@ bool SameSampleCount(const D3DSURFACE_DESC& target, const D3DSURFACE_DESC& depth
 
 DepthCopyProbe ProbeDepthCopy(IDirect3D9* d3d, UINT adapter, D3DDEVTYPE type)
 {
-    if (g_forcedMethod != kDepthCopyMethodFromDriver)
-    {
-        const auto forced = static_cast<DepthCopyMethod>(g_forcedMethod);
-        return {forced, forced == DepthCopyMethod::None ? "no depth copy method (forced by the harness)" : ""};
-    }
-    D3DDISPLAYMODE mode = {};
-    const D3DFORMAT adapterFormat =
-        SUCCEEDED(d3d->GetAdapterDisplayMode(adapter, &mode)) ? mode.Format : D3DFMT_X8R8G8B8;
-    if (SUCCEEDED(d3d->CheckDeviceFormat(adapter, type, adapterFormat, D3DUSAGE_RENDERTARGET, D3DRTYPE_SURFACE,
-                                         kResz)))
-        return {DepthCopyMethod::Resz, ""};
-    D3DADAPTER_IDENTIFIER9 id = {};
-    if (FAILED(d3d->GetAdapterIdentifier(adapter, 0, &id)) || id.VendorId != kNvidiaVendorId)
-        return {DepthCopyMethod::None, "the driver has no RESZ depth resolve and the adapter is not NVIDIA"};
-    if (!LoadedFromSystemFolder(FirstMethodOf(d3d)))
-        return {DepthCopyMethod::None, "d3d9.dll is not the system copy (DXVK or another wrapper), so NVAPI cannot "
-                                       "copy its depth"};
-    const NvapiD3D9& nvapi = Nvapi();
-    if (nvapi.unavailable[0])
-        return {DepthCopyMethod::None, nvapi.unavailable};
-    return {DepthCopyMethod::Nvapi, ""};
+    return DepthCopyMethodForced() ? ForcedProbe() : ProbeDriver(d3d, adapter, type);
+}
+
+DepthCopyProbe DepthCopyProbes::Probe(IDirect3D9* d3d, UINT adapter, D3DDEVTYPE type)
+{
+    if (DepthCopyMethodForced())
+        return ForcedProbe();
+    for (int i = 0; i < m_count; ++i)
+        if (m_probed[i].adapter == adapter && m_probed[i].type == type)
+            return m_probed[i].probe;
+    const DepthCopyProbe probe = ProbeDriver(d3d, adapter, type);
+    if (m_count < kMaxProbed)
+        m_probed[m_count++] = {adapter, type, probe};
+    return probe;
 }
 
 DepthCopy::~DepthCopy()
