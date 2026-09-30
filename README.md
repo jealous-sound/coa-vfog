@@ -78,21 +78,25 @@ pre-water copies. Frames without queued water skip the pass entirely.
   client's float clock. A jump farther than 2 yd plus three times what the unit's speed covers in that time (a
   teleport or blink) leaves no wake, and a track unseen for 0.5 s is dropped. A moving unit leaves a footprint whose
   radius is twice its collision radius and whose strength rises with its speed (full at 7 yd/s) and its immersion
-  (full at half its height), times the client's own strength, which falls from 1 at a depth of one height to 0.5 at
-  two; a unit that stops emits nothing. A unit that is not swimming adds an entry impulse when its depth crosses
-  0.4 of its height in either direction, the client's own splash rule; a unit first seen in the water counts as
-  entering from depth 0, as in the client.
+  (full at half its height), times the client's own strength, which falls from 1 at half of max(1, 2·height) to 0.5
+  at that depth; a unit that stops emits nothing. A unit that is not swimming adds an entry impulse when its depth
+  crosses 0.4 of its height in either direction, the client's own splash rule. The client keeps that previous depth
+  for the unit's lifetime, so a dropped track leaves its last one behind for 30 s and a track created again (after a
+  dive, or back in range or among the nearest 32) starts from it. A unit never seen before starts from its current
+  depth when it swims, and otherwise from 0, approximating the client's zero initial depth.
 - *Simulation.* The disturbances drive Forever's local displacement recurrence, `next = 0.97·edge·(0.5·(L + D + R +
   U) − C.g)`, output `(next, C.r)`: R is the current height, G the previous one, and the edge ramp
   `saturate(16·min(u, 1 − u, v, 1 − v))` is taken on the shifted uv. It runs on a G16R16F ping-pong map
   (A16B16G16R16F where G16R16F cannot be rendered to or filtered) of 512² texels at 0.125 yd, a 64 yd window
   (256², 32 yd at `WaterQuality` 1), stepped at a fixed 30 Hz from the real clock, at most four steps a frame (the
-  rest are dropped). The window follows the camera target by whole-texel shifts, so ripples stay put in the world.
+  rest are dropped). The window follows the camera target by whole-texel shifts, so ripples stay put in the world;
+  a target that is not finite or lies beyond 100000 yd leaves the window where it was.
   The step pass injects each unit as `A·(1 − smoothstep(0.20, 0.79, d/r))` around the segment it moved along during
   the step, an analytic fit of Forever's `PERTURBTEX`, so no Blizzard texels are shipped.
 - *Shading.* The shading ports the one-map slope of Forever's PBR prepass (7552035): the height `lerp(G, R, w)`,
-  with `w` the fraction of the next step (Forever's display interpolation), forward differences not divided by the
-  texel, `(dx, dy)/√((1 + dx²)(1 + dy²))`, times 3·`WaterRipples`·fade. The result is added to the wave slope sum,
+  forward differences not divided by the texel, `(dx, dy)/√((1 + dx²)(1 + dy²))`, times 3·`WaterRipples`·fade.
+  Forever takes `w` from its host, whose packing is not recovered; here it is the fraction of the next 30 Hz step
+  that has elapsed, so the shaded height moves smoothly between steps. The result is added to the wave slope sum,
   so the normals, the slope variance (which ripples lower, as in Forever), refraction, reflection and the foam UV
   respond, and ripples make no foam. Forever fades linearly from the window centre, which would make the window
   size a gain; here ripples keep full strength to 4 yd inside the propagation border and fade out across those
@@ -103,7 +107,8 @@ pre-water copies. Frames without queued water skip the pass entirely.
   without shaded water. Without units in the water nothing is simulated and the ripple map is not sampled.
 
 All ps_3_0 samplers were in use, so the three wave-foam masks share one RGB texture (high, mid and low foam in red,
-green and blue); the harness shows each channel filtering exactly like the separate L8 mask it replaces.
+green and blue); the harness shows each channel filtering exactly like the separate L8 mask it replaces, and each
+foam layer shading from its own channel.
 
 **View distance.** Ascension's Extensions.dll detours the far-clip clamp (`0x780770`) and caps maps 0, 1, 530
 and 571 at 791.66 yd; the engine allows 1583.33 and instances use it. With `FarClipMax` set, the DLL's calls
@@ -346,8 +351,10 @@ Engine notes behind the code:
   flags 0xF); units the client does not update may keep stale flags. The client's own ripple emitter
   `CGUnit_C::UpdateWaterRipples` `0x71CBA0` uses the same gate (`0x71CBE3`), emits only while surface − z is below
   max(1, 2·height) (`0x71CC28`) and scales its strength from 1 at half that depth to 0.5 at it; the swim update
-  `0x730D10` splashes (`0x730E42`, event 0xC9) when the depth crosses 0.4·height (`0x730DED`) in either direction and
-  stores it at `+0x784` (`0x730E47`), only while the swimming flag is clear. The emitter's facing comes from slot
+  `0x730D10` splashes (`0x730E42`, event 0xC9) when the depth crosses 0.4·height (`0x730DED`, compared with `+0x784`
+  at `0x730E0C`) in either direction and stores it at `+0x784` (`0x730E4A`), only while the swimming flag is clear;
+  the depth is 0 unless `0x77F1E0` finds liquid (`0x730D42`–`0x730D63`), and the unit constructor zeroes `+0x784`
+  (`0x73F6BF`, `D9 9E 84 07 00 00`, after `fldz` at `0x73F6BA`). The emitter's facing comes from slot
   `0x34` (`0x6E6F40` → `0x4F42A0`), which for a passenger adds the transport's facing through an object lookup and a
   virtual call (`0x74B590`); the capture calls no client code and needs no facing, since velocities come from
   positions. Before its first walk the capture checks the timestamp, the base and the instruction bytes at
@@ -356,7 +363,8 @@ Engine notes behind the code:
   `0x7803BD`, and logs the first mismatch. Reads are SEH-guarded with pointer and range checks; a link whose back
   pointer does not match rejects the frame, the walk keeps what it found when it reaches 4096 objects, and the
   manager is re-read afterwards. `WaterRipples=0` skips the walk. The client's ripple pool (`0x79D180`, 128 entries)
-  is not read, and the `[movement + 0x48]` bit 2 early return of `0x730D10` is not mirrored.
+  and `+0x784` are not read (the tracker keeps its own previous depth), and the `[movement + 0x48]` bit 2 early
+  return of `0x730D10` is not mirrored.
 - Water colours. The DayNight light record at `0xD38BD4` (`0x7F3574`) stores the sky bands 2–7 at `0xD38BE0`–
   `0xD38BF4` (`0x7EC03C`–`0x7EC09C`) and the ocean and river close/far colours at `0xD38C0C`–`0xD38C18`
   (`0x7EC11D`–`0x7EC152`); the client bakes the water colours into its per-frame depth ramps. The water is lit by
@@ -411,8 +419,9 @@ depth overrides, fog-data validation, the GPU timer and depth probe, the setting
 liquid classification, the water pass driven through the hook entry points (state restoration, stencil tagging,
 optics against a CPU reference, fault recovery), the water settings, the packed foam masks, the unit walk on
 synthetic object-manager images, the contact tracker, the ripple simulation against a CPU reference and the ripples
-in the water pass. They do not establish in-game appearance or performance. It writes `before.png`, `after.png`,
-`overlay.png` and the debug views to `build/harness-out`.
+in the water pass, whose normals are compared with the 7552035 slope evaluated on the CPU. They do not establish
+in-game appearance or performance. It writes `before.png`, `after.png`, `overlay.png` and the debug views to
+`build/harness-out`.
 
 `vfog_harness --scene harbour <dir> --data data/fogdata.bin` renders the logged in-game frame at the
 Stormwind harbour (sunset, far clip 791.6 yd) with ideal depth and with the client's depth range, and
@@ -537,20 +546,23 @@ client's LUT grading is not reproduced, so colours still differ from Classic.
   screen-space, so what is off screen falls back to the sky colours; interiors are detected by liquid type only.
 - Ripples are harness-checked only: the unit walk has run on synthetic object-manager images, not in the client,
   and their look needs an owner test. The recurrence (0.97, 0.5, the edge ramp), the one-map slope with its gain of
-  3 and the display interpolation are Forever's, and the contact gate, depth limit, strength fade, 0.4·height
-  splash rule and swimming flag the client's. Everything else is a prototype choice, not a recovered value: the
-  30 Hz step, 0.125 yd texels, 512²/256² windows, the footprint (twice the collision radius, 0.5 to 6 yd; −0.04 a
-  step at 7 yd/s and half-height immersion), the entry impulse (−0.5), the teleport rule (2 yd plus three times the
-  speed), the 0.5 s track gap and lifetime, 32 contacts within 48 yd, the 4 yd fade, the two-to-four-texel detail
-  fade, the 15 s stop and the 1 s restart gap. The client's own splash and wake sprites (`0x79D5E0`, after the
-  water call) still draw on top; its `waterRipples` console command (`/console waterRipples 0`, registered at
-  `0x7813A4`, stored at `0xADF7F0` and tested by `0x79D463`, not saved between sessions) hides them without
-  affecting these ripples, which never read the sprite pool. The footstep spray `0x723A50` (its spell-visual call at
-  `0x723CD1`, `E8 CA 56 FD FF`, for depths below half the height) is not hooked; hooking it would give footsteps
-  their animation cadence and is a possible later addition. Game objects (boats, bobbers) make no ripples, one map
-  serves every water level inside the window, the window follows the camera target (which can leave the player in
-  free-look or vehicle views), and FP16 render-target writes on the test GPU truncate, which damps ripples slightly
-  more than the recurrence (about 6% of the amplitude over 2 s).
+  3 and the display blend `lerp(G, R, w)` are Forever's, and the contact gate, depth limit, strength fade,
+  0.4·height splash rule and swimming flag the client's. Everything else is a prototype choice, not a recovered
+  value: the 30 Hz step, `w` as the elapsed fraction of the next step, 0.125 yd texels, 512²/256² windows, the
+  footprint (twice the collision radius, 0.5 to 6 yd; −0.04 a step at 7 yd/s and half-height immersion), the entry
+  impulse (−0.5), the teleport rule (2 yd plus three times the speed), the 0.5 s track gap and lifetime, the 30 s
+  memory of a dropped track's depth and the swimming start depth of a new one, 32 contacts within 48 yd, the 4 yd
+  fade, the two-to-four-texel detail fade, the 15 s stop and the 1 s restart gap. The tracker only approximates the
+  client's previous depth: a unit that changes depth while it is not tracked, or leaves the water and is back
+  within 30 s, can splash where the client does not, or not where it does. The client's own splash and wake sprites
+  (`0x79D5E0`, after the water call) still draw on top; its `waterRipples` console command
+  (`/console waterRipples 0`, registered at `0x7813A4`, stored at `0xADF7F0` and tested by `0x79D463`, not saved
+  between sessions) hides them without affecting these ripples, which never read the sprite pool. The footstep
+  spray `0x723A50` (its spell-visual call at `0x723CD1`, `E8 CA 56 FD FF`, for depths below half the height) is
+  not hooked; hooking it would give footsteps their animation cadence and is a possible later addition. Game
+  objects (boats, bobbers) make no ripples, one map serves every water level inside the window, the window follows
+  the camera target (which can leave the player in free-look or vehicle views), and FP16 render-target writes on
+  the test GPU truncate, which damps ripples slightly more than the recurrence (about 6% of the amplitude over 2 s).
 - The zone lights' edge fade distance is chosen here: their `TransitionType` is 0 in every row and the modern
   client's transition rule is not known.
 
