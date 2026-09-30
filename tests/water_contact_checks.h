@@ -374,12 +374,12 @@ void CheckFootprintShape()
               WaterFootprintRadius(5.0f) == 6.0f,
           "a footprint's radius is 1.25 collision radii, 0.3 to 6 yd, so its weight falls to a half at about the "
           "collision radius");
-    Check(full < 0.0f && WaterFootprintLevel(0.0f, kUnitHeight) == 0.0f &&
+    Check(full > 0.0f && WaterFootprintLevel(0.0f, kUnitHeight) == 0.0f &&
               Near(WaterFootprintLevel(kAnkleDepth, kUnitHeight), 0.5f * full) &&
               Near(WaterFootprintLevel(kWadingDepth, kUnitHeight), full) &&
               Near(WaterFootprintLevel(1.5f, kUnitHeight), full) &&
               Near(WaterFootprintLevel(3.0f, kUnitHeight), 0.75f * full),
-          "a footprint holds the surface down in proportion to the depth up to a quarter of the unit's height and by "
+          "a footprint raises the surface in proportion to the depth up to a quarter of the unit's height and by "
           "the client's depth strength beyond");
     Check(WaterFootprintFade(0.0, 0.0) == 0.0f && Near(WaterFootprintFade(0.5, 0.0), 0.5f) &&
               WaterFootprintFade(1.0, 0.0) == 1.0f && WaterFootprintFade(5.0, -1.0) == 1.0f &&
@@ -471,7 +471,7 @@ void CheckStandingAndMovingFootprints()
     const float full = WaterFootprintLevel(kWadingDepth, kUnitHeight);
     const float level = full * WaterFootprintDepthShare(0.0f);
     bool still = !standing.Steps().empty();
-    bool deepening = true;
+    bool growing = true;
     float last = 0.0f;
     for (const StepDisturbances& step : standing.Steps())
     {
@@ -483,14 +483,14 @@ void CheckStandingAndMovingFootprints()
         const double since = step.seconds - kStartSeconds;
         still = still && At(f.from, 2.0f, 3.0f) && At(f.to, 2.0f, 3.0f) &&
                 f.radius == WaterFootprintRadius(kUnitRadius);
-        deepening = deepening && f.amplitude <= last && f.amplitude >= level &&
-                    (since < kWaterFootprintFadeSeconds + kWaterRippleStepSeconds || f.amplitude == level);
+        growing = growing && f.amplitude >= last && f.amplitude <= level &&
+                  (since < kWaterFootprintFadeSeconds + kWaterRippleStepSeconds || f.amplitude == level);
         last = f.amplitude;
     }
     const long steps = std::lround(kStillSeconds / kWaterRippleStepSeconds);
-    Check(still && deepening && last == level && standing.Steps().size() == static_cast<size_t>(steps),
-          "a unit standing in the water holds one footprint at its position in every 30 Hz step, deepening "
-          "smoothly over 1 s and unchanged after that");
+    Check(still && growing && last == level && standing.Steps().size() == static_cast<size_t>(steps),
+          "a unit standing in the water holds one footprint at its position in every 30 Hz step, rising smoothly "
+          "over 1 s and unchanged after that");
 
     const FootprintHistory h = HistoryOf(StandRunStop(kReferenceFrameRate));
     const int runSteps = static_cast<int>(std::lround(kRunSeconds / kWaterRippleStepSeconds));
@@ -602,16 +602,16 @@ void CheckMissingUnitFadesOut()
         for (const WaterRippleDisturbance& f : step.footprints)
         {
             ++held;
-            fading = fading && At(f.to, 4.0f, -1.0f) && f.amplitude >= previous && f.amplitude <= 0.0f;
+            fading = fading && At(f.to, 4.0f, -1.0f) && f.amplitude <= previous && f.amplitude >= 0.0f;
             previous = f.amplitude;
         }
     }
     std::printf("     unit gone after %.0f s: %d fading footprints, last level %.4f, %d disturbances after its track "
                 "was dropped\n",
                 static_cast<double>(present) / kReferenceFrameRate, held, previous, afterDrop);
-    Check(fading && held > 0 && previous > -1e-3f && afterDrop == 0 && tracker.Tracks() == 0,
-          "a unit that is no longer seen keeps its footprint where it was last seen, rising back to the surface over "
-          "the 0.5 s its track is kept, and then nothing");
+    Check(fading && held > 0 && previous < 1e-3f && afterDrop == 0 && tracker.Tracks() == 0,
+          "a unit that is no longer seen keeps its footprint where it was last seen, settling back to the surface "
+          "over the 0.5 s its track is kept, and then nothing");
 }
 
 void CheckUnitsAreFollowedAlike()

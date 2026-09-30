@@ -59,7 +59,7 @@ constexpr uint32_t kPebbleHashShift = 15;
 constexpr uint32_t kPebbleShadeLevels = 256;
 constexpr double kVisibleRippleLevels = 8.0;
 constexpr double kLumaLevels = 255.0;
-constexpr float kDimpleYards = 1.5f;
+constexpr float kFeetYards = 1.5f;
 constexpr float kViewedYards = 12.0f;
 constexpr float kWedgeNearestBehind = 1.0f;
 constexpr float kWedgeFarthestBehind = 8.0f;
@@ -314,7 +314,7 @@ struct CaptureMetrics
 {
     double seconds = 0.0;
     size_t viewed = 0;
-    size_t dimple = 0;
+    size_t atFeet = 0;
     size_t waves = 0;
     size_t wedge[2] = {};
     size_t wedgeChanged[2] = {};
@@ -382,8 +382,8 @@ CaptureMetrics MeasureCapture(Harness& h, const Shot& shot, double seconds, cons
                 continue;
             ++c.viewed;
             const bool changed = LumaChange(rippled, calm, x, y) >= kVisibleRippleLevels;
-            (nearest <= kDimpleYards ? c.dimple : c.waves) += changed ? 1 : 0;
-            if (!moving || nearest <= kDimpleYards)
+            (nearest <= kFeetYards ? c.atFeet : c.waves) += changed ? 1 : 0;
+            if (!moving || nearest <= kFeetYards)
                 continue;
             const Heading heading = HeadingOf(*moving, movingFeet, hitX, hitY);
             if (InWedge(heading.lateral, heading.behind, static_cast<float>(halfAngle)))
@@ -392,7 +392,7 @@ CaptureMetrics MeasureCapture(Harness& h, const Shot& shot, double seconds, cons
                 ++c.wedge[side];
                 c.wedgeChanged[side] += changed ? 1 : 0;
             }
-            c.ahead += changed && -heading.behind > kDimpleYards ? 1 : 0;
+            c.ahead += changed && -heading.behind > kFeetYards ? 1 : 0;
         }
     WaterRippleShading shading;
     vf_test_water_ripple_shading(&shading);
@@ -424,7 +424,7 @@ void PrintMetrics(const Shot& shot, const CaptureMetrics& c)
 {
     std::printf("     %ls %4.1f s: %zu water px within %.0f yd; changed by %.0f+ levels: %zu within %.1f yd of a unit, "
                 "%zu beyond; map |R - G| %.2e",
-                shot.name, c.seconds, c.viewed, kViewedYards, kVisibleRippleLevels, c.dimple, kDimpleYards, c.waves,
+                shot.name, c.seconds, c.viewed, kViewedYards, kVisibleRippleLevels, c.atFeet, kFeetYards, c.waves,
                 c.motion);
     if (c.Wedge())
         std::printf("; V wedge %zu of %zu (%.1f%%; left %.1f%%, right %.1f%%), %zu ahead", c.WedgeChanged(), c.Wedge(),

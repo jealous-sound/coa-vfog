@@ -194,24 +194,28 @@ starting and stopping each stir it once:
   motion in proportion to `k`. It is the chosen reading of Forever's stamps, whose texture and mesh outputs overwrite
   rather than add but whose blend state is not recovered; pulling `G` toward the level instead would leave `R ≠ G` at
   rest in the rim, which the shading's between-step blend `lerp(G, R, w)` shows as a 30 Hz shimmer. The radius is
-  1.25 collision radii (0.3 to 6 yd), so the weight falls to a half at about the collision radius. The level is −3
+  1.25 collision radii (0.3 to 6 yd), so the weight falls to a half at about the collision radius. The level is +3
   times the immersion (the depth over a quarter of the unit's height, at most 1) times the client's depth strength
   (1 down to half of max(1, 2·height), 0.5 at that depth) for a unit moving at 4.5 yd/s or faster, and a fifth of
   that for a standing one; in between it follows the speed over the last step, changing by at most the full range in
-  0.3 s. A new footprint fades in smoothly over 1 s, and a unit no longer seen keeps its footprint where it was last
-  seen while it fades out over the 0.5 s its track is kept, so neither makes a ring. A unit that moves farther in a
-  frame than 40 yd/s plus 0.5 yd allows (a blink, a teleport, a summon) drags nothing across the jump: its footprint
-  starts again where it landed and fades in, and the one it left is released at once. When the ripple map starts
-  again (first use, a `WaterQuality` change, 15 s without anything in the window), every footprint is placed anew
-  and fades in.
+  0.3 s. The footprint is raised, like the water a wading body pushes up around itself: the recurrence gives either
+  sign the same V, the same calm while standing and the same rings, but seen from a camera behind the unit a
+  depressed footprint's V arms are narrow troughs whose walls tilt the surface sideways and only faintly distort the
+  floor near the unit, while a raised footprint's arms are crests that light up from the unit backwards (checked on
+  the `--scene ripples` renders, where the lowered one also looked darker at the unit's feet). A new footprint fades
+  in smoothly over 1 s, and a unit no longer seen keeps its footprint where it was last seen while it fades out over
+  the 0.5 s its track is kept, so neither makes a ring. A unit that moves farther in a frame than 40 yd/s plus 0.5 yd
+  allows (a blink, a teleport, a summon) drags nothing across the jump: its footprint starts again where it landed
+  and fades in, and the one it left is released at once. When the ripple map starts again (first use, a
+  `WaterQuality` change, 15 s without anything in the window), every footprint is placed anew and fades in.
 - *Wakes.* The recurrence below carries a disturbance at 1/√2 texel a step, 2.65 yd/s, fading by √0.97 a step
-  (2.2 s amplitude e-folding at 30 Hz). A standing footprint settles into a still dimple with a skirt that falls off
+  (2.2 s amplitude e-folding at 30 Hz). A standing footprint settles into a still mound with a skirt that falls off
   over about 0.5 yd, which shows as a faint distortion at the unit's feet. A unit faster than 2.65 yd/s outruns its
   own ripples, so the footprint drags a Mach V: two thin wavefronts open backwards from it at asin(2.65 / v), 22° at a
   7 yd/s run and 34° at a 4.72 yd/s swim, and nothing reaches ahead of it. A unit that starts releases the ring of its
-  standing dimple, and one that stops lets the trough it held while moving spring back into one ring, the stronger
+  standing mound, and one that stops lets the higher mound it held while moving settle into one ring, the stronger
   of the two. A unit slower than 2.65 yd/s (walking, 2.5 yd/s) has its ripples run ahead of it and pushes a soft
-  moving dimple with faint arcs instead of a V.
+  moving mound with faint arcs instead of a V.
 - *Entry splash.* A unit that is not swimming adds a splash when its depth rises above 0.4 of its height, the
   client's splash depth, once it is armed: since its last splash it has been at most 0.15 of its height deep, and
   that splash is at least 2 s old. The splash adds an impulse of −1.5 times the depth strength over three collision
@@ -1216,25 +1220,26 @@ Forever in the game, so by default colours still differ from Classic.
   memory, not in the client, and their look needs an owner test. The recurrence (0.97, 0.5, the edge ramp), the
   one-map slope with its gain of 3 and the display blend `lerp(G, R, w)` are Forever's; the contact gate, depth
   limit, strength fade, 0.4·height splash depth, swimming flag and the sprite gate are the client's. That Forever's
-  stamps hold a unit's footprint down every step, overwriting rather than adding, is the lead's reading of its
+  stamps hold a unit's footprint in place every step, overwriting rather than adding, is the lead's reading of its
   shaders and videos (a swimmer or wader drags a thin V and a standing one leaves only faint distortion), not a
-  recovered fact, and `G = lerp(G, R, k)` is this port's choice for their unrecovered blend state. Everything else is
+  recovered fact; `G = lerp(G, R, k)` is this port's choice for their unrecovered blend state, and the raised level
+  its choice for their unrecovered scalar, whose sign the shaders do not show. Everything else is
   a prototype choice, not a recovered value: the 30 Hz step, `w` as the elapsed fraction of the next step, 0.125 yd
-  texels, 512²/256² windows, the footprint (1.25 collision radii, 0.3 to 6 yd; −3 at full immersion, reached at a
+  texels, 512²/256² windows, the footprint (1.25 collision radii, 0.3 to 6 yd; +3 at full immersion, reached at a
   quarter of the height; a fifth of that standing and all of it from 4.5 yd/s, following the speed within 0.3 s;
   chosen on the `--scene ripples` renders so that the V shows at `WaterRipples=0.5` while a standing unit only
-  dimples the water at its feet), the 1 s fade-in, the 40 yd/s teleport speed with its 0.5 yd slack, the entry splash
+  stirs the water at its feet), the 1 s fade-in, the 40 yd/s teleport speed with its 0.5 yd slack, the entry splash
   (−1.5 times the depth strength over three collision radii, 0.75 to 9 yd, only on the way in, re-armed at 0.15 of
   the height and at most every 2 s), the 0.5 s track lifetime and fade-out, the 30 s memory of a dropped track's
   entry state and the disarmed start of a new one, 32 contacts within 48 yd, 48 disturbances a step, the 4 yd fade,
   the two-to-four-texel detail fade, the 15 s stop, the 1 s restart gap and the 1 s grace before the sprites come
   back. The wave speed follows from the step and the texel: 2.65 yd/s, so only units faster than that drag a V. A
-  walking unit (2.5 yd/s, as most NPCs wander) is slower and shows a soft moving dimple with faint arcs, not a V; a
+  walking unit (2.5 yd/s, as most NPCs wander) is slower and shows a soft moving mound with faint arcs, not a V; a
   shorter step or smaller texel would slow the ripples and give walkers a V too, but would also narrow the V of a
   runner (a 20 Hz step: 45° walking, 15° running). The grid slows short ripples (down to 1.9 yd/s at the texel
   scale), so the brightest line of the V lies a few degrees inside its front. Units are treated as round, so a
   swimmer's long body and a mount's shape are not stamped, and a unit's bow does not depend on its facing. A standing
-  unit's footprint is a faint dimple, not a flat surface; a unit that stops lets its moving trough spring back into
+  unit's footprint is a faint mound, not a flat surface; a unit that stops lets its moving mound settle into
   a ring, and a blink releases the footprint it left at once. The entry splash is rarer than the client's: none on the
   way out, none again until the unit has been at most 0.15 of its height deep and 2 s have passed, and none for a unit
   first seen deeper than that, which includes one that drops in from a height so fast that its first frame in the
