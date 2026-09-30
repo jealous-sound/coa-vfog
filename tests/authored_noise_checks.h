@@ -37,6 +37,12 @@ constexpr double kRampMean = 127.5;
 constexpr double kRampAmplitude = 89.25;
 constexpr double kTwoPi = 6.283185307179586;
 constexpr BYTE kThinningNoise = 102;
+constexpr UINT kSampleSideRegister = 99;
+constexpr float kDrawsNearSamples = 0.0f;
+constexpr float kDrawsFarSamples = 1.0f;
+constexpr float kOwnSideNotYetDrawn = 0.0f;
+constexpr UINT kBesideTheStrip = 1;
+constexpr float kMinNoiseFreeSideMiss = 8.0f / 255.0f;
 const float kHyjalSummit[3] = {5458.0f, -2934.0f, 1481.0f};
 constexpr Vec3 kToMoonOverHyjal = {0.63f, 0.63f, 0.455f};
 
@@ -777,22 +783,29 @@ void CheckMarchSamplesNoiseAlongTheWorldRay(IDirect3DDevice9* device)
         ramp->Release();
 }
 
+const float kThinningLayerNoise[4][4] = {{0.0f, 0.0f, 0.0f, 1.0f / kNoiselessTile},
+                                         {0.0f, 0.0f, 0.0f, 1.0f / kNoiselessTile},
+                                         {1.0f, 1.0f, 1.0f, 1.0f},
+                                         {0.5f, 0.5f, 0.0f, 0.0f}};
+
+bool PrepareThinningFixture(IDirect3DDevice9* device, silhouette_quality::Fixture& fixture,
+                            const BYTE* const* composites)
+{
+    IDirect3DVolumeTexture9* volume = nullptr;
+    const bool ready = fixture.Create(composites) && CreateConstantVolume(device, kThinningNoise, &volume);
+    fixture.layerNoiseVolume = volume;
+    std::memcpy(fixture.layerNoise, kThinningLayerNoise, sizeof(kThinningLayerNoise));
+    fixture.densityScale = NoiseDensityCurve(kThinningNoise / 255.0f);
+    return ready;
+}
+
 void CheckNoisyCompositeThinsSilhouettes(IDirect3DDevice9* device)
 {
     silhouette_quality::Fixture fixture(device);
-    IDirect3DVolumeTexture9* volume = nullptr;
-    const bool ready = fixture.Create(silhouette_quality::kNoisyComposites) &&
-                       CreateConstantVolume(device, kThinningNoise, &volume);
-    fixture.layerNoiseVolume = volume;
+    const bool ready = PrepareThinningFixture(device, fixture, silhouette_quality::kNoisyComposites);
     Check(ready, "noisy composite silhouette fixture created");
     if (!ready)
         return;
-    const float layerNoise[4][4] = {{0.0f, 0.0f, 0.0f, 1.0f / kNoiselessTile},
-                                    {0.0f, 0.0f, 0.0f, 1.0f / kNoiselessTile},
-                                    {1.0f, 1.0f, 1.0f, 1.0f},
-                                    {0.5f, 0.5f, 0.0f, 0.0f}};
-    std::memcpy(fixture.layerNoise, layerNoise, sizeof(layerNoise));
-    fixture.densityScale = NoiseDensityCurve(kThinningNoise / 255.0f);
     float worst = 0.0f;
     const bool drawn = silhouette_quality::WorstStripError(fixture, worst);
     std::printf("     noisy composite at thin silhouettes with noise %.2f (density x%.3f): largest transmittance "
@@ -800,6 +813,60 @@ void CheckNoisyCompositeThinsSilhouettes(IDirect3DDevice9* device)
                 kThinningNoise / 255.0f, fixture.densityScale, worst * 255.0f);
     Check(drawn && worst <= kMarchTolerance,
           "every noisy composite marches thin silhouettes at full resolution through the authored noise");
+}
+
+struct SplitSideErrors
+{
+    bool drawn = false;
+    float worst = 0.0f;
+    float smallest = 1.0f;
+};
+
+float SplitSideDrawn(const silhouette_quality::Scene& scene)
+{
+    return scene.strip > scene.background ? kDrawsFarSamples : kDrawsNearSamples;
+}
+
+SplitSideErrors MeasureSplitSidesBesideStrips(IDirect3DDevice9* device, const BYTE* const* splitComposites)
+{
+    SplitSideErrors errors;
+    silhouette_quality::Fixture fixture(device);
+    errors.drawn = PrepareThinningFixture(device, fixture, splitComposites);
+    for (const D3DVIEWPORT9& viewport : silhouette_quality::kViewports)
+        for (UINT scale : silhouette_quality::kScales)
+        {
+            errors.drawn = errors.drawn && fixture.SetScale(viewport, scale);
+            for (const silhouette_quality::Scene& scene : silhouette_quality::kScenes)
+            {
+                const float side[4] = {SplitSideDrawn(scene), kOwnSideNotYetDrawn, 0.0f, 0.0f};
+                device->SetPixelShaderConstantF(kSampleSideRegister, side, 1);
+                float perQuality[silhouette_quality::kQualities] = {};
+                errors.drawn = errors.drawn && silhouette_quality::StripErrors(fixture, viewport, scale, scene,
+                                                                               kBesideTheStrip, perQuality);
+                for (float error : perQuality)
+                {
+                    errors.worst = std::fmax(errors.worst, error);
+                    errors.smallest = std::fmin(errors.smallest, error);
+                }
+            }
+        }
+    return errors;
+}
+
+void CheckNoisySplitCompositeMarchesSides(IDirect3DDevice9* device)
+{
+    const SplitSideErrors noisy = MeasureSplitSidesBesideStrips(device, silhouette_quality::kNoisySplitComposites);
+    const SplitSideErrors noiseFree = MeasureSplitSidesBesideStrips(device, silhouette_quality::kSplitComposites);
+    std::printf("     split composite side beside thin silhouettes, where no low-resolution tap has the side's depth, "
+                "noise %.2f: noisy split composite largest transmittance error %.2f/255; the noise-free one misses "
+                "by at least %.2f/255\n",
+                kThinningNoise / 255.0f, noisy.worst * 255.0f, noiseFree.smallest * 255.0f);
+    Check(noisy.drawn && noiseFree.drawn && noiseFree.smallest > kMinNoiseFreeSideMiss,
+          "beside a thin silhouette the other side's depth matches no low-resolution tap, so the split side is "
+          "marched at full resolution, not taken from the low-resolution fog");
+    Check(noisy.drawn && noisy.worst <= kMarchTolerance,
+          "every noisy split composite marches a sample side at that side's depth through the authored noise "
+          "where no low-resolution tap matches it");
 }
 
 template <size_t Size>
@@ -877,6 +944,8 @@ void CheckRendererDrawsStormNoise(Harness& harness)
               ShaderRuns(drawn[0].march, g_ps_march_mid) && ShaderRuns(drawn[0].composite, g_ps_composite_mid),
           "a storm with authored noise draws the noisy march and the noisy composite, whose silhouettes sample the "
           "noise; without noise the renderer keeps the noise-free shaders");
+    Check(rendered && !drawn[0].splitComposite && !drawn[1].splitComposite,
+          "a single-sampled device draws no split composite, with or without authored noise");
     vf_test_set_config(&saved);
 }
 
@@ -895,5 +964,6 @@ void CheckAuthoredNoiseOnTheGpu(IDirect3DDevice9* device)
     CheckMarchAppliesNoise(device);
     CheckMarchSamplesNoiseAlongTheWorldRay(device);
     CheckNoisyCompositeThinsSilhouettes(device);
+    CheckNoisySplitCompositeMarchesSides(device);
 }
 }

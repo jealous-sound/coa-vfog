@@ -6,6 +6,12 @@
 #include "ps_noisy_composite_low.h"
 #include "ps_noisy_composite_mid.h"
 #include "ps_noisy_composite_high.h"
+#include "ps_noisy_split_composite_low.h"
+#include "ps_noisy_split_composite_mid.h"
+#include "ps_noisy_split_composite_high.h"
+#include "ps_split_composite_low.h"
+#include "ps_split_composite_mid.h"
+#include "ps_split_composite_high.h"
 
 namespace silhouette_quality
 {
@@ -19,6 +25,10 @@ constexpr DWORD kAuthoredNoiseStage = 10;
 const BYTE* const kComposites[3] = {g_ps_composite_low, g_ps_composite_mid, g_ps_composite_high};
 const BYTE* const kNoisyComposites[3] = {g_ps_noisy_composite_low, g_ps_noisy_composite_mid,
                                          g_ps_noisy_composite_high};
+const BYTE* const kSplitComposites[3] = {g_ps_split_composite_low, g_ps_split_composite_mid,
+                                         g_ps_split_composite_high};
+const BYTE* const kNoisySplitComposites[3] = {g_ps_noisy_split_composite_low, g_ps_noisy_split_composite_mid,
+                                              g_ps_noisy_split_composite_high};
 
 struct Fixture
 {
@@ -248,17 +258,21 @@ constexpr Scene kScenes[] = {{"one-pixel foreground column", false, kFarDepth, k
 constexpr D3DVIEWPORT9 kViewports[] = {{0, 0, 32, 24, 0, 1}, {3, 2, 29, 23, 0, 1}};
 constexpr UINT kScales[] = {2, 4};
 
-bool StripError(Fixture& fixture, const D3DVIEWPORT9& viewport, UINT scale, const Scene& scene, float& worst)
+constexpr UINT kOnTheStrip = 0;
+constexpr int kQualities = 3;
+
+bool StripErrors(Fixture& fixture, const D3DVIEWPORT9& viewport, UINT scale, const Scene& scene, UINT besideStrip,
+                 float (&errors)[kQualities])
 {
     UINT strip = (scene.horizontal ? viewport.Height : viewport.Width) / 2;
     if (strip % scale == scale / 2)
         --strip;
-    const UINT x = viewport.X + (scene.horizontal ? viewport.Width / 2 : strip);
-    const UINT y = viewport.Y + (scene.horizontal ? strip : viewport.Height / 2);
+    const UINT across = strip + besideStrip;
+    const UINT x = viewport.X + (scene.horizontal ? viewport.Width / 2 : across);
+    const UINT y = viewport.Y + (scene.horizontal ? across : viewport.Height / 2);
     const float expected = Transmission(scene.strip, RayLength(x, y, viewport), fixture.densityScale);
     bool passed = FillFixture(fixture, viewport, scale, scene.horizontal, strip, scene.background, scene.strip);
-    worst = 0;
-    for (int quality = 0; quality < 3 && passed; ++quality)
+    for (int quality = 0; quality < kQualities && passed; ++quality)
     {
         D3DLOCKED_RECT locked = {};
         passed = Draw(fixture, viewport, scale, quality) &&
@@ -266,9 +280,17 @@ bool StripError(Fixture& fixture, const D3DVIEWPORT9& viewport, UINT scale, cons
         if (!passed)
             break;
         const BYTE* pixel = static_cast<const BYTE*>(locked.pBits) + y * locked.Pitch + x * 4;
-        worst = std::fmax(worst, std::fabs(pixel[2] / 255.0f - expected));
+        errors[quality] = std::fabs(pixel[2] / 255.0f - expected);
         fixture.readback->UnlockRect();
     }
+    return passed;
+}
+
+bool StripError(Fixture& fixture, const D3DVIEWPORT9& viewport, UINT scale, const Scene& scene, float& worst)
+{
+    float errors[kQualities] = {};
+    const bool passed = StripErrors(fixture, viewport, scale, scene, kOnTheStrip, errors);
+    worst = *std::max_element(std::begin(errors), std::end(errors));
     return passed;
 }
 

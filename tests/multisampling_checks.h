@@ -1,8 +1,6 @@
 #pragma once
 
 #include "ps_lit_split_composite_mid.h"
-#include "ps_noisy_split_composite_mid.h"
-#include "ps_split_composite_mid.h"
 
 namespace multisampling_checks
 {
@@ -875,7 +873,8 @@ void CheckStormSilhouetteBlendsByCoverage(Harness& m, const std::wstring& outDir
     const CoverageBlend litBlend = MeasureCoverageBlend(coverage, lit.image);
     PrintCoverageBlend("noisy Classic storm", noisyBlend);
     PrintCoverageBlend("noisy Classic storm with a point light", litBlend);
-    Check(quiet.rendered && noisy.rendered && noisy.statesKept && noiseChange > kMinStormNoiseLumaChange,
+    Check(quiet.rendered && quiet.statesKept && noisy.rendered && noisy.statesKept &&
+              noiseChange > kMinStormNoiseLumaChange,
           "a 4x device draws the harbour storm's authored noise and restores every state, the noise sampler "
           "included");
     Check(authored_noise::ShaderRuns(noisy.drawn.march, g_ps_noisy_march_mid) &&
@@ -886,11 +885,11 @@ void CheckStormSilhouetteBlendsByCoverage(Harness& m, const std::wstring& outDir
           "the noise; without noise it keeps the noise-free one");
     Check(BlendsByCoverage(noisyBlend) && noisyBlend.largestResolvedError <= kMaxResolvedLevelError,
           "at a 4x silhouette in a noisy Classic storm the pixel blends the near and the far fog by sample coverage");
-    Check(lit.rendered && lit.statesKept && authored_noise::ShaderRuns(lit.drawn.splitComposite,
-                                                                        g_ps_lit_split_composite_mid) &&
+    Check(lit.rendered && lit.statesKept && authored_noise::ShaderRuns(lit.drawn.march, g_ps_lit_noisy_march_mid) &&
+              authored_noise::ShaderRuns(lit.drawn.splitComposite, g_ps_lit_split_composite_mid) &&
               BlendsByCoverage(litBlend) && litBlend.largestResolvedError <= kMaxResolvedLevelError,
-          "with a point light the 4x storm silhouette takes the lit split composite, the noise at its mean, and "
-          "still blends by sample coverage");
+          "with a point light the 4x storm marches through the noise with the lit noisy march, its silhouette takes "
+          "the lit split composite, the noise at its mean, and still blends by sample coverage");
 }
 
 int LargestDifferenceAwayFromSilhouette(const Image& multisampled, const Image& single)
@@ -956,10 +955,14 @@ void CheckMultisampledDevice(Harness& m, const DepthCopyProbe& probe, const std:
     const MultisamplingStatus status1x = CurrentStatus();
     PrintTargets("Reset to 1x", reset1x, status1x);
     const FogFrame fog1x = RenderFogOverDepthQuads(m);
+    authored_noise::DrawnShaders drawn1x;
+    vf_test_drawn_fog_shaders(&drawn1x.march, &drawn1x.composite, &drawn1x.splitComposite);
     PrintFogFrame("1x fog", fog1x);
     Check(single && m.pp.MultiSampleType == D3DMULTISAMPLE_NONE && BindsSingleSampledIntz(reset1x) &&
               OffBecause(status1x, "the game's Multisampling option is 1x") && FogFrameDrawn(fog1x),
           "Reset from 4x to 1x binds INTZ again and the fog draws");
+    Check(fog1x.rendered && drawn1x.composite && !drawn1x.splitComposite,
+          "after Reset from 4x to 1x the fog draws with the plain composite and no split composite");
     const WaterFrames singleWater = RenderWaterFrames(m);
     CheckWaterMatchesSingleSampled(multisampledWater, singleWater);
     CheckSilhouetteMatchesSingleSampled(multisampledSilhouette, RenderSilhouetteFrames(m));

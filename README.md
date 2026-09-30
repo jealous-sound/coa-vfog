@@ -524,19 +524,20 @@ client's flags (`0x52`, auto depth D24X8), renders a Z-up test scene with the cl
 runs the fog passes through the same entry the hook uses. Its checks, in `tests/`, cover the device wrapper and state
 restoration, depth and sky handling, Classic light blending and slot selection, the authored noise, glow and grading
 the Classic data resolves, the harbour's sunset halo hue with the shipped settings, the march against CPU integrals
-at every quality, the authored noise against the modern curve and a CPU sample of the noise volume, temporal
-filtering and upsampling, point lights and interiors, the text and liquid depth overrides, fog-data validation, the
-GPU timer and depth probe, the settings window and INI saving, and `Reset`. The water suites check the water data and
-its loader, the FFT against a double-precision reference, the liquid classification, the water pass driven through
-the hook entry points (state restoration, stencil tagging, optics against a CPU reference, fault recovery) and the
-water settings. The multisampling suite creates a 4x device through the wrapper with the client's D24X8 depth (and
-D16) and its target-and-depth clear: the sample counts offered to the game, the kept back buffer and the D24S8 depth
-that replaces the stencil-less one, the fog and water on the copied depth against the drawn depth and a
-single-sampled frame, the fog blended by coverage at a silhouette in both blend modes and with a Classic layer's
-authored noise, `Reset` 4x→1x→4x, the cost of the game's multisample list, and the fallbacks (`Multisampling=0`, no
-copy method, a failing self-test). It expects the copy method the DLL's own probe finds; without one it prints a
-`SKIP` line with the probe's reason instead of the 4x device checks. They do not establish in-game appearance or
-performance. It writes `before.png`, `after.png`, `overlay.png` and the debug views to `build/harness-out`.
+at every quality, the authored noise against the modern curve and a CPU sample of the noise volume, the noisy
+composites' full-resolution march at thin silhouettes, split sample sides included, temporal filtering and
+upsampling, point lights and interiors, the text and liquid depth overrides, fog-data validation, the GPU timer and
+depth probe, the settings window and INI saving, and `Reset`. The water suites check the water data and its loader,
+the FFT against a double-precision reference, the liquid classification, the water pass driven through the hook entry
+points (state restoration, stencil tagging, optics against a CPU reference, fault recovery) and the water settings.
+The multisampling suite creates a 4x device through the wrapper with the client's D24X8 depth (and D16) and its
+target-and-depth clear: the sample counts offered to the game, the kept back buffer and the D24S8 depth that replaces
+the stencil-less one, the fog and water on the copied depth against the drawn depth and a single-sampled frame, the
+fog blended by coverage at a silhouette in both blend modes and with a Classic layer's authored noise, `Reset`
+4x→1x→4x, the cost of the game's multisample list, and the fallbacks (`Multisampling=0`, no copy method, a failing
+self-test). It expects the copy method the DLL's own probe finds; without one it prints a `SKIP` line with the
+probe's reason instead of the 4x device checks. They do not establish in-game appearance or performance. It writes
+`before.png`, `after.png`, `overlay.png` and the debug views to `build/harness-out`.
 
 `vfog_harness --scene harbour <dir> --data data/fogdata.bin` renders the logged in-game frame at the
 Stormwind harbour (sunset, far clip 791.6 yd) with ideal depth and with the client's depth range, and
