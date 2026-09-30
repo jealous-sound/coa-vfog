@@ -152,5 +152,6 @@ private:
     uint64_t m_pendingLocalLightSet = 0;
     unsigned m_pendingLocalLightFrames = 0;
     uint64_t m_loggedLocalLightSet = 0;
+    bool m_loggedLocalLightDetail = true;
     const char* m_skip = "";
 };

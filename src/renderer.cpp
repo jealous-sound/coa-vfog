@@ -414,9 +414,12 @@ void Renderer::LogUploadedLocalLights(const FrameInputs& in, const Config& cfg, 
         m_pendingLocalLightSet = set;
         m_pendingLocalLightFrames = 0;
     }
-    if (set == m_loggedLocalLightSet || ++m_pendingLocalLightFrames < kLocalLightSetSettleFrames)
+    const bool detailed = LogEnabled(LogLevel::Debug);
+    const bool alreadyLogged = set == m_loggedLocalLightSet && (m_loggedLocalLightDetail || !detailed);
+    if (alreadyLogged || ++m_pendingLocalLightFrames < kLocalLightSetSettleFrames)
         return;
     m_loggedLocalLightSet = set;
+    m_loggedLocalLightDetail = detailed || uploaded == 0;
     if (uploaded == 0)
     {
         VF_LOG_INFO("local lights: none uploaded%s", cfg.localLights ? "" : " (LocalLights=0)");
@@ -434,7 +437,7 @@ void Renderer::LogUploadedLocalLights(const FrameInputs& in, const Config& cfg, 
     const float* colour = lights[brightest].uploadedColor;
     VF_LOG_INFO("local lights: %u uploaded, brightest %s (%.4g %.4g %.4g), nearest %.1f yd", uploaded,
                 LocalLightUpload(cfg).linear ? "linear" : "gamma", colour[0], colour[1], colour[2], nearest);
-    if (LogEnabled(LogLevel::Debug))
+    if (detailed)
         for (uint32_t i = 0; i < uploaded; ++i)
             LogUploadedLight(i, lights[i], in.camPos);
 }

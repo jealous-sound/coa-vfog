@@ -611,7 +611,8 @@ distance, for example `local lights: 2 uploaded, brightest linear (12.99 255 255
 lights: none uploaded`; a set that changes every frame, such as flickering lights trading the eighth place, is not
 logged. `LogLevel=2` adds a line per light with what the capture read and what the fog uploads: `local light 0: at
 (x y z), 20.0 yd; diffuse (65.9 255 255), attenuation 0 0.7 0.03, enabled 1; uploaded (12.99 255 255), reach 200.0
-yd`. An owner test near a campfire and near a bright doodad checks the static findings in the game: every M2 light is
+yd`. Raising the level to 2 in the settings window or the INI writes these lines for the set already logged at level
+1, without waiting for it to change. An owner test near a campfire and near a bright doodad checks the static findings in the game: every M2 light is
 expected to carry the attenuation 0, 0.7, 0.03, and a diffuse above 1 where the model's light intensity exceeds 1.
 
 Every 60 s the water adds `water gpu 1.24 ms (median of 3500 frames, 0 skipped), classes lake+ocean, waves 256

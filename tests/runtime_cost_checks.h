@@ -316,6 +316,26 @@ void CheckLocalLightLogLines(Harness& h)
           "at LogLevel 1 a settled change of the uploaded point lights logs one line with the count, the brightest "
           "uploaded colour and the nearest distance");
 
+    auto logLevel = [&](int level) {
+        config.logLevel = level;
+        vf_test_set_config(&config);
+    };
+    logLevel(2);
+    const size_t raisedStart = ReadText(FogLogBesideTheFogDll()).size();
+    frame(two);
+    const std::string raisedLog = LogWrittenSince(raisedStart);
+    logLevel(1);
+    frame(two);
+    logLevel(2);
+    const size_t raisedAgainStart = ReadText(FogLogBesideTheFogDll()).size();
+    frame(two);
+    const std::string raisedAgainLog = LogWrittenSince(raisedAgainStart);
+    logLevel(1);
+    Check(rendered && CountOf(raisedLog, "local lights: 2 uploaded") == 1 &&
+              CountOf(raisedLog, "  local light 0: ") == 1 && CountOf(raisedLog, "  local light 1: ") == 1 &&
+              !HasLine(raisedLog, "  local light 2: ") && !HasLine(raisedAgainLog, "local light"),
+          "raising LogLevel from 1 to 2 over the same uploaded point lights logs their per-light lines once");
+
     const size_t flickerStart = ReadText(FogLogBesideTheFogDll()).size();
     for (int i = 0; i < kFramesPastLightSetSettling; ++i)
         frame(i % 2 ? two : three);
