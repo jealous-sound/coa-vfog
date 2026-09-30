@@ -839,8 +839,8 @@ void CheckUnevenFloorSplashesOnce()
         wader.Wade(kAboveSplashDepth, kUnevenFloorHalfPeriod);
         wader.Wade(kBelowSplashDepth, kUnevenFloorHalfPeriod);
     }
-    std::printf("     wading in from the shore, then 0.35h <-> 0.45h every %.1f s for %.1f s: %u splashes, %u rings for "
-                "%u client ripples\n",
+    std::printf("     wading in from the shore, then 0.35h <-> 0.45h every %.1f s for %.1f s: %u splashes, %u rings "
+                "for %u client ripples\n",
                 kUnevenFloorHalfPeriod, 2.0 * kUnevenFloorHalfPeriod * cycles, wader.Splashes(), wader.Rings(),
                 wader.Emissions());
     Check(onShore == 0 && wader.Splashes() == 1 && wader.RingsAtClientCadence(),

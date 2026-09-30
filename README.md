@@ -1204,8 +1204,10 @@ Forever in the game, so by default colours still differ from Classic.
   dropped track's entry state and the disarmed start of a new one, 32 contacts within 48 yd, at most 128 queued rings,
   the 4 yd fade, the two-to-four-texel detail fade, the 15 s stop, the 1 s restart gap and the 1 s grace before the
   sprites come back. The tracker sees at most one event per frame per unit, so two client emissions in one frame make
-  one ring. Its entry splash is rarer than the client's: none on the way out, none again before the unit has been that
-  shallow, and none for a unit first seen deep; a unit that changes depth while it is not tracked can splash when it is
+  one ring. Its entry splash is rarer than the client's: none on the way out, none again until the unit has been at
+  most 0.15 of its height deep and 2 s have passed, and none for a unit first seen deeper than that, which includes one
+  that drops in from a height so fast that its first frame in the water already finds it deeper (unless it walked out
+  through the shallows less than 30 s before); a unit that changes depth while it is not tracked can splash when it is
   seen again, or not at all. A running unit outruns its rings (2.65 yd/s), so its wake reads as a V-shaped front with
   arcs inside rather than separate rings; only a slower unit leaves separate ring trains. The harness scene has a flat
   pebble floor, a clear sky and no character model. While the sprites are hidden, `waterRipples 0` typed in the console
