@@ -63,6 +63,7 @@ struct AuthoredFog
     float classicDirectLight[3];
     bool hasGlow;
     float glow;
+    bool hasGradingCurve;
     float gradingCurve[kGradingCurveEntries];
 };
 

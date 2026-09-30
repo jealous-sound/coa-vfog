@@ -51,6 +51,7 @@ constexpr float kDeliveredGlowTolerance = 1e-6f;
 constexpr float kHalfStrength = 0.5f;
 constexpr float kSyntheticCurveGamma = 0.8f;
 constexpr D3DVIEWPORT9 kGradedSubRect = {100, 50, 800, 400, 0.0f, 0.94f};
+constexpr const char* kNoGradedLightReason = "no Classic light around the camera carries a grading curve";
 
 struct FakeGlowPass
 {
@@ -173,6 +174,7 @@ ForeverLook LookAt(float coverage, float foreverGlow, const float* curve)
     look.coverage = coverage;
     look.hasGlow = true;
     look.glow = foreverGlow;
+    look.hasGradingCurve = true;
     std::memcpy(look.gradingCurve, curve, sizeof(look.gradingCurve));
     return look;
 }
@@ -720,6 +722,16 @@ void CheckUngradedFrames(Harness& h, const D3DVIEWPORT9& world, const float* shi
     const GradedFrame edgeFrame = RenderGradedFrame(h, edge);
     Check(edgeFrame.Draws() == 0 && StripesUngraded(edgeFrame.image, world, kStripeSampleRow),
           "at half Classic coverage the grading has faded out and draws nothing");
+
+    float identity[kGradingCurveEntries];
+    IdentityCurve(identity);
+    GradedFrameRequest ungradedLights = Request(world, 1.0f, identity);
+    ungradedLights.frame.look.hasGradingCurve = false;
+    const GradedFrame ungradedFrame = RenderGradedFrame(h, ungradedLights);
+    std::printf("     full coverage by lights without a grading key: \"%s\"\n", ungradedFrame.status.grading);
+    Check(ungradedFrame.Draws() == 0 && StripesUngraded(ungradedFrame.image, world, kStripeSampleRow) &&
+              std::strcmp(ungradedFrame.status.grading, kNoGradedLightReason) == 0,
+          "under full coverage by Classic lights without a grading key the identity curve is not drawn");
 }
 
 bool OutsideRect(UINT x, UINT y, const D3DVIEWPORT9& rect)

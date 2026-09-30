@@ -15,6 +15,7 @@ struct ForeverLook
     float coverage = 0.0f;
     bool hasGlow = false;
     float glow = 0.0f;
+    bool hasGradingCurve = false;
     float gradingCurve[kGradingCurveEntries] = {};
 };
 

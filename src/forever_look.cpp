@@ -19,6 +19,7 @@ constexpr const char* kGradingOff = "off";
 constexpr const char* kGhostEffect = "ghost effect";
 constexpr const char* kCameraUnderWater = "camera under water";
 constexpr const char* kNoClassicLight = "no Classic light covers the camera";
+constexpr const char* kNoGradedClassicLight = "no Classic light around the camera carries a grading curve";
 constexpr const char* kStoppedAfterException = "stopped after an exception, see CoAVolFog.log";
 
 struct GlowWrite
@@ -79,6 +80,7 @@ ForeverLook ResolveForeverLook()
     look.coverage = fog.coverage;
     look.hasGlow = fog.hasGlow;
     look.glow = fog.glow;
+    look.hasGradingCurve = fog.hasGradingCurve;
     std::memcpy(look.gradingCurve, fog.gradingCurve, sizeof(look.gradingCurve));
     return look;
 }
@@ -217,6 +219,8 @@ GradingFrame PrepareGrading(const ForeverLookFrame& frame, const Config& cfg)
     const float strength = cfg.colorGrading * ForeverLookWeight(frame.look.coverage);
     if (!(strength > 0.0f))
         return NotGraded(GradingState::Idle, kNoClassicLight);
+    if (!frame.look.hasGradingCurve)
+        return NotGraded(GradingState::Idle, kNoGradedClassicLight);
     GradingFrame grading = NotGraded(GradingState::Ready, "");
     grading.viewport = frame.worldViewport;
     std::memcpy(grading.curve, frame.look.gradingCurve, sizeof(grading.curve));

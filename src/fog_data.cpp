@@ -690,6 +690,7 @@ bool FogData::Resolve(int mapId, const float* position, float dayFraction, const
     directLight.Result(out.classicDirectLight);
     out.hasGlow = glow.Presence() > 0.0f;
     out.glow = glow.Result();
+    out.hasGradingCurve = grading.weight > 0.0f;
     grading.Result(out.gradingCurve);
     return classicFog;
 }

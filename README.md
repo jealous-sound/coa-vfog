@@ -82,7 +82,8 @@ interface: the saved world viewport is copied (a resolve when the back buffer is
 maps each channel through the blended 32-entry grading curve, interpolating linearly between entries as a 32³ LUT
 does per channel, and writes `lerp(scene, curve(scene), ColorGrading·t)` back without depth. The curve is a 32×1
 float texture that is updated only when the curve changes. The ghost view and the view from under water are not
-graded, and neither is a frame whose world did not finish its frame effects. The copy is released while
+graded, and neither is a frame whose world did not finish its frame effects. Where none of the Classic lights around
+the camera has a grading key the curve is the identity, so the pass does not draw. The copy is released while
 `ColorGrading=0`; while grading it costs one world-sized render target of the back buffer's format.
 
 **Water.** The client draws every water and ocean surface, and nothing else, inside one call of its liquid
@@ -322,7 +323,8 @@ default; see Glow and colour grading). They are blended from the Classic lights 
 on every map with a placed light, not only where Classic fog applies: 219 light params without fog but with glow are
 placed on 3.3.5 maps, 167 of them only on the 17 maps without Classic fog, such as Blackwing Lair (469) and
 Stratholme (329). `AuthoredFog::coverage` is the Classic lights' share of the blend, from which both fade toward the
-client's own look; where no Classic light reaches there is no glow and the curve is the identity.
+client's own look; where no Classic light reaches there is no glow, and where none of the blended light params has a
+graded key the curve is the identity and `AuthoredFog::hasGradingCurve` is false.
 
 - **Glow.** `LightParams.Glow`, blended like the fog by light weight, weather and screen-effect slot. Forever sets it
   to 0 on 130 of 131 Kalimdor and 59 of 80 Eastern Kingdoms clear-weather lights, where CoA's own 3.3.5 data holds
@@ -759,7 +761,7 @@ taking the delivered byte (24 for a wrapped 1.1), and guards that avoid every pa
 the back buffer with every 8-bit code per channel and checks the identity curve bit-exact, the Stormwind noon curve
 and half strength within D3D's float-to-8-bit tolerance of a CPU reference, the grading of what the glow drew after
 the world was done, a sub-rectangle world viewport, state restoration with c0/c1, the skips (off, no world done,
-ghost, under water, half coverage), curve uploads only on change and after `Reset`, and the INI keys.
+ghost, under water, half coverage, lights without a grading key), curve uploads only on change and after `Reset`, and the INI keys.
 The multisampling suite creates a 4x device through the wrapper with the client's D24X8 depth (and D16) and its
 target-and-depth clear: the sample counts offered to the game, the kept back buffer and the D24S8 depth that replaces
 the stencil-less one, the fog and water on the copied depth against the drawn depth and a single-sampled frame, a wading
@@ -813,14 +815,15 @@ compare it with the frame time to see the fog's share of a GPU-bound frame. `ski
 was lost, and `fog gpu no samples` means none finished in the interval. Without timestamp queries the log says
 so once and the summaries omit the time; at `LogLevel=0` no queries are issued. With Classic data the summary
 adds the resolved glow and grading curve with the two settings that apply them, for example `Classic glow 0.00,
-grading curve at inputs 8/31 16/31 24/31: 0.267 0.565 0.890 (ForeverGlow 0, ColorGrading 0.00)`, and a line for
-each layer with authored noise.
+grading curve at inputs 8/31 16/31 24/31: 0.267 0.565 0.890 (ForeverGlow 0, ColorGrading 0.00)` (`grading curve (no
+graded light)` where the curve is the identity for want of a graded key), and a line for each layer with authored
+noise.
 
 At start-up the log says whether `Forever glow` and `colour grading` are available, or which guarded client bytes
 differ. `Forever glow: the glow composite gets 0 where the client set 102 (Classic weight 1.00)` is logged when the
 override starts and `the client's own glow applies` when it stops. Grading logs `colour grading skipped: <reason>`
-once per reason and its idle states (ghost effect, camera under water, no Classic light covers the camera) like the
-water's. `LogLevel=2` adds every 600 frames `Forever look: glow byte 0 (client 102, Classic weight 1.00), colour
+once per reason and its idle states (ghost effect, camera under water, no Classic light covers the camera, no Classic
+light around the camera carries a grading curve) like the water's. `LogLevel=2` adds every 600 frames `Forever look: glow byte 0 (client 102, Classic weight 1.00), colour
 grading 0.60`, with the grading's reason instead of its strength when it did not draw.
 
 Every 60 s the water adds `water gpu 1.24 ms (median of 3500 frames, 0 skipped), classes lake+ocean, waves 256

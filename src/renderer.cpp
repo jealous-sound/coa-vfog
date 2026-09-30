@@ -245,11 +245,12 @@ const char* DrawnNoiseState(const LayerNoise& drawn, const Config& cfg)
 void LogAuthoredExtras(const AuthoredFog& fog, const FogParams& drawn, const Config& cfg)
 {
     const float* curve = fog.gradingCurve;
-    VF_LOG_INFO("  Classic glow %.2f%s at coverage %.2f, grading curve at inputs %d/31 %d/31 %d/31: %.3f %.3f %.3f "
-                "(ForeverGlow %d, ColorGrading %.2f)",
-                fog.glow, fog.hasGlow ? "" : " (no glow data)", fog.coverage, kLoggedGradingInputs[0],
-                kLoggedGradingInputs[1], kLoggedGradingInputs[2], curve[kLoggedGradingInputs[0]],
-                curve[kLoggedGradingInputs[1]], curve[kLoggedGradingInputs[2]], cfg.foreverGlow, cfg.colorGrading);
+    VF_LOG_INFO("  Classic glow %.2f%s at coverage %.2f, grading curve%s at inputs %d/31 %d/31 %d/31: %.3f %.3f "
+                "%.3f (ForeverGlow %d, ColorGrading %.2f)",
+                fog.glow, fog.hasGlow ? "" : " (no glow data)", fog.coverage,
+                fog.hasGradingCurve ? "" : " (no graded light)", kLoggedGradingInputs[0], kLoggedGradingInputs[1],
+                kLoggedGradingInputs[2], curve[kLoggedGradingInputs[0]], curve[kLoggedGradingInputs[1]],
+                curve[kLoggedGradingInputs[2]], cfg.foreverGlow, cfg.colorGrading);
     for (int i = 0; i < std::min(fog.layerCount, kSceneLayers); ++i)
     {
         const AuthoredNoise& n = fog.layers[i].noise;
