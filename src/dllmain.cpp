@@ -1,3 +1,4 @@
+#include "client_ripple_sprites.h"
 #include "config.h"
 #include "d3d9_wrap.h"
 #include "engine.h"
@@ -62,6 +63,8 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID)
         DisableThreadLibraryCalls(instance);
         Attach(instance);
     }
+    if (reason == DLL_PROCESS_DETACH)
+        GlobalClientRippleSprites().Restore();
     return TRUE;
 }
 
@@ -293,4 +296,15 @@ extern "C" void __cdecl vf_test_water_ripple_shading(WaterRippleShading* out)
 extern "C" unsigned __cdecl vf_test_water_contact_reads()
 {
     return TestWaterContactReads();
+}
+
+extern "C" int __cdecl vf_test_bind_client_ripple_gate(volatile int32_t* gate, uintptr_t codeBase,
+                                                       const unsigned char* code, size_t codeSize)
+{
+    return GlobalClientRippleSprites().Bind(gate, {codeBase, code, codeSize}) ? 1 : 0;
+}
+
+extern "C" void __cdecl vf_test_update_client_ripple_sprites(int allowed, int shaded, double seconds)
+{
+    GlobalClientRippleSprites().Update(allowed != 0, shaded != 0, seconds);
 }

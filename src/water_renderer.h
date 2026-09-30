@@ -17,6 +17,7 @@
 #include <vector>
 
 void OverrideWaterSeconds(double seconds);
+double WaterClockSeconds();
 void DisableWaveSimulation(bool disabled);
 void ForcePackedWaterDepth(bool forced);
 

@@ -1,3 +1,4 @@
+#include "client_ripple_sprites.h"
 #include "config.h"
 #include "engine.h"
 #include "fog_data.h"
@@ -69,6 +70,9 @@ extern "C" __declspec(dllimport) int __cdecl vf_test_water_shading_variant();
 extern "C" __declspec(dllimport) void __cdecl vf_test_water_ripple_stats(WaterRippleStats*);
 extern "C" __declspec(dllimport) void __cdecl vf_test_water_ripple_shading(WaterRippleShading*);
 extern "C" __declspec(dllimport) unsigned __cdecl vf_test_water_contact_reads();
+extern "C" __declspec(dllimport) int __cdecl vf_test_bind_client_ripple_gate(volatile int32_t*, uintptr_t,
+                                                                             const unsigned char*, size_t);
+extern "C" __declspec(dllimport) void __cdecl vf_test_update_client_ripple_sprites(int, int, double);
 
 namespace
 {
@@ -1553,6 +1557,7 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "water_checks.h"
 #include "water_ripple_pass_checks.h"
 #include "ripple_scene.h"
+#include "client_sprite_checks.h"
 
 void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3 at,
                                    const float* proj, const D3DVIEWPORT9& world)
@@ -2011,6 +2016,8 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     vf_test_set_config(&restored);
     water_checks::CheckWaterRipplePass(h, outDir);
     vf_test_set_config(&restored);
+    client_sprite_checks::CheckClientSprites(h);
+    vf_test_set_config(&restored);
     water_checks::CheckWaterPass(h, outDir, waterDataPath);
     vf_test_set_config(&restored);
     ripple_scene::CheckRingsShowInShadedWater(h, outDir, waterDataPath);
@@ -2057,7 +2064,9 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
 
     vf_test_set_config(&restored);
     h.ReleaseEngineObjects();
+    client_sprite_checks::HoldGateForDeviceRelease();
     ULONG devRefs = h.dev->Release();
+    client_sprite_checks::CheckDeviceReleaseRestoresTheGate();
     ULONG d3dRefs = h.d3d->Release();
     Check(devRefs == 0 && d3dRefs == 0, "wrapper reference counts reach zero");
     DestroyWindow(h.window);

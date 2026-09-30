@@ -1,5 +1,6 @@
 #include "d3d9_wrap.h"
 
+#include "client_ripple_sprites.h"
 #include "log.h"
 #include "overlay.h"
 #include "renderer.h"
@@ -666,6 +667,7 @@ FogDevice::FogDevice(WrappedD3D9* parent, IDirect3DDevice9* real, bool fog, D3DF
 
 FogDevice::~FogDevice()
 {
+    GlobalClientRippleSprites().Restore();
     DetachOverlay(m_real);
     Unregister(this);
     AbortWater();

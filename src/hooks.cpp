@@ -1,10 +1,12 @@
 #include "hooks.h"
 
+#include "client_ripple_sprites.h"
 #include "config.h"
 #include "d3d9_wrap.h"
 #include "engine.h"
 #include "log.h"
 #include "water_classify.h"
+#include "water_renderer.h"
 #include "status_log.h"
 
 #include <windows.h>
@@ -56,6 +58,7 @@ bool g_waterPassBeginReusesArgumentSlot = false;
 FogDevice* g_waterPassDevice = nullptr;
 FogDevice* g_waterResourcesDevice = nullptr;
 bool g_waterPassRanThisFrame = false;
+bool g_waterShadedThisFrame = false;
 unsigned g_waterClassesThisPass = 0;
 WaterFrameStatus g_waterStatus = {false, "waiting for the world to render"};
 StatusLog g_waterLog;
@@ -425,6 +428,7 @@ void OnWaterPassEnd()
         return;
     const WaterPassEnd end = EndWaterPass(g_waterPassDevice);
     g_waterPassDevice = nullptr;
+    g_waterShadedThisFrame = g_waterShadedThisFrame || end.shaded;
     if (end.shaded)
         RecordWaterDrawn(end.shadedClasses, end.flatWaves);
     else if (!g_waterClassesThisPass)
@@ -459,6 +463,14 @@ void ReleaseWaterWhenOff()
         ReleaseWaterResources(device);
 }
 
+void UpdateClientRippleSprites()
+{
+    const Config& cfg = GlobalConfig().Get();
+    const bool allowed = !g_waterFailed && cfg.water && cfg.waterRipples > 0.0f && !cfg.waterClientSplashes;
+    GlobalClientRippleSprites().Update(allowed, g_waterShadedThisFrame, WaterClockSeconds());
+    g_waterShadedThisFrame = false;
+}
+
 void EndWaterFrame()
 {
     if (!g_waterHooksInstalled)
@@ -471,6 +483,7 @@ void EndWaterFrame()
     else if (!g_waterPassRanThisFrame)
         RecordWaterIdle("no liquid pass in this frame");
     g_waterPassRanThisFrame = false;
+    UpdateClientRippleSprites();
     ReleaseWaterWhenOff();
 }
 
@@ -485,6 +498,7 @@ int WaterGuardFilter(unsigned code, const char* where)
 void FailWater()
 {
     g_waterFailed = true;
+    GlobalClientRippleSprites().Restore();
     __try
     {
         AbortArmedWaterPass();
@@ -1018,6 +1032,8 @@ bool InstallWaterHooks()
     VF_LOG_INFO("water hooks installed: water pass 0x%08X, material render slots 0x%08X and 0x%08X",
                 static_cast<unsigned>(engine::kWaterPassSite), static_cast<unsigned>(engine::kWaterMaterialRenderSlot),
                 static_cast<unsigned>(engine::kWaterNoSpecMaterialRenderSlot));
+    GlobalClientRippleSprites().Bind(reinterpret_cast<volatile int32_t*>(engine::kWaterRipplesCommandValue),
+                                     ClientCodeView());
     return true;
 }
 

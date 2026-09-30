@@ -44,3 +44,5 @@ EXPORTS
     vf_test_water_ripple_stats
     vf_test_water_ripple_shading
     vf_test_water_contact_reads
+    vf_test_bind_client_ripple_gate
+    vf_test_update_client_ripple_sprites

@@ -405,6 +405,11 @@ int ShadingVariant(const Config& cfg)
 }
 }
 
+double WaterClockSeconds()
+{
+    return WaterSeconds();
+}
+
 void OverrideWaterSeconds(double seconds)
 {
     g_secondsOverride = seconds;
