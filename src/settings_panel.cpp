@@ -229,7 +229,8 @@ bool DrawWater(Config& c)
     changed |= Slider("Ripples", c.waterRipples, 0.0f, 2.0f, "%.2f",
                       "Ripples and wakes from players, creatures, pets and mounts moving through water, 0 = none");
     changed |= Toggle("Client splashes", c.waterClientSplashes,
-                      "Keep the client's own flat splash and wake sprites while the ripples run; off hides them");
+                      "Keep the client's own flat splash and wake sprites while the ripples run; off hides them for "
+                      "every unit, also those beyond the ripples' reach");
     changed |= Choice("Water view", c.waterDebugView, 0, kWaterDebugViewNames,
                       "Show one input of the water shading instead of the scene");
     return changed;

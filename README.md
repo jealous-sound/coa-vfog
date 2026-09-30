@@ -113,7 +113,11 @@ and ripple events:
   retried when a unit next makes a ring). It remembers the value it replaced and any non-zero value set meanwhile
   (for example `/console waterRipples 1`) and puts it back at once when a setting ends the hold, the rings become
   unavailable, the water is turned off or stops after a fault, after 1 s without shaded water (camera under water,
-  no water in view), and when the device is released or the DLL unloads.
+  no water in view), and when the device is released or the DLL unloads. The value is global, so the hold hides the
+  sprites of every unit, while rings only come from the 32 units nearest the camera target within 48 yd and only
+  show within 24 yd of it along either axis, fading out by 28 yd (10 and 14 yd at `WaterQuality=1`), on liquids the
+  modern water shades: a unit beyond that reach, a 33rd unit, or one wading in a liquid left to the client makes no
+  wake at all.
 - *Shading.* The shading ports the one-map slope of Forever's PBR prepass (7552035): the height `lerp(G, R, w)`,
   forward differences not divided by the texel, `(dx, dy)/√((1 + dx²)(1 + dy²))`, times 3·`WaterRipples`·fade.
   Forever takes `w` from its host, whose packing is not recovered; here it is the fraction of the next 30 Hz step
@@ -563,7 +567,7 @@ describe every key. In the game, `Ctrl+F7` opens the same settings in a window (
 | `WaterClarity` | 1 | How far you see into the water 0.25..4 |
 | `WaterZoneColors` | 0.5 | Tint by the zone's own water colours 0..1 |
 | `WaterRipples` | 1 | Rings from units in the water 0..2; 0 = no unit reads and no ripple simulation |
-| `WaterClientSplashes` | 0 | 1 keeps the client's flat splash and wake sprites on top of the rings; 0 hides them |
+| `WaterClientSplashes` | 0 | 1 keeps the client's splash and wake sprites; 0 hides them for all units while rings run |
 | `WaterDebugView` | 0 | 1 wave normals, 2 foam, 3 transmittance, 4 reflection, 5 liquid class, 6 ripple height |
 
 Turning `FarClipMax` on from 0 needs a restart; other changes, including 0, apply at the next `farclip` change,
@@ -623,12 +627,14 @@ client's LUT grading is not reproduced, so colours still differ from Classic.
   wake reads as a V-shaped front with arcs inside rather than separate rings; only a slower unit leaves separate
   ring trains. The harness scene has a flat pebble floor, a clear sky and no character model. While the sprites are
   hidden, `waterRipples 0` typed in the console cannot be told from the DLL's own 0, so the value put back is the
-  last non-zero one. The footstep spray `0x723A50` (its spell-visual call at `0x723CD1`, `E8 CA 56 FD FF`, for
-  depths below half the height) is not hooked; hooking it would give rings the footsteps' animation cadence and is
-  a possible later addition. Game objects (boats, bobbers) make no ripples, one map serves every water level inside
-  the window, the window follows the camera target (which can leave the player in free-look or vehicle views), and
-  FP16 render-target writes on the test GPU truncate, which damps ripples slightly more than the recurrence (about
-  6% of the amplitude over 2 s).
+  last non-zero one. The hold is global: while it lasts, units beyond the ripple window (24 to 28 yd from the camera
+  target along either axis, 10 to 14 yd at `WaterQuality=1`), beyond the 32 nearest, or wading in a liquid the
+  modern water leaves to the client lose the client's wake and get no rings. The footstep spray `0x723A50` (its
+  spell-visual call at `0x723CD1`, `E8 CA 56 FD FF`, for depths below half the height) is not hooked; hooking it
+  would give rings the footsteps' animation cadence and is a possible later addition. Game objects (boats, bobbers)
+  make no ripples, one map serves every water level inside the window, the window follows the camera target (which
+  can leave the player in free-look or vehicle views), and FP16 render-target writes on the test GPU truncate, which
+  damps ripples slightly more than the recurrence (about 6% of the amplitude over 2 s).
 - The zone lights' edge fade distance is chosen here: their `TransitionType` is 0 in every row and the modern
   client's transition rule is not known.
 
