@@ -13,6 +13,9 @@ struct WaterContact
     float radius = 0.0f;
     float height = 0.0f;
     float speed = 0.0f;
+    float scale = 1.0f;
+    uint32_t movementFlags = 0;
+    uint32_t nextRippleMs = 0;
     bool swimming = false;
     bool onTransport = false;
 };

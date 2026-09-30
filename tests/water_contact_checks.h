@@ -24,10 +24,12 @@ constexpr uintptr_t kUnitMovementFlags = 0x7CC;
 constexpr uintptr_t kUnitSpeed = 0x814;
 constexpr uintptr_t kUnitRadiusField = 0x850;
 constexpr uintptr_t kUnitHeightField = 0x854;
-constexpr size_t kUnitBytes = 0x860;
+constexpr uintptr_t kUnitNextRippleField = 0xA58;
+constexpr size_t kUnitBytes = 0xA60;
 constexpr size_t kSmallObjectBytes = 0x40;
 constexpr size_t kDescriptorBytes = 0x20;
 constexpr uintptr_t kDescriptorTypeMask = 0x08;
+constexpr uintptr_t kDescriptorScale = 0x10;
 constexpr uintptr_t kEntityPosition = 0x6C;
 constexpr uintptr_t kEntityLiquidFlags = 0x7C;
 constexpr uintptr_t kEntitySurface = 0x80;
@@ -39,6 +41,9 @@ constexpr uint32_t kItemTypeMask = 0x3;
 constexpr uint32_t kInWaterLiquidFlags = 0x20 | 0x100;
 constexpr uint32_t kLiquidBelowFlags = 0x20;
 constexpr uint32_t kSwimmingFlag = 0x200000;
+constexpr uint32_t kForwardFlag = 0x1;
+constexpr float kLargeScale = 1.5f;
+constexpr uint32_t kWorldMs = 7200000;
 constexpr uint32_t kCappedObjects = 4100;
 constexpr uint32_t kDisturbanceCapacity = 32;
 constexpr double kStepSeconds = 1.0 / 30.0;
@@ -59,7 +64,9 @@ struct UnitFixture
     float radius = kUnitRadius;
     float height = kUnitHeight;
     float speed = 0.0f;
+    float scale = 1.0f;
     uint32_t movementFlags = 0;
+    uint32_t nextRippleMs = 0;
     uint32_t liquidFlags = kInWaterLiquidFlags;
     uint32_t typeMask = kUnitTypeMask;
     uint64_t transportGuid = 0;
@@ -92,11 +99,12 @@ public:
 
     uintptr_t Manager() const { return m_manager; }
 
-    uintptr_t AddObject(size_t bytes, uint32_t typeMask)
+    uintptr_t AddObject(size_t bytes, uint32_t typeMask, float scale = 1.0f)
     {
         const uintptr_t object = Allocate(bytes);
         const uintptr_t descriptors = Allocate(kDescriptorBytes);
         Put<uint32_t>(descriptors + kDescriptorTypeMask, typeMask);
+        Put<float>(descriptors + kDescriptorScale, scale);
         Put<uintptr_t>(object + kObjectDescriptors, descriptors);
         Put<uintptr_t>(object + kListLinkOffset, m_lastLink);
         Put<uintptr_t>(object + kListLinkOffset + sizeof(uintptr_t), End());
@@ -107,7 +115,7 @@ public:
 
     uintptr_t AddUnit(const UnitFixture& unit)
     {
-        const uintptr_t object = AddObject(kUnitBytes, unit.typeMask);
+        const uintptr_t object = AddObject(kUnitBytes, unit.typeMask, unit.scale);
         Put<uint64_t>(object + kObjectGuid, unit.guid);
         Put<uintptr_t>(object + kUnitMovement, unit.movementInBlock ? object + kUnitMovementBlock : object);
         Put<uint64_t>(object + kUnitTransportGuid, unit.transportGuid);
@@ -116,6 +124,7 @@ public:
         Put<float>(object + kUnitSpeed, unit.speed);
         Put<float>(object + kUnitRadiusField, unit.radius);
         Put<float>(object + kUnitHeightField, unit.height);
+        Put<uint32_t>(object + kUnitNextRippleField, unit.nextRippleMs);
         if (!unit.entity)
             return object;
         const uintptr_t entity = Allocate(kEntityBytes);
@@ -154,7 +163,9 @@ void CheckVisibleUnitWalk()
     const float centre[3] = {0.0f, 0.0f, kSurfaceZ};
     SyntheticObjects world;
     UnitFixture wading = WadingUnit(1, 2.0f, 1.0f);
-    wading.movementFlags = kSwimmingFlag;
+    wading.movementFlags = kSwimmingFlag | kForwardFlag;
+    wading.scale = kLargeScale;
+    wading.nextRippleMs = kWorldMs;
     world.AddUnit(wading);
     UnitFixture player = WadingUnit(2, -3.0f, 0.5f);
     player.typeMask = kPlayerTypeMask;
@@ -178,7 +189,10 @@ void CheckVisibleUnitWalk()
     unloaded.entity = false;
     UnitFixture broken = WadingUnit(10, 1.0f, 1.0f);
     broken.radius = std::numeric_limits<float>::quiet_NaN();
-    for (const UnitFixture* rejected : {&dry, &above, &gameObject, &detached, &tooDeep, &unloaded, &broken})
+    UnitFixture unscaled = WadingUnit(11, 1.0f, 1.0f);
+    unscaled.scale = std::numeric_limits<float>::quiet_NaN();
+    for (const UnitFixture* rejected :
+         {&dry, &above, &gameObject, &detached, &tooDeep, &unloaded, &broken, &unscaled})
         world.AddUnit(*rejected);
     WaterContactFrame frame;
     const bool captured = engine::CaptureWaterContactsFrom(world.Manager(), centre, frame);
@@ -188,13 +202,14 @@ void CheckVisibleUnitWalk()
     Check(captured && frame.count == 3 && swimmer && ContactOf(frame, 2) && rider && !frame.truncated,
           "the unit walk keeps units and players whose entity has liquid (0x20) crossing the body (0x100) and skips "
           "dry units, units above the surface, game objects, units without the embedded movement block or a loaded "
-          "model, units deeper than max(1, 2h) and non-finite sizes");
+          "model, units deeper than max(1, 2h) and non-finite sizes or scales");
     Check(swimmer && swimmer->position[0] == wading.position[0] && swimmer->surface == kSurfaceZ &&
               swimmer->radius == kUnitRadius && swimmer->height == kUnitHeight && swimmer->speed == kRunSpeed &&
-              swimmer->swimming && !swimmer->onTransport &&
+              swimmer->swimming && !swimmer->onTransport && swimmer->scale == kLargeScale &&
+              swimmer->movementFlags == wading.movementFlags && swimmer->nextRippleMs == kWorldMs &&
               std::fabs(WaterContactDepth(*swimmer) - kWadingDepth) < 1e-5f,
-          "a captured contact carries the raw position, liquid surface, collision radius and height, current speed and "
-          "swimming flag");
+          "a captured contact carries the raw position, liquid surface, collision radius and height, current speed, "
+          "movement flags with the swimming flag, the object scale and the client's next ripple time (+0xA58)");
     Check(rider && rider->onTransport && rider->position[0] == deck[0] && rider->position[1] == deck[1] &&
               rider->position[2] == deck[2],
           "a transport passenger takes its world entity's position instead of its transport-local one");

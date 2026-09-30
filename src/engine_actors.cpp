@@ -28,6 +28,7 @@ constexpr uintptr_t kObjectPreviousLink = kVisibleListLinkOffset;
 constexpr uintptr_t kObjectNext = kVisibleListLinkOffset + sizeof(uintptr_t);
 constexpr uintptr_t kObjectWorldEntity = 0xB8;
 constexpr uintptr_t kDescriptorTypeMask = 0x08;
+constexpr uintptr_t kDescriptorScale = 0x10;
 constexpr uint32_t kUnitTypeBit = 0x8;
 constexpr uintptr_t kUnitMovement = 0xD8;
 constexpr uintptr_t kUnitMovementBlock = 0x788;
@@ -37,7 +38,8 @@ constexpr uintptr_t kUnitMovementFlags = 0x7CC;
 constexpr uintptr_t kUnitCurrentSpeed = 0x814;
 constexpr uintptr_t kUnitCollisionRadius = 0x850;
 constexpr uintptr_t kUnitCollisionHeight = 0x854;
-constexpr uintptr_t kUnitSize = 0x858;
+constexpr uintptr_t kUnitNextRippleTime = 0xA58;
+constexpr uintptr_t kUnitSize = kUnitNextRippleTime + sizeof(uint32_t);
 constexpr uint32_t kSwimmingMovementFlag = 0x200000;
 constexpr uintptr_t kEntityWorldPosition = 0x6C;
 constexpr uintptr_t kEntityLiquidFlags = 0x7C;
@@ -49,6 +51,7 @@ constexpr float kMaxWorldCoordinate = 100000.0f;
 constexpr float kMaxCollisionRadius = 50.0f;
 constexpr float kMaxCollisionHeight = 100.0f;
 constexpr float kMaxUnitSpeed = 1000.0f;
+constexpr float kMaxObjectScale = 1000.0f;
 constexpr float kMinClientRippleDepthLimit = 1.0f;
 constexpr float kClientRippleDepthLimitPerHeight = 2.0f;
 constexpr size_t kMaxGuardBytes = 20;
@@ -86,6 +89,16 @@ const GuardBytes kWaterContactLayout[] = {
      {0x8B, 0x48, 0x7C, 0x8B, 0x55, 0x0C, 0xC1, 0xE9, 0x08, 0x83, 0xE1, 0x01}},
     {"entity world position store", 0x007803BD, 12,
      {0x89, 0x79, 0x6C, 0xD8, 0x65, 0xBC, 0x89, 0x59, 0x70, 0x89, 0x51, 0x74}},
+    {"object scale", 0x004D5F00, 7, {0x8B, 0x41, 0x08, 0xD9, 0x40, 0x10, 0xC3}},
+    {"unit ripple size from its scale", 0x0071CD08, 15,
+     {0x8B, 0x16, 0x8B, 0x42, 0x3C, 0x8B, 0xCE, 0xFF, 0xD0, 0xD8, 0x0D, 0x98, 0x20, 0xA1, 0x00}},
+    {"unit ripple kind from the movement flags", 0x0071CC0B, 11,
+     {0x8B, 0x96, 0xD8, 0x00, 0x00, 0x00, 0x8B, 0x42, 0x44, 0xA8, 0x0F}},
+    {"unit next ripple time check", 0x0071CC71, 14,
+     {0x8B, 0x86, 0x58, 0x0A, 0x00, 0x00, 0x85, 0xC0, 0x8B, 0x0D, 0xAC, 0x76, 0xCD, 0x00}},
+    {"unit ripple emission", 0x0071CF16, 5, {0xE8, 0xE5, 0x24, 0x06, 0x00}},
+    {"unit moving ripple time store", 0x0071CF58, 6, {0x89, 0x86, 0x58, 0x0A, 0x00, 0x00}},
+    {"unit ripple time store", 0x0071CF8D, 6, {0x89, 0x96, 0x58, 0x0A, 0x00, 0x00}},
 };
 
 template <typename T>
@@ -114,7 +127,7 @@ bool PlausibleContact(const WaterContact& c)
     return FiniteWithin(c.surface, -kMaxWorldCoordinate, kMaxWorldCoordinate) && c.radius > 0.0f &&
            FiniteWithin(c.radius, 0.0f, kMaxCollisionRadius) && c.height > 0.0f &&
            FiniteWithin(c.height, 0.0f, kMaxCollisionHeight) && FiniteWithin(c.speed, 0.0f, kMaxUnitSpeed) &&
-           WaterContactDepth(c) < ClientRippleDepthLimit(c.height);
+           FiniteWithin(c.scale, 0.0f, kMaxObjectScale) && WaterContactDepth(c) < ClientRippleDepthLimit(c.height);
 }
 
 double SquaredGroundDistance(const WaterContact& c, const float centre[3])
@@ -171,7 +184,7 @@ bool LayoutMatches()
 bool IsUnit(uintptr_t object)
 {
     const uintptr_t descriptors = Read<uintptr_t>(object + kObjectDescriptors);
-    return ValidPointer(descriptors, kDescriptorTypeMask + sizeof(uint32_t)) &&
+    return ValidPointer(descriptors, kDescriptorScale + sizeof(float)) &&
            (Read<uint32_t>(descriptors + kDescriptorTypeMask) & kUnitTypeBit) && ValidPointer(object, kUnitSize) &&
            Read<uintptr_t>(object + kUnitMovement) == object + kUnitMovementBlock;
 }
@@ -194,7 +207,10 @@ bool ReadWaterContactUnsafe(uintptr_t object, WaterContact& contact)
     contact.radius = Read<float>(object + kUnitCollisionRadius);
     contact.height = Read<float>(object + kUnitCollisionHeight);
     contact.speed = Read<float>(object + kUnitCurrentSpeed);
-    contact.swimming = (Read<uint32_t>(object + kUnitMovementFlags) & kSwimmingMovementFlag) != 0;
+    contact.scale = Read<float>(Read<uintptr_t>(object + kObjectDescriptors) + kDescriptorScale);
+    contact.movementFlags = Read<uint32_t>(object + kUnitMovementFlags);
+    contact.nextRippleMs = Read<uint32_t>(object + kUnitNextRippleTime);
+    contact.swimming = (contact.movementFlags & kSwimmingMovementFlag) != 0;
     return true;
 }
 
