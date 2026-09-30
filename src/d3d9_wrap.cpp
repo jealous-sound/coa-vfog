@@ -131,6 +131,7 @@ public:
     IDirect3DPixelShader9* DrawnFogMarch() const { return m_renderer.DrawnMarch(); }
     IDirect3DPixelShader9* DrawnFogComposite() const { return m_renderer.DrawnComposite(); }
     IDirect3DPixelShader9* DrawnFogSplitComposite() const { return m_renderer.DrawnSplitComposite(); }
+    float DrawnFogGlowCompensation() const { return m_renderer.DrawnGlowCompensation(); }
     void ForceDepthWrite(bool force) { OverrideDepthWrite(m_forceDepthWrite, force); }
     void SuppressDepthWrite(bool suppress) { OverrideDepthWrite(m_suppressDepthWrite, suppress); }
     bool BeginWater(const FrameInputs& in, const WaterInputs& water, const Config& cfg, const char** skip);
@@ -144,6 +145,9 @@ public:
         m_water.ReleaseDefaultPool();
     }
     const WaterRenderer& Water() const { return m_water; }
+    bool Grade(const D3DVIEWPORT9& world, const float* curve, float strength, const char** skip);
+    void ReleaseGrading() { m_grading.ReleaseDefaultPool(); }
+    GradingStats Grading() const { return m_grading.Stats(); }
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** out) override;
     ULONG STDMETHODCALLTYPE AddRef() override;
@@ -565,6 +569,7 @@ private:
     MultisamplingStatus m_multisampling;
     Renderer m_renderer;
     WaterRenderer m_water;
+    GradingRenderer m_grading;
 };
 
 namespace
@@ -916,6 +921,7 @@ FogDevice::~FogDevice()
     DetachOverlay(m_real);
     Unregister(this);
     AbortWater();
+    m_grading.ReleaseAll();
     m_water.ReleaseAll();
     m_renderer.ReleaseAll();
     ReleaseDepth();
@@ -1065,6 +1071,7 @@ HRESULT FogDevice::Reset(D3DPRESENT_PARAMETERS* pp)
     ReleaseOverlayDeviceObjects(m_real);
     AbortWater();
     m_water.ReleaseDefaultPool();
+    m_grading.ReleaseDefaultPool();
     if (!m_fog)
         return m_real->Reset(pp);
 
@@ -1142,6 +1149,14 @@ void FogDevice::AbortWater()
 {
     OverrideDepthWrite(m_waterForcesDepthWrite, false);
     m_water.Abort(m_real);
+}
+
+bool FogDevice::Grade(const D3DVIEWPORT9& world, const float* curve, float strength, const char** skip)
+{
+    const bool graded = m_grading.Grade(m_real, world, curve, strength);
+    if (skip)
+        *skip = graded ? "" : m_grading.LastSkipReason();
+    return graded;
 }
 
 void SetRealDirect3DCreate9(Direct3DCreate9Fn fn)
@@ -1227,6 +1242,11 @@ void DrawnFogShaders(FogDevice* device, IDirect3DPixelShader9** march, IDirect3D
     *splitComposite = device ? device->DrawnFogSplitComposite() : nullptr;
 }
 
+float DrawnFogGlowCompensation(FogDevice* device)
+{
+    return device ? device->DrawnFogGlowCompensation() : 0.0f;
+}
+
 bool BeginWaterPass(FogDevice* device, const FrameInputs& in, const WaterInputs& water, const Config& cfg,
                     const char** skipReason)
 {
@@ -1304,4 +1324,25 @@ void ReadWaterRippleStats(FogDevice* device, WaterRippleStats& out)
 void ReadWaterRippleShading(FogDevice* device, WaterRippleShading& out)
 {
     out = device ? device->Water().RippleShading() : WaterRippleShading();
+}
+
+bool GradeWorld(FogDevice* device, const D3DVIEWPORT9& world, const float* curve, float strength,
+                const char** skipReason)
+{
+    if (device)
+        return device->Grade(world, curve, strength, skipReason);
+    if (skipReason)
+        *skipReason = "no fog device";
+    return false;
+}
+
+void ReleaseGrading(FogDevice* device)
+{
+    if (device)
+        device->ReleaseGrading();
+}
+
+GradingStats GradingStatsOf(FogDevice* device)
+{
+    return device ? device->Grading() : GradingStats();
 }

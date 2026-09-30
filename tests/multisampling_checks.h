@@ -1149,6 +1149,14 @@ void CheckSilhouetteMatchesSingleSampled(const SilhouetteFrames& multisampled, c
           "away from silhouettes the 4x fog equals the single-sampled fog in both blend modes");
 }
 
+void CheckGradingMatchesSingleSampled(const Image& multisampled, const Image& single, const D3DVIEWPORT9& world)
+{
+    const forever_look_checks::CurveMatch match = forever_look_checks::CompareSyntheticStripes(multisampled, world);
+    forever_look_checks::PrintCurveMatch("colour grading on the 4x back buffer", match);
+    Check(match.WithinConversion() && single.w && multisampled.bgra == single.bgra,
+          "colour grading resolves a 4x back buffer, grades it like the curve and matches the single-sampled frame");
+}
+
 void CheckMultisampledDevice(Harness& m, const DepthCopyProbe& probe, const std::wstring& outDir)
 {
     Config keep = MultisamplingConfig(true);
@@ -1187,6 +1195,9 @@ void CheckMultisampledDevice(Harness& m, const DepthCopyProbe& probe, const std:
     const SilhouetteFrames multisampledSilhouette = RenderSilhouetteFrames(m);
     CheckSilhouetteFogBlendsByCoverage(multisampledSilhouette, outDir);
     CheckStormSilhouetteBlendsByCoverage(m, outDir);
+    const D3DVIEWPORT9 world = {0, 0, kWidth, kWorldHeight, 0.0f, 1.0f};
+    const Image graded4x = forever_look_checks::GradedSyntheticStripes(m, world);
+    vf_test_set_config(&keep);
 
     const bool single = ResetTo(m, D3DMULTISAMPLE_NONE);
     const Targets reset1x = DescribeTargets(m.dev);
@@ -1204,6 +1215,8 @@ void CheckMultisampledDevice(Harness& m, const DepthCopyProbe& probe, const std:
     const WaterFrames singleWater = RenderWaterFrames(m);
     CheckWaterMatchesSingleSampled(multisampledWater, singleWater);
     CheckSilhouetteMatchesSingleSampled(multisampledSilhouette, RenderSilhouetteFrames(m));
+    CheckGradingMatchesSingleSampled(graded4x, forever_look_checks::GradedSyntheticStripes(m, world), world);
+    vf_test_set_config(&keep);
 
     const size_t resetLogStart = water_settings_checks::DllLogSize();
     const bool again = ResetTo(m, kFourSamples);

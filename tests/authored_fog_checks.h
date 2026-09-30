@@ -115,15 +115,18 @@ void CheckGlowWithoutClassicFog(const FogData& data)
     AuthoredFog outland = {};
     const bool lairFog = data.Resolve(kBlackwingLair, kInsideBlackwingLair, kNoon, kClearWeather, lair);
     const bool outlandFog = data.Resolve(kOutland, kInsideBlackwingLair, kNoon, kClearWeather, outland);
-    std::printf("     Blackwing Lair: Classic fog %d, lights %d (first %u), coverage %.2f, glow %.2f (%s)\n", lairFog,
-                lair.lightCount, lair.lightCount > 0 ? lair.lightIds[0] : 0u, lair.coverage, lair.glow,
-                lair.hasGlow ? "resolved" : "none");
+    std::printf("     Blackwing Lair: Classic fog %d, lights %d (first %u), coverage %.2f, glow %.2f (%s), "
+                "grading %s\n",
+                lairFog, lair.lightCount, lair.lightCount > 0 ? lair.lightIds[0] : 0u, lair.coverage, lair.glow,
+                lair.hasGlow ? "resolved" : "none", lair.hasGradingCurve ? "resolved" : "none");
     Check(!lairFog && lair.layerCount == 0 && lair.lightCount == 1 && lair.lightIds[0] == kBlackwingLairLight &&
               Near(lair.coverage, 1.0f) && lair.hasGlow && Near(lair.glow, kBlackwingLairParams85Glow) &&
-              IsIdentityCurve(lair.gradingCurve),
-          "a map without Classic fog keeps the derived fog but still resolves its Classic lights' glow and grading");
-    Check(!outlandFog && outland.lightCount == 0 && !outland.hasGlow && IsIdentityCurve(outland.gradingCurve),
-          "a map without Classic lights resolves no glow and an identity grading curve");
+              IsIdentityCurve(lair.gradingCurve) && !lair.hasGradingCurve,
+          "a map without Classic fog keeps the derived fog but still resolves its Classic lights' glow and grading, "
+          "here a light without a grading key, so no grading curve");
+    Check(!outlandFog && outland.lightCount == 0 && !outland.hasGlow && IsIdentityCurve(outland.gradingCurve) &&
+              !outland.hasGradingCurve,
+          "a map without Classic lights resolves no glow, no grading curve and the identity");
 }
 
 void CheckGradingCurves(const FogData& data)
@@ -162,6 +165,8 @@ void CheckGradingCurves(const FogData& data)
                0.5f * kCurve8286666Mid + 0.5f * IdentityCurve(kCurveMidInput)) &&
               Near(halfStorm.gradingCurve[0], 0.0f) && Near(halfStorm.gradingCurve[kGradingCurveEntries - 1], 1.0f),
           "light params without grading blend toward the identity curve");
+    Check(noon.hasGradingCurve && dusk.hasGradingCurve && identityKey.hasGradingCurve && halfStorm.hasGradingCurve,
+          "a blend with any graded light params reports a grading curve");
 }
 
 void CheckAuthoredFogExtras(const FogData& data)

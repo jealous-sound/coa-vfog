@@ -51,6 +51,8 @@ struct Config
     bool classicNoise = true;
     float godRays = 0.0f;
     bool glowCompensation = true;
+    int foreverGlow = 0;
+    float colorGrading = 0.0f;
     float farClipMax = kFarClipMaxKeepsClientCap;
     float maxDistance = 5000.0f;
     float temporal = 0.85f;

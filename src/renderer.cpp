@@ -249,11 +249,12 @@ const char* DrawnNoiseState(const LayerNoise& drawn, const Config& cfg)
 void LogAuthoredExtras(const AuthoredFog& fog, const FogParams& drawn, const Config& cfg)
 {
     const float* curve = fog.gradingCurve;
-    VF_LOG_INFO("  Classic glow %.2f%s at coverage %.2f, grading curve at inputs %d/31 %d/31 %d/31: %.3f %.3f %.3f "
-                "(not rendered)",
-                fog.glow, fog.hasGlow ? "" : " (no glow data)", fog.coverage, kLoggedGradingInputs[0],
-                kLoggedGradingInputs[1], kLoggedGradingInputs[2], curve[kLoggedGradingInputs[0]],
-                curve[kLoggedGradingInputs[1]], curve[kLoggedGradingInputs[2]]);
+    VF_LOG_INFO("  Classic glow %.2f%s at coverage %.2f, grading curve%s at inputs %d/31 %d/31 %d/31: %.3f %.3f "
+                "%.3f (ForeverGlow %d, ColorGrading %.2f)",
+                fog.glow, fog.hasGlow ? "" : " (no glow data)", fog.coverage,
+                fog.hasGradingCurve ? "" : " (no graded light)", kLoggedGradingInputs[0], kLoggedGradingInputs[1],
+                kLoggedGradingInputs[2], curve[kLoggedGradingInputs[0]], curve[kLoggedGradingInputs[1]],
+                curve[kLoggedGradingInputs[2]], cfg.foreverGlow, cfg.colorGrading);
     for (int i = 0; i < std::min(fog.layerCount, kSceneLayers); ++i)
     {
         const AuthoredNoise& n = fog.layers[i].noise;
@@ -1324,12 +1325,12 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDir
     dev->SetPixelShaderConstantF(11, &march.x, 1);
     const FogParams compositeMarchFog = marchesLocalLights ? WithMeanNoise(fog) : fog;
     dev->SetPixelShaderConstantF(12, &compositeMarchFog.layers[0].start, 6 * kFogLayers);
+    m_drawnGlowCompensation = cfg.glowCompensation && sceneBlend ? in.clientGlowAmount : 0.0f;
     const Float4 composite[3] = {
         {fog.authored ? cfg.classicExposure : cfg.exposure, rays && sceneBlend ? rayStrength : 0.0f,
          static_cast<float>(cfg.debugView), blendMode},
         {fog.rayColor[0], fog.rayColor[1], fog.rayColor[2], 0.0f},
-        {sunPx[0], sunPx[1], cfg.sunMarker && sunInFront ? 1.0f : 0.0f,
-         cfg.glowCompensation && sceneBlend ? in.clientGlowAmount : 0.0f},
+        {sunPx[0], sunPx[1], cfg.sunMarker && sunInFront ? 1.0f : 0.0f, m_drawnGlowCompensation},
     };
     dev->SetPixelShaderConstantF(96, &composite[0].x, 3);
     BindTexture(dev, 0, depthTexture, false);

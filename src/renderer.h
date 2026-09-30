@@ -24,6 +24,7 @@ public:
     IDirect3DPixelShader9* DrawnMarch() const { return m_drawnMarch; }
     IDirect3DPixelShader9* DrawnComposite() const { return m_drawnComposite; }
     IDirect3DPixelShader9* DrawnSplitComposite() const { return m_drawnSplitComposite; }
+    float DrawnGlowCompensation() const { return m_drawnGlowCompensation; }
 
 private:
     struct PendingDepthProbe
@@ -97,6 +98,7 @@ private:
     IDirect3DPixelShader9* m_drawnMarch = nullptr;
     IDirect3DPixelShader9* m_drawnComposite = nullptr;
     IDirect3DPixelShader9* m_drawnSplitComposite = nullptr;
+    float m_drawnGlowCompensation = 0.0f;
     IDirect3DPixelShader9* m_rayMask = nullptr;
     IDirect3DPixelShader9* m_rayBlur = nullptr;
     IDirect3DPixelShader9* m_probe = nullptr;

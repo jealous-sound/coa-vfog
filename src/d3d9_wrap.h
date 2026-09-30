@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "engine.h"
+#include "grading_renderer.h"
 #include "msaa_depth.h"
 #include "water_types.h"
 
@@ -27,6 +28,7 @@ bool RenderFog(FogDevice* device, const FrameInputs& in, const Config& cfg, cons
 bool AdaptiveLightingHistory(FogDevice* device);
 void DrawnFogShaders(FogDevice* device, IDirect3DPixelShader9** march, IDirect3DPixelShader9** composite,
                      IDirect3DPixelShader9** splitComposite);
+float DrawnFogGlowCompensation(FogDevice* device);
 bool BeginWaterPass(FogDevice* device, const FrameInputs& in, const WaterInputs& water, const Config& cfg,
                     const char** skipReason);
 void TagWaterDraw(FogDevice* device, WaterClass waterClass);
@@ -55,3 +57,7 @@ struct WaterRippleStats;
 struct WaterRippleShading;
 void ReadWaterRippleStats(FogDevice* device, WaterRippleStats& out);
 void ReadWaterRippleShading(FogDevice* device, WaterRippleShading& out);
+bool GradeWorld(FogDevice* device, const D3DVIEWPORT9& world, const float* curve, float strength,
+                const char** skipReason);
+void ReleaseGrading(FogDevice* device);
+GradingStats GradingStatsOf(FogDevice* device);

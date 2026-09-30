@@ -91,6 +91,7 @@ vf_shader(ps_ray_mask vf_ray_mask.hlsl ps_3_0)
 vf_shader(ps_ray_blur vf_ray_blur.hlsl ps_3_0)
 vf_shader(ps_probe vf_probe.hlsl ps_3_0)
 vf_shader(ps_depth_check vf_depth_check.hlsl ps_3_0)
+vf_shader(ps_grade vp_grade.hlsl ps_3_0)
 include(cmake/WaterFftShaders.cmake)
 include(cmake/WaterShaders.cmake)
 add_custom_target(vf_shaders DEPENDS ${SHADER_HEADERS})
@@ -128,7 +129,9 @@ add_library(CoAVolFog SHARED
     src/engine_lights.cpp
     src/fog_data.cpp
     src/fog_model.cpp
+    src/forever_look.cpp
     src/gpu_timing.cpp
+    src/grading_renderer.cpp
     src/hooks.cpp
     src/log.cpp
     src/msaa_depth.cpp

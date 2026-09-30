@@ -26,9 +26,20 @@ constexpr float kMinWorldDepthRangeSpan = 0.01f;
 constexpr uintptr_t kFfxCVar = 0x00D45774;
 constexpr uintptr_t kCurrentScreenEffect = 0x00D45780;
 constexpr uintptr_t kGlowScreenEffect = 0x00B74364;
+constexpr uintptr_t kDeathScreenEffect = 0x00B74368;
 constexpr uintptr_t kScreenEffectEnableCVar = 0x4;
 constexpr uintptr_t kCVarIntValue = 0x30;
 constexpr uintptr_t kDayNightGlow = 0x00D38C2C;
+
+constexpr uintptr_t kGlowEffectVtable = 0x00A941C8;
+constexpr uintptr_t kGlowSetParamSlot = 0x00A941D8;
+constexpr uintptr_t kGlowSetParam = 0x008BFDE0;
+constexpr uintptr_t kGlowCompositePassVtable = 0x00A94294;
+constexpr uintptr_t kGlowPassListCount = 0x4;
+constexpr uintptr_t kGlowPassListData = 0x8;
+constexpr uintptr_t kGlowPassListOffsets[kGlowPassLists] = {0x08, 0x1C};
+constexpr uint32_t kGlowCompositePassIndex = 2;
+constexpr uintptr_t kPassColourAlpha = 0x33;
 
 constexpr uintptr_t kViewGlobal = 0x00ADF5E8;
 constexpr uintptr_t kProjectionGlobal = 0x00ADF628;
@@ -78,7 +89,7 @@ constexpr uintptr_t kTransparentLiquidPass = 1;
 constexpr int kClassifiedSettingsCacheSize = 32;
 constexpr int kMaxLoggedLiquidTypes = 64;
 
-constexpr size_t kMaxCodeBytes = 16;
+constexpr size_t kMaxCodeBytes = 32;
 
 struct CodeBytes
 {
@@ -126,6 +137,35 @@ const CodeBytes kWaterClientLayout[] = {
      {0x8B, 0x47, 0x04, 0x83, 0xC4, 0x10, 0x33, 0xDB, 0x85, 0xC0, 0x89, 0x45, 0x0C, 0x76, 0x3A}},
     {"water material render return", 0x008A58FB, 3, {0xC2, 0x1C, 0x00}},
     {"water no-specular material render return", 0x008A5C6B, 3, {0xC2, 0x1C, 0x00}},
+};
+
+constexpr CodeBytes kWorldRenderTailAfterFfxEnd = {
+    "world render tail after FFX end", 0x004F9286, 11,
+    {0xE8, 0x55, 0xE8, 0x24, 0x00, 0x5F, 0x5E, 0x8B, 0xE5, 0x5D, 0xC3}};
+
+const CodeBytes kGlowPassColourLayout[] = {
+    {"glow feed SetParam call", 0x004F883C, 8, {0x8B, 0x40, 0x10, 0x52, 0x6A, 0x03, 0xFF, 0xD0}},
+    {"glow SetParam argument reads", 0x008BFDE0, 17,
+     {0x55, 0x8B, 0xEC, 0x8B, 0x45, 0x0C, 0x8B, 0x10, 0x89, 0x51, 0x2C, 0x8A, 0x50, 0x04, 0x8A, 0x40, 0x08}},
+    {"underwater list composite pass load", 0x008BFDF2, 6, {0x8B, 0x71, 0x24, 0x8B, 0x76, 0x08}},
+    {"underwater composite colour store", 0x008BFE08, 3, {0x89, 0x7E, 0x30}},
+    {"clear-view list composite pass load", 0x008BFE14, 6, {0x8B, 0x41, 0x10, 0x8B, 0x48, 0x08}},
+    {"clear-view composite colour store", 0x008BFE21, 3, {0x89, 0x51, 0x30}},
+    {"glow SetParam return", 0x008BFE26, 3, {0xC2, 0x08, 0x00}},
+    {"glow effect vtable store", 0x008BFE98, 6, {0xC7, 0x03, 0xC8, 0x41, 0xA9, 0x00}},
+    {"glow composite pass vtable store", 0x008C2206, 6, {0xC7, 0x06, 0x94, 0x42, 0xA9, 0x00}},
+    {"glow composite colour argument", 0x008C28A1, 3, {0x83, 0xC6, 0x30}},
+    kWorldRenderTailAfterFfxEnd,
+};
+
+const CodeBytes kGradingPlacement[] = {
+    kWorldRenderTailAfterFfxEnd,
+    {"list flag clear after FFX end", 0x00747AE0, 27,
+     {0xA1, 0x68, 0x13, 0xCA, 0x00, 0x85, 0xC0, 0x74, 0x11, 0xB9, 0xFF, 0xEF, 0xFF, 0xFF,
+      0x8B, 0xFF, 0x21, 0x48, 0x10, 0x8B, 0x40, 0x08, 0x85, 0xC0, 0x75, 0xF6, 0xC3}},
+    {"name and icon draw after the world render", 0x004FB042, 5, {0xE8, 0xF9, 0xA0, 0x2E, 0x00}},
+    {"FFX pass end default target", 0x008C15A7, 13,
+     {0x8B, 0x01, 0x8B, 0x50, 0x5C, 0x6A, 0x00, 0x6A, 0x00, 0x6A, 0x00, 0xFF, 0xD2}},
 };
 
 struct OpaqueState
@@ -198,6 +238,12 @@ void ApplyPendingGxViewportDepthRange(D3DVIEWPORT9& viewport)
     }
 }
 
+bool UsableOpaqueState(const OpaqueState& state)
+{
+    return state.viewport.Width > 0 && state.viewport.Height > 0 && IsPerspective(state.glProjection) &&
+           Finite(state.cameraRelativeView, 16);
+}
+
 bool CaptureOpaqueStateUnsafe(IDirect3DDevice9* device, OpaqueState& state)
 {
     if (FAILED(device->GetViewport(&state.viewport)))
@@ -208,8 +254,7 @@ bool CaptureOpaqueStateUnsafe(IDirect3DDevice9* device, OpaqueState& state)
         ReadFloats(kViewGlobal, state.cameraRelativeView, 16);
         ReadFloats(kProjectionGlobal, state.glProjection, 16);
     }
-    return state.viewport.Width > 0 && state.viewport.Height > 0 && IsPerspective(state.glProjection) &&
-           Finite(state.cameraRelativeView, 16);
+    return UsableOpaqueState(state);
 }
 
 void Normalize(float* v)
@@ -232,15 +277,37 @@ bool CVarEnabled(uintptr_t cvar)
     return cvar && Read<int32_t>(cvar + kCVarIntValue) != 0;
 }
 
+bool GlowScreenEffectRunsUnsafe()
+{
+    const uintptr_t effect = Read<uintptr_t>(kCurrentScreenEffect);
+    return CVarEnabled(Read<uintptr_t>(kFfxCVar)) && effect && effect == Read<uintptr_t>(kGlowScreenEffect) &&
+           CVarEnabled(Read<uintptr_t>(effect + kScreenEffectEnableCVar));
+}
+
 float GlowScreenEffectAmount()
 {
-    uintptr_t effect = Read<uintptr_t>(kCurrentScreenEffect);
-    if (!CVarEnabled(Read<uintptr_t>(kFfxCVar)) || !effect || effect != Read<uintptr_t>(kGlowScreenEffect))
-        return 0.0f;
-    float glow = Read<float>(kDayNightGlow);
-    if (!CVarEnabled(Read<uintptr_t>(effect + kScreenEffectEnableCVar)) || !std::isfinite(glow))
+    const float glow = Read<float>(kDayNightGlow);
+    if (!GlowScreenEffectRunsUnsafe() || !std::isfinite(glow))
         return 0.0f;
     return std::clamp(glow, 0.0f, 1.0f);
+}
+
+bool FindGlowCompositePassesUnsafe(const ScreenEffects& effects, GlowCompositePasses& out)
+{
+    if (!effects.glow || effects.current != effects.glow || Read<uintptr_t>(effects.glow) != kGlowEffectVtable)
+        return false;
+    for (int list = 0; list < kGlowPassLists; ++list)
+    {
+        const uintptr_t passes = effects.glow + kGlowPassListOffsets[list];
+        const uintptr_t data = Read<uintptr_t>(passes + kGlowPassListData);
+        if (Read<uint32_t>(passes + kGlowPassListCount) <= kGlowCompositePassIndex || !data)
+            return false;
+        const uintptr_t pass = Read<uintptr_t>(data + kGlowCompositePassIndex * sizeof(uintptr_t));
+        if (!pass || Read<uintptr_t>(pass) != kGlowCompositePassVtable)
+            return false;
+        out.pass[list] = pass;
+    }
+    return true;
 }
 
 LightParamsSelection ReadLightParamsSelection()
@@ -252,6 +319,15 @@ LightParamsSelection ReadLightParamsSelection()
     if (slot >= 0 && slot < FogData::kLightParamsSlots)
         selection.screenEffectSlot = slot;
     return selection;
+}
+
+bool ReadClassicLightInputsUnsafe(ClassicLightInputs& out)
+{
+    out.mapId = Read<int32_t>(kCurrentMap);
+    ReadFloats(kCameraPosition, out.camPos, 3);
+    out.dayFraction = Read<float>(kDayFraction);
+    out.lightParams = ReadLightParamsSelection();
+    return Finite(out.camPos, 3) && std::isfinite(out.dayFraction);
 }
 
 bool BuildFrameInputsUnsafe(FrameInputs& out, bool withPointLights, const PointLightUpload& upload)
@@ -342,6 +418,45 @@ bool LightRecordLayoutMatches()
                                                                                              : LayoutCheck::Differs;
     return g_lightRecordLayout == LayoutCheck::Matches;
 }
+
+bool SlotHolds(uintptr_t slot, uintptr_t expected)
+{
+    __try
+    {
+        return Read<uintptr_t>(slot) == expected;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+class GuardRangeList
+{
+public:
+    GuardRangeList(CodeRange* out, int capacity) : m_out(out), m_capacity(capacity) {}
+
+    template <size_t N>
+    void Add(const CodeBytes (&codes)[N])
+    {
+        for (const CodeBytes& code : codes)
+            Add(code.address, code.size);
+    }
+
+    void Add(uintptr_t address, size_t size)
+    {
+        if (m_count < m_capacity)
+            m_out[m_count] = {address, size};
+        ++m_count;
+    }
+
+    int Count() const { return m_count; }
+
+private:
+    CodeRange* m_out;
+    int m_capacity;
+    int m_count = 0;
+};
 
 void ReadColors(const uintptr_t* addresses, uint32_t* out, int count)
 {
@@ -561,6 +676,109 @@ bool CameraInLiquid()
     return Read<uint32_t>(kCameraInLiquid) != 0;
 }
 
+ScreenEffects ReadScreenEffects()
+{
+    ScreenEffects effects;
+    __try
+    {
+        effects.current = Read<uintptr_t>(kCurrentScreenEffect);
+        effects.glow = Read<uintptr_t>(kGlowScreenEffect);
+        effects.death = Read<uintptr_t>(kDeathScreenEffect);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        effects.current = effects.glow = effects.death = 0;
+    }
+    return effects;
+}
+
+bool GlowScreenEffectRuns()
+{
+    __try
+    {
+        return GlowScreenEffectRunsUnsafe();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+bool GlowPassColourLayoutMatches()
+{
+    if (!AllCodeBytesMatch(kGlowPassColourLayout, "Forever glow unavailable"))
+        return false;
+    if (SlotHolds(kGlowSetParamSlot, kGlowSetParam))
+        return true;
+    VF_LOG_ERROR("Forever glow unavailable: the glow effect's SetParam slot 0x%08X differs from the 12340 client",
+                 static_cast<unsigned>(kGlowSetParamSlot));
+    return false;
+}
+
+bool GradingPlacementMatches()
+{
+    return AllCodeBytesMatch(kGradingPlacement, "colour grading unavailable");
+}
+
+int ForeverLookGuardRanges(CodeRange* out, int capacity)
+{
+    GuardRangeList ranges(out, capacity);
+    ranges.Add(kGlowPassColourLayout);
+    ranges.Add(kGlowSetParamSlot, sizeof(uintptr_t));
+    ranges.Add(kGradingPlacement);
+    return ranges.Count();
+}
+
+bool FindGlowCompositePasses(const ScreenEffects& effects, GlowCompositePasses& out)
+{
+    __try
+    {
+        return FindGlowCompositePassesUnsafe(effects, out);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+bool ReadGlowByte(uintptr_t pass, uint8_t& value)
+{
+    __try
+    {
+        value = Read<uint8_t>(pass + kPassColourAlpha);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+bool WriteGlowByte(uintptr_t pass, uint8_t value)
+{
+    __try
+    {
+        *reinterpret_cast<volatile uint8_t*>(pass + kPassColourAlpha) = value;
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+bool ReadClassicLightInputs(ClassicLightInputs& out)
+{
+    __try
+    {
+        return ReadClassicLightInputsUnsafe(out);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
 StockFog ReadStockFog()
 {
     StockFog fog;
@@ -597,9 +815,26 @@ void CaptureOpaqueState(IDirect3DDevice9* device)
     g_opaque = state;
 }
 
+void CaptureOpaqueState(IDirect3DDevice9* device, const float* cameraRelativeView, const float* glProjection)
+{
+    OpaqueState state = {};
+    std::memcpy(state.cameraRelativeView, cameraRelativeView, sizeof(state.cameraRelativeView));
+    std::memcpy(state.glProjection, glProjection, sizeof(state.glProjection));
+    state.valid = SUCCEEDED(device->GetViewport(&state.viewport)) && UsableOpaqueState(state);
+    g_opaque = state;
+}
+
 bool HasOpaqueState()
 {
     return g_opaque.valid;
+}
+
+bool OpaqueViewport(D3DVIEWPORT9& out)
+{
+    if (!g_opaque.valid)
+        return false;
+    out = g_opaque.viewport;
+    return true;
 }
 
 void ClearOpaqueState()

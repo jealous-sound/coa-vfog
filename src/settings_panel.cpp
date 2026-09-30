@@ -191,6 +191,23 @@ bool DrawLight(Config& c)
     return changed;
 }
 
+bool DrawGlowAndGrading(Config& c)
+{
+    const Section section("Glow and colour grading");
+    if (!section)
+        return false;
+    bool changed = Toggle("Forever glow", c.foreverGlow,
+                          "Use the modern client's glow amount where Classic lights cover the camera: 0 on most "
+                          "continent lights, so the full-screen glow mostly disappears there. It replaces the client's "
+                          "own amount, Ascension's ambientGlow included, and fades back to it at the edge of Classic "
+                          "coverage. Off: the client's glow");
+    changed |= Slider("Colour grading", c.colorGrading, 0.0f, 1.0f, "%.2f",
+                      "Strength of the modern client's colour curve for the lights around the camera: brighter "
+                      "midtones, and the brightest highlights clipped to white. Names, the interface, the ghost view "
+                      "and the view under water are not graded. 0 = off");
+    return changed;
+}
+
 bool DrawViewDistance(Config& c)
 {
     bool lifted = c.farClipMax > kFarClipMaxKeepsClientCap;
@@ -301,6 +318,7 @@ void SettingsPanel::Draw(ConfigStore& store, const FogFrameStatus& fogStatus, co
     bool changed = DrawQuality(edited);
     changed |= DrawDensity(edited);
     changed |= DrawLight(edited);
+    changed |= DrawGlowAndGrading(edited);
     changed |= DrawWorld(edited);
     changed |= DrawAntialiasing(edited);
     changed |= DrawWater(edited);

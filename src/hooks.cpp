@@ -5,6 +5,7 @@
 #include "d3d9_wrap.h"
 #include "engine.h"
 #include "fog_model.h"
+#include "forever_look.h"
 #include "log.h"
 #include "water_classify.h"
 #include "water_renderer.h"
@@ -170,6 +171,56 @@ void UseClientFogRangeInsteadOfPushed(FrameInputs& in)
     in.fogEnd = g_savedStockFog.end[engine::kFrameInputsFogGroup];
 }
 
+struct WorldClient
+{
+    FogDevice* (*device)();
+    void (*captureOpaqueState)(IDirect3DDevice9* device);
+    bool (*frameInputs)(FrameInputs& in, bool withPointLights, const PointLightUpload& upload);
+    bool (*glowScreenEffectRuns)();
+};
+
+void CaptureGameOpaqueState(IDirect3DDevice9* device)
+{
+    engine::CaptureOpaqueState(device);
+}
+
+const WorldClient kGameWorldClient = {&GameFogDevice, &CaptureGameOpaqueState, &engine::BuildFrameInputs,
+                                      &engine::GlowScreenEffectRuns};
+
+FrameInputs g_testWorldFrame = {};
+bool g_testGlowScreenEffectRuns = false;
+
+void CaptureTestOpaqueState(IDirect3DDevice9* device)
+{
+    engine::CaptureOpaqueState(device, g_testWorldFrame.cameraRelativeView, g_testWorldFrame.glProjection);
+}
+
+bool TestWorldFrameInputs(FrameInputs& in, bool, const PointLightUpload&)
+{
+    D3DVIEWPORT9 viewport = {};
+    if (!engine::OpaqueViewport(viewport))
+        return false;
+    in = g_testWorldFrame;
+    in.viewport = viewport;
+    return true;
+}
+
+bool TestGlowScreenEffectRuns()
+{
+    return g_testGlowScreenEffectRuns;
+}
+
+const WorldClient kTestWorldClient = {&LatestFogDevice, &CaptureTestOpaqueState, &TestWorldFrameInputs,
+                                      &TestGlowScreenEffectRuns};
+const WorldClient* g_worldClient = &kGameWorldClient;
+
+void UseDeliveredGlow(FrameInputs& in)
+{
+    float delivered = 0.0f;
+    if (DeliveredGlowThisFrame(delivered))
+        in.clientGlowAmount = !in.inLiquid && g_worldClient->glowScreenEffectRuns() ? delivered : 0.0f;
+}
+
 struct WaterClient
 {
     FogDevice* (*device)();
@@ -279,9 +330,10 @@ bool RenderCurrentWorldFog(FogDevice* device)
 
     const Config& cfg = GlobalConfig().Get();
     FrameInputs in = {};
-    bool valid = engine::BuildFrameInputs(in, cfg.localLights, LocalLightUpload(cfg));
+    bool valid = g_worldClient->frameInputs(in, cfg.localLights, LocalLightUpload(cfg));
     if (g_stockFogPushed)
         UseClientFogRangeInsteadOfPushed(in);
+    UseDeliveredGlow(in);
     const char* skip = "invalid frame inputs";
     const bool cameraUnderLiquid = valid && in.inLiquid && !cfg.underwater;
     const bool rendered = valid && !cameraUnderLiquid && RenderFog(device, in, cfg, &skip);
@@ -292,16 +344,16 @@ bool RenderCurrentWorldFog(FogDevice* device)
 
 void OnOpaqueDone()
 {
-    FogDevice* device = g_failed ? nullptr : GameFogDevice();
+    FogDevice* device = g_worldClient->device();
     if (!device)
         return;
-    engine::CaptureOpaqueState(RealDevice(device));
+    g_worldClient->captureOpaqueState(RealDevice(device));
 }
 
 void OnWorldDone()
 {
     if (!g_failed)
-        RenderCurrentWorldFog(GameFogDevice());
+        RenderCurrentWorldFog(g_worldClient->device());
     engine::ClearOpaqueState();
 }
 
@@ -672,6 +724,7 @@ extern "C" void __cdecl vf_on_frame_end()
     {
         g_failed = true;
     }
+    ForeverLookAtFrameEnd();
 }
 
 extern "C" void __cdecl vf_on_water_pass_begin(const void* liquidRenderer)
@@ -738,6 +791,7 @@ extern "C" void __cdecl vf_on_opaque_done()
 
 extern "C" void __cdecl vf_on_world_done()
 {
+    ForeverLookAtWorldDone();
     __try
     {
         OnWorldDone();
@@ -984,6 +1038,21 @@ bool InstallEngineHooks()
     return true;
 }
 
+void EnableForeverLookOnHookedClient()
+{
+    const bool worldDoneHooked =
+        SiteMatches(engine::kScreenEffectsSite, reinterpret_cast<uintptr_t>(&ScreenEffectsThunk));
+    const bool frameEndHooked = SiteMatches(engine::kWorldRenderSite, reinterpret_cast<uintptr_t>(&WorldRenderThunk));
+    if (!worldDoneHooked || !frameEndHooked)
+        VF_LOG_ERROR("the world render (0x%08X) or world done (0x%08X) call no longer reaches the DLL; Forever glow "
+                     "and colour grading unavailable",
+                     static_cast<unsigned>(engine::kWorldRenderSite),
+                     static_cast<unsigned>(engine::kScreenEffectsSite));
+    const bool glow = worldDoneHooked && frameEndHooked && engine::GlowPassColourLayoutMatches();
+    const bool grading = worldDoneHooked && frameEndHooked && engine::GradingPlacementMatches();
+    EnableForeverLook(&GameFogDevice, glow, grading);
+}
+
 FogFrameStatus LastFogFrameStatus()
 {
     if (g_failed)
@@ -1061,6 +1130,18 @@ bool InstallWaterHooks()
 void RecordHookedFogFrame(bool rendered, bool cameraUnderLiquid, const char* skip)
 {
     RecordFogFrame(rendered, cameraUnderLiquid, skip);
+}
+
+void UseTestWorldClient(const FrameInputs& in, bool glowScreenEffectRuns)
+{
+    g_testWorldFrame = in;
+    g_testGlowScreenEffectRuns = glowScreenEffectRuns;
+    g_worldClient = &kTestWorldClient;
+}
+
+void SimulateFogHookFailure(bool failed)
+{
+    g_failed = failed;
 }
 
 void UseTestWaterClient(const FrameInputs& in, const WaterInputs& water)
