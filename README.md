@@ -543,9 +543,11 @@ client's LUT grading is not reproduced, so colours still differ from Classic.
   step at 7 yd/s and half-height immersion), the entry impulse (−0.5), the teleport rule (2 yd plus three times the
   speed), the 0.5 s track gap and lifetime, 32 contacts within 48 yd, the 4 yd fade, the two-to-four-texel detail
   fade, the 15 s stop and the 1 s restart gap. The client's own splash and wake sprites (`0x79D5E0`, after the
-  water call) still draw on top. The footstep spray `0x723A50` (its spell-visual call at `0x723CD1`,
-  `E8 CA 56 FD FF`, for depths below half the height) is not hooked; hooking it would give footsteps their
-  animation cadence and is a possible later addition. Game objects (boats, bobbers) make no ripples, one map
+  water call) still draw on top; its `waterRipples` console command (`/console waterRipples 0`, registered at
+  `0x7813A4`, stored at `0xADF7F0` and tested by `0x79D463`, not saved between sessions) hides them without
+  affecting these ripples, which never read the sprite pool. The footstep spray `0x723A50` (its spell-visual call at
+  `0x723CD1`, `E8 CA 56 FD FF`, for depths below half the height) is not hooked; hooking it would give footsteps
+  their animation cadence and is a possible later addition. Game objects (boats, bobbers) make no ripples, one map
   serves every water level inside the window, the window follows the camera target (which can leave the player in
   free-look or vehicle views), and FP16 render-target writes on the test GPU truncate, which damps ripples slightly
   more than the recurrence (about 6% of the amplitude over 2 s).
