@@ -152,6 +152,10 @@ bool DrawDensity(Config& c)
                       "Larger values make smaller mist patches", ImGuiSliderFlags_Logarithmic);
     changed |= Slider("Mist drift", c.noiseWindSpeed, 0.0f, 10.0f, "%.2f yd/s",
                       "Speed of drifting mist; 0 keeps it stationary");
+    changed |= Toggle("Classic fog noise", c.classicNoise,
+                      "Drifting fog banks where the Classic layers carry the modern client's noise, mostly in storms; "
+                      "it thins those layers to about half their density on average. Off: the density variation "
+                      "above applies to them instead");
     return changed;
 }
 
@@ -164,6 +168,10 @@ bool DrawLight(Config& c)
     changed |= Multiplier("Ambient", c.ambient, "Ambient fog brightness");
     changed |= Multiplier("Exposure", c.exposure, "Brightness of the layers used where no Classic data exists");
     changed |= Multiplier("Classic exposure", c.classicExposure, "Brightness of the Classic layers, 1 = default");
+    changed |= Toggle("Energy-normalised Classic phase", c.classicPhase,
+                      "Scatter the sun and moon into the Classic layers with an energy-normalised phase, as their "
+                      "authored intensities suggest the modern client does: dimmer horizon bands, a larger and "
+                      "brighter halo around the sun. Off: the phase peaks at 1 toward the light");
     changed |= Toggle("Linear light", c.colorSpace,
                       "Scatter and blend in linear light like the modern client, with a soft highlight roll-off. "
                       "Off: gamma");

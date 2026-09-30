@@ -312,10 +312,10 @@ float3 WholeStepLightScattering(ChordCoverage coverage, float4 stepLayers, Layer
 }
 
 float3 LocalLightScattering(ChordCoverage coverage, LayerLightWeights weights, MarchRay ray, float stepStart,
-                            float stepEnd)
+                            float stepEnd, float4 layerNoiseDensities)
 {
     float2 step = float2(stepStart, stepEnd);
-    float4 litLayers = LayersLitInStep(stepStart, stepEnd) ? 1 : 0;
+    float4 litLayers = LayersLitInStep(stepStart, stepEnd) ? layerNoiseDensities : 0;
     bool4 layersCoverStep = LayersCoverInterval(step);
     bool layerBoundaryInStep = any(layersCoverStep ? 0 : litLayers);
     bool lightCoversStep = coverage.covered;

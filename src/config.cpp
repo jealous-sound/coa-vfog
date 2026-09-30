@@ -41,6 +41,7 @@ const IntSetting kIntSettings[] = {
     {"Quality", &Config::quality, 1, 3},     {"StockFog", &Config::stockFog, 0, 1},
     {"DataMode", &Config::dataMode, 0, 1},   {"ColorSpace", &Config::colorSpace, 0, 1},
     {"DebugView", &Config::debugView, 0, 3}, {"LogLevel", &Config::logLevel, 0, 2},
+    {"ClassicPhase", &Config::classicPhase, 0, 1},
 };
 
 const IntSetting kWaterIntSettings[] = {
@@ -83,6 +84,7 @@ const BoolSetting kBoolSettings[] = {
     {"InteriorAware", &Config::interiorAware},       {"Underwater", &Config::underwater},
     {"LiquidDepth", &Config::liquidDepth},           {"SunMarker", &Config::sunMarker},
     {"Water", &Config::water},                       {"Multisampling", &Config::multisampling},
+    {"ClassicNoise", &Config::classicNoise},
 };
 
 template <typename Visit>

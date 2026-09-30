@@ -1,5 +1,9 @@
 #pragma once
 
+#include "ps_lit_split_composite_mid.h"
+#include "ps_noisy_split_composite_mid.h"
+#include "ps_split_composite_mid.h"
+
 namespace multisampling_checks
 {
 using Direct3DCreate = IDirect3D9*(WINAPI*)(UINT);
@@ -42,6 +46,19 @@ constexpr int kMinFogContrast = 30;
 constexpr float kMinCoverageBlend = 0.1f;
 constexpr float kMaxCoverageBlend = 0.9f;
 constexpr int kMinSilhouetteRows = 8;
+constexpr int kSamplesPerPixel = 4;
+constexpr float kMaxResolvedLevelError = 4.0f;
+constexpr float kSrgbLinearKnee = 0.04045f;
+constexpr float kLinearSrgbKnee = 0.0031308f;
+constexpr float kSrgbLinearSlope = 12.92f;
+constexpr float kSrgbOffset = 0.055f;
+constexpr float kSrgbGamma = 2.4f;
+constexpr Vec3 kStormSilhouetteLook = {100.0f, 100.0f, -5.0f};
+constexpr float kStormLampYards = 30.0f;
+constexpr float kStormLampColour = 0.4f;
+constexpr float kStormLampAttenuation = 0.005f;
+constexpr float kStormLampIntensity = 8.0f;
+constexpr double kMinStormNoiseLumaChange = 0.002;
 constexpr int kSilhouetteMargin = 3;
 constexpr int kMaxSingleSampledDifference = 2;
 constexpr float kMinShadedWaterFraction = 0.9f;
@@ -206,6 +223,12 @@ struct WorldCamera
     float proj[16] = {};
 
     WorldCamera()
+    {
+        EngineProjection(static_cast<float>(kWidth) / kWorldHeight, proj);
+        CameraRelativeLookAt(eye, at, view);
+    }
+
+    WorldCamera(Vec3 from, Vec3 to) : eye(from), at(to)
     {
         EngineProjection(static_cast<float>(kWidth) / kWorldHeight, proj);
         CameraRelativeLookAt(eye, at, view);
@@ -569,7 +592,7 @@ void CheckWaterMatchesSingleSampled(const WaterFrames& multisampled, const Water
           "the single-sampled ones");
 }
 
-Image RenderSilhouette(Harness& m, const WorldCamera& camera, DWORD nearColour, DWORD farColour, bool fog)
+void DrawSilhouetteScene(Harness& m, const WorldCamera& camera, DWORD nearColour, DWORD farColour)
 {
     m.BeginFrame();
     m.dev->SetViewport(&camera.world);
@@ -590,6 +613,11 @@ Image RenderSilhouette(Harness& m, const WorldCamera& camera, DWORD nearColour, 
                                        camera.RawDepthAt(kFarBackgroundYards), farColour);
     m.DrawPretransformedQuadAtRawDepth(-kBeyondViewport, -kBeyondViewport, kSilhouetteX, bottom,
                                        camera.RawDepthAt(kNearSilhouetteYards), nearColour);
+}
+
+Image RenderSilhouette(Harness& m, const WorldCamera& camera, DWORD nearColour, DWORD farColour, bool fog)
+{
+    DrawSilhouetteScene(m, camera, nearColour, farColour);
     if (fog)
     {
         const char* skip = "";
@@ -637,12 +665,61 @@ int PartlyCoveredColumn(const Image& coverage, UINT y)
     return -1;
 }
 
-void CheckSilhouetteFogBlendsByCoverage(const Image& coverage, const Image& fogged, const char* blend)
+float SrgbToLinear(float v)
+{
+    return v <= kSrgbLinearKnee ? v / kSrgbLinearSlope : std::pow((v + kSrgbOffset) / (1.0f + kSrgbOffset), kSrgbGamma);
+}
+
+float LinearToSrgb(float v)
+{
+    return v <= kLinearSrgbKnee ? v * kSrgbLinearSlope
+                                : (1.0f + kSrgbOffset) * std::pow(v, 1.0f / kSrgbGamma) - kSrgbOffset;
+}
+
+struct SampleResolve
+{
+    bool linearLight = false;
+    float nearCoverage = 0.0f;
+};
+
+float DistanceFromWholeSamples(float coverage)
+{
+    const float samples = coverage * kSamplesPerPixel;
+    return std::fabs(samples - std::round(samples));
+}
+
+SampleResolve ResolveOfCoverage(int coverageLevel)
+{
+    const float displayed = coverageLevel / 255.0f;
+    const float linear = SrgbToLinear(displayed);
+    const bool linearLight = DistanceFromWholeSamples(linear) < DistanceFromWholeSamples(displayed);
+    return {linearLight, linearLight ? linear : displayed};
+}
+
+float ResolvedLevel(const SampleResolve& resolve, int nearLevel, int farLevel)
+{
+    const auto blendSpace = [&resolve](int level) {
+        const float v = level / 255.0f;
+        return resolve.linearLight ? SrgbToLinear(v) : v;
+    };
+    const float blended =
+        resolve.nearCoverage * blendSpace(nearLevel) + (1.0f - resolve.nearCoverage) * blendSpace(farLevel);
+    return 255.0f * (resolve.linearLight ? LinearToSrgb(blended) : blended);
+}
+
+struct CoverageBlend
 {
     int rows = 0;
     int blended = 0;
     float lowest = 1.0f;
     float highest = 0.0f;
+    float largestResolvedError = 0.0f;
+    bool linearLightResolve = false;
+};
+
+CoverageBlend MeasureCoverageBlend(const Image& coverage, const Image& fogged)
+{
+    CoverageBlend b;
     for (UINT y = kSilhouetteRowStep; y < kWorldHeight - kSilhouetteRowStep; y += kSilhouetteRowStep)
     {
         const int x = PartlyCoveredColumn(coverage, y);
@@ -663,17 +740,40 @@ void CheckSilhouetteFogBlendsByCoverage(const Image& coverage, const Image& fogg
         }
         if (std::abs(contrast) < kMinFogContrast)
             continue;
-        ++rows;
+        ++b.rows;
         const float farValue = fogged.At(farX, y)[channel];
         const float share = (fogged.At(static_cast<UINT>(x), y)[channel] - farValue) / contrast;
-        lowest = std::min(lowest, share);
-        highest = std::max(highest, share);
-        blended += share >= kMinCoverageBlend && share <= kMaxCoverageBlend ? 1 : 0;
+        const SampleResolve resolve = ResolveOfCoverage(coverage.At(static_cast<UINT>(x), y)[1]);
+        const float expected = ResolvedLevel(resolve, fogged.At(nearX, y)[channel], fogged.At(farX, y)[channel]);
+        b.lowest = std::min(b.lowest, share);
+        b.highest = std::max(b.highest, share);
+        b.largestResolvedError =
+            std::max(b.largestResolvedError, std::fabs(fogged.At(static_cast<UINT>(x), y)[channel] - expected));
+        b.linearLightResolve = resolve.linearLight;
+        b.blended += share >= kMinCoverageBlend && share <= kMaxCoverageBlend ? 1 : 0;
     }
+    return b;
+}
+
+bool BlendsByCoverage(const CoverageBlend& b)
+{
+    return b.rows >= kMinSilhouetteRows && b.blended == b.rows;
+}
+
+void PrintCoverageBlend(const char* blend, const CoverageBlend& b)
+{
     std::printf("     %s: silhouette rows with partial coverage and fog contrast %d, blended by coverage %d "
-                "(near-fog share %.2f..%.2f)\n",
-                blend, rows, blended, lowest, highest);
-    Check(rows >= kMinSilhouetteRows && blended == rows,
+                "(near-fog share %.2f..%.2f; at most %.1f/255 from the %s resolve of the near and far fog at the "
+                "coverage)\n",
+                blend, b.rows, b.blended, b.lowest, b.highest, b.largestResolvedError,
+                b.linearLightResolve ? "linear-light" : "display-space");
+}
+
+void CheckSilhouetteFogBlendsByCoverage(const Image& coverage, const Image& fogged, const char* blend)
+{
+    const CoverageBlend b = MeasureCoverageBlend(coverage, fogged);
+    PrintCoverageBlend(blend, b);
+    Check(BlendsByCoverage(b),
           (std::string("at a 4x silhouette the pixel blends the near and the far fog by sample coverage (") + blend +
            ")")
               .c_str());
@@ -684,6 +784,113 @@ void CheckSilhouetteFogBlendsByCoverage(const SilhouetteFrames& frames, const st
     water_checks::SaveImage(outDir, L"msaa-silhouette", frames.overSceneCopy);
     CheckSilhouetteFogBlendsByCoverage(frames.coverage, frames.overSceneCopy, "linear light over the scene copy");
     CheckSilhouetteFogBlendsByCoverage(frames.coverage, frames.fixedFunctionBlend, "gamma, fixed-function blend");
+}
+
+struct StormSilhouette
+{
+    Image image;
+    bool rendered = false;
+    const char* skip = "";
+    bool statesKept = false;
+    authored_noise::DrawnShaders drawn;
+};
+
+WorldCamera HarbourStormCamera()
+{
+    return WorldCamera(kHarbourEye, Add(kHarbourEye, kStormSilhouetteLook));
+}
+
+LocalPointLight LampAhead(const WorldCamera& camera)
+{
+    const Vec3 forward = Norm(Sub(camera.at, camera.eye));
+    LocalPointLight lamp;
+    lamp.position[0] = camera.eye.x + forward.x * kStormLampYards;
+    lamp.position[1] = camera.eye.y + forward.y * kStormLampYards;
+    lamp.position[2] = camera.eye.z + forward.z * kStormLampYards;
+    for (float& channel : lamp.color)
+        channel = kStormLampColour;
+    lamp.attenuation[0] = 1.0f;
+    lamp.attenuation[2] = kStormLampAttenuation;
+    return lamp;
+}
+
+FrameInputs HarbourStormInputs(const WorldCamera& camera, bool lamp)
+{
+    FrameInputs in = camera.Inputs();
+    in.mapId = kEasternKingdoms;
+    in.dayFraction = kNoon;
+    in.lightParams = Storm(authored_noise::kFullStorm);
+    if (lamp)
+        engine::SelectLocalPointLight(in.localLights, LampAhead(camera), in.camPos);
+    return in;
+}
+
+StormSilhouette RenderStormSilhouette(Harness& m, const WorldCamera& camera, bool classicNoise, bool lamp)
+{
+    Config cfg = MultisamplingConfig(true);
+    cfg.classicNoise = classicNoise;
+    cfg.localLightIntensity = kStormLampIntensity;
+    vf_test_set_config(&cfg);
+    StormSilhouette s;
+    DrawSilhouetteScene(m, camera, kSilhouetteSceneColour, kSilhouetteSceneColour);
+    Sentinel before;
+    ReadSentinel(m.dev, before);
+    const FrameInputs in = HarbourStormInputs(camera, lamp);
+    s.rendered = vf_test_render(&in, &s.skip) != 0 && (!lamp || in.localLights.pointLightCount == 1);
+    Sentinel after;
+    ReadSentinel(m.dev, after);
+    s.statesKept = SameSentinel(before, after);
+    if (!s.statesKept)
+        ReportSentinelDifferences(before, after);
+    ReleaseSentinel(before);
+    ReleaseSentinel(after);
+    vf_test_drawn_fog_shaders(&s.drawn.march, &s.drawn.composite, &s.drawn.splitComposite);
+    s.image = Capture(m.dev);
+    m.dev->EndScene();
+    m.dev->Present(nullptr, nullptr, nullptr, nullptr);
+    return s;
+}
+
+void PrintStormSilhouette(const char* what, const StormSilhouette& s)
+{
+    std::printf("     %s: fog %s%s\n", what, s.rendered ? "drawn" : "skipped: ", s.rendered ? "" : s.skip);
+}
+
+void CheckStormSilhouetteBlendsByCoverage(Harness& m, const std::wstring& outDir)
+{
+    const WorldCamera camera = HarbourStormCamera();
+    const Image coverage = RenderSilhouette(m, camera, kCoverageInside, kCoverageOutside, false);
+    const StormSilhouette quiet = RenderStormSilhouette(m, camera, false, false);
+    const StormSilhouette noisy = RenderStormSilhouette(m, camera, true, false);
+    const StormSilhouette lit = RenderStormSilhouette(m, camera, true, true);
+    const Config keep = MultisamplingConfig(true);
+    vf_test_set_config(&keep);
+    water_checks::SaveImage(outDir, L"msaa-storm-silhouette", noisy.image);
+    PrintStormSilhouette("4x harbour storm, ClassicNoise=0", quiet);
+    PrintStormSilhouette("4x harbour storm with authored noise", noisy);
+    PrintStormSilhouette("4x harbour storm with authored noise and a point light", lit);
+    const double noiseChange = MeanLumaChange(quiet.image, noisy.image, 0, 0, kWidth, kWorldHeight);
+    std::printf("     4x harbour storm: authored noise changes the mean luma by %.4f\n", noiseChange);
+    const CoverageBlend noisyBlend = MeasureCoverageBlend(coverage, noisy.image);
+    const CoverageBlend litBlend = MeasureCoverageBlend(coverage, lit.image);
+    PrintCoverageBlend("noisy Classic storm", noisyBlend);
+    PrintCoverageBlend("noisy Classic storm with a point light", litBlend);
+    Check(quiet.rendered && noisy.rendered && noisy.statesKept && noiseChange > kMinStormNoiseLumaChange,
+          "a 4x device draws the harbour storm's authored noise and restores every state, the noise sampler "
+          "included");
+    Check(authored_noise::ShaderRuns(noisy.drawn.march, g_ps_noisy_march_mid) &&
+              authored_noise::ShaderRuns(noisy.drawn.composite, g_ps_noisy_composite_mid) &&
+              authored_noise::ShaderRuns(noisy.drawn.splitComposite, g_ps_noisy_split_composite_mid) &&
+              authored_noise::ShaderRuns(quiet.drawn.splitComposite, g_ps_split_composite_mid),
+          "with authored noise the 4x silhouette split draws the noisy split composite, whose sides march through "
+          "the noise; without noise it keeps the noise-free one");
+    Check(BlendsByCoverage(noisyBlend) && noisyBlend.largestResolvedError <= kMaxResolvedLevelError,
+          "at a 4x silhouette in a noisy Classic storm the pixel blends the near and the far fog by sample coverage");
+    Check(lit.rendered && lit.statesKept && authored_noise::ShaderRuns(lit.drawn.splitComposite,
+                                                                        g_ps_lit_split_composite_mid) &&
+              BlendsByCoverage(litBlend) && litBlend.largestResolvedError <= kMaxResolvedLevelError,
+          "with a point light the 4x storm silhouette takes the lit split composite, the noise at its mean, and "
+          "still blends by sample coverage");
 }
 
 int LargestDifferenceAwayFromSilhouette(const Image& multisampled, const Image& single)
@@ -742,6 +949,7 @@ void CheckMultisampledDevice(Harness& m, const DepthCopyProbe& probe, const std:
     CheckWaterOnMultisampledTargets(multisampledWater, outDir);
     const SilhouetteFrames multisampledSilhouette = RenderSilhouetteFrames(m);
     CheckSilhouetteFogBlendsByCoverage(multisampledSilhouette, outDir);
+    CheckStormSilhouetteBlendsByCoverage(m, outDir);
 
     const bool single = ResetTo(m, D3DMULTISAMPLE_NONE);
     const Targets reset1x = DescribeTargets(m.dev);

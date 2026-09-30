@@ -16,12 +16,14 @@ constexpr float kLampHeight = 5.0f;
 constexpr float kLampColor[3] = {1.0f, 0.72f, 0.4f};
 constexpr float kLampPeakColor = std::max({kLampColor[0], kLampColor[1], kLampColor[2]});
 constexpr int kErrorLogLevel = 0;
+constexpr float kFullStorm = 1.0f;
 constexpr int kShippedLogLevel = 1;
 
 enum class FogSource
 {
     Derived,
     Classic,
+    ClassicStorm,
 };
 
 enum class PointLights
@@ -45,6 +47,8 @@ constexpr BenchmarkCase kCases[] = {
     {"derived-lamps8", FogSource::Derived, PointLights::Lamps, kErrorLogLevel},
     {"classic-none", FogSource::Classic, PointLights::None, kErrorLogLevel},
     {"classic-lamps8", FogSource::Classic, PointLights::Lamps, kErrorLogLevel},
+    {"classic-storm", FogSource::ClassicStorm, PointLights::None, kErrorLogLevel},
+    {"classic-storm-lamps8", FogSource::ClassicStorm, PointLights::Lamps, kErrorLogLevel},
     {"derived-none-log1", FogSource::Derived, PointLights::None, kShippedLogLevel},
 };
 
@@ -199,8 +203,10 @@ FrameInputs StreetInputs(const Street& street, FogSource fog, const float* proje
     float view[16];
     CameraRelativeLookAt(street.eye, street.at, view);
     FrameInputs inputs = MakeInputs(view, projection, street.eye, street.at, viewport);
-    if (fog == FogSource::Classic)
+    if (fog != FogSource::Derived)
         UseHarbourSunset(inputs);
+    if (fog == FogSource::ClassicStorm)
+        inputs.lightParams.stormBlend = kFullStorm;
     return inputs;
 }
 
@@ -286,13 +292,16 @@ std::string FogDataBesideTheFogDll()
     return module.substr(0, module.find_last_of("\\/") + 1) + "fogdata.bin";
 }
 
-bool ClassicFogResolves(const FrameInputs& inputs, int& layers)
+bool ClassicFogResolves(const FrameInputs& inputs, int& layers, int& noisyLayers)
 {
     FogData data;
     AuthoredFog fog = {};
     const bool resolved = data.Load(FogDataBesideTheFogDll()) &&
                           data.Resolve(inputs.mapId, inputs.camPos, inputs.dayFraction, inputs.lightParams, fog);
     layers = fog.layerCount;
+    noisyLayers = 0;
+    for (int i = 0; i < fog.layerCount; ++i)
+        noisyLayers += fog.layers[i].noise.presence > 0.0f ? 1 : 0;
     return resolved;
 }
 
@@ -382,11 +391,17 @@ bool MeasureCases(Harness& h)
         return false;
     DescribeLights("lamps8", described);
     int classicLayers = 0;
-    const bool classic =
-        ClassicFogResolves(StreetInputs(harbourStreet, FogSource::Classic, projection, viewport), classicLayers);
+    int noisyLayers = 0;
+    const bool classic = ClassicFogResolves(StreetInputs(harbourStreet, FogSource::Classic, projection, viewport),
+                                            classicLayers, noisyLayers);
+    int stormLayers = 0;
+    int noisyStormLayers = 0;
+    ClassicFogResolves(StreetInputs(harbourStreet, FogSource::ClassicStorm, projection, viewport), stormLayers,
+                       noisyStormLayers);
     if (classic)
-        std::printf("classic: the street moved to the Stormwind harbour at 18:43, %d Classic fog layers\n",
-                    classicLayers);
+        std::printf("classic: the street moved to the Stormwind harbour at 18:43, %d Classic fog layers (%d with "
+                    "authored noise); in a full storm %d layers (%d with authored noise)\n",
+                    classicLayers, noisyLayers, stormLayers, noisyStormLayers);
     else
         std::printf("classic cases skipped: fogdata.bin beside CoAVolFog.dll does not resolve the harbour\n");
 
@@ -397,7 +412,7 @@ bool MeasureCases(Harness& h)
     {
         for (const BenchmarkCase& benchmark : kCases)
         {
-            const bool classicCase = benchmark.fog == FogSource::Classic;
+            const bool classicCase = benchmark.fog != FogSource::Derived;
             if (classicCase && !classic)
                 continue;
             const Street& street = classicCase ? harbourStreet : derivedStreet;

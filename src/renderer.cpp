@@ -17,9 +17,21 @@
 #include "ps_lit_march_high.h"
 #include "ps_lit_march_low.h"
 #include "ps_lit_march_mid.h"
+#include "ps_lit_noisy_march_high.h"
+#include "ps_lit_noisy_march_low.h"
+#include "ps_lit_noisy_march_mid.h"
 #include "ps_march_high.h"
 #include "ps_march_low.h"
 #include "ps_march_mid.h"
+#include "ps_noisy_composite_high.h"
+#include "ps_noisy_composite_low.h"
+#include "ps_noisy_composite_mid.h"
+#include "ps_noisy_march_high.h"
+#include "ps_noisy_march_low.h"
+#include "ps_noisy_march_mid.h"
+#include "ps_noisy_split_composite_high.h"
+#include "ps_noisy_split_composite_low.h"
+#include "ps_noisy_split_composite_mid.h"
 #include "ps_probe.h"
 #include "ps_ray_blur.h"
 #include "ps_ray_mask.h"
@@ -35,6 +47,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <limits>
 
 namespace
@@ -46,7 +59,10 @@ constexpr DWORD kAllStencilBits = 0xFF;
 constexpr DWORD kUnmarkedSamples = 0;
 constexpr DWORD kNearSamples = 1;
 constexpr DWORD kFarSamples = ~kUnmarkedSamples & kAllStencilBits;
-constexpr DWORD kStages = 10;
+constexpr DWORD kStages = 11;
+constexpr UINT kLayerNoiseRegister = 36;
+constexpr DWORD kAuthoredNoiseStage = 10;
+constexpr double kMaxNoiseStepSeconds = 0.25;
 constexpr UINT kRayScale = 4;
 constexpr float kMinViewportDepthExtent = 0.01f;
 constexpr float kDeepestWorldDepthInFullRangeViewport = 0.9999995f;
@@ -216,6 +232,37 @@ char DepthClassLetter(float depthClass)
 {
     return depthClass > 1.5f ? 's' : (depthClass > 0.5f ? 'f' : 'w');
 }
+
+constexpr int kLoggedGradingInputs[] = {8, 16, 24};
+
+const char* DrawnNoiseState(const LayerNoise& drawn, const Config& cfg)
+{
+    if (drawn.alpha > 0.0f)
+        return "";
+    return cfg.classicNoise ? " (at its mean: no noise volume)" : " (off: ClassicNoise=0)";
+}
+
+void LogAuthoredExtras(const AuthoredFog& fog, const FogParams& drawn, const Config& cfg)
+{
+    const float* curve = fog.gradingCurve;
+    VF_LOG_INFO("  Classic glow %.2f%s at coverage %.2f, grading curve at inputs %d/31 %d/31 %d/31: %.3f %.3f %.3f "
+                "(not rendered)",
+                fog.glow, fog.hasGlow ? "" : " (no glow data)", fog.coverage, kLoggedGradingInputs[0],
+                kLoggedGradingInputs[1], kLoggedGradingInputs[2], curve[kLoggedGradingInputs[0]],
+                curve[kLoggedGradingInputs[1]], curve[kLoggedGradingInputs[2]]);
+    for (int i = 0; i < std::min(fog.layerCount, kSceneLayers); ++i)
+    {
+        const AuthoredNoise& n = fog.layers[i].noise;
+        if (n.presence <= 0.0f)
+            continue;
+        const LayerNoise& shown = drawn.noise[i];
+        VF_LOG_INFO("  classic layer %d noise: share %.2f, drawn alpha %.2f%s; octave shares %.2f/%.2f, tiles "
+                    "%.0f/%.0f yd, drift (%.1f %.1f %.1f)/(%.1f %.1f %.1f) yd/s, fade %.2f %.2f %.2f",
+                    i, n.presence, shown.alpha, DrawnNoiseState(shown, cfg), n.octaveShare[0], n.octaveShare[1],
+                    n.tileYards[0], n.tileYards[1], n.velocity[0][0], n.velocity[0][1], n.velocity[0][2],
+                    n.velocity[1][0], n.velocity[1][1], n.velocity[1][2], n.fade[0], n.fade[1], n.fade[2]);
+    }
+}
 }
 
 Renderer::~Renderer()
@@ -234,6 +281,7 @@ void Renderer::ReleaseDefaultPool()
     SafeRelease(m_sceneCopy);
     SafeRelease(m_localLightData);
     SafeRelease(m_densityNoise);
+    SafeRelease(m_authoredNoise);
     DropPendingDepthProbe();
     SafeRelease(m_probeTarget);
     SafeRelease(m_probeReadback);
@@ -253,14 +301,23 @@ void Renderer::ReleaseAll()
 {
     ReleaseDefaultPool();
     m_unsupportedShaderDevice = nullptr;
+    m_drawnMarch = nullptr;
+    m_drawnComposite = nullptr;
+    m_drawnSplitComposite = nullptr;
     SafeRelease(m_vs);
     for (auto*& ps : m_march)
         SafeRelease(ps);
     for (auto*& ps : m_litMarch)
         SafeRelease(ps);
+    for (auto*& ps : m_noisyMarch)
+        SafeRelease(ps);
+    for (auto*& ps : m_litNoisyMarch)
+        SafeRelease(ps);
     SafeRelease(m_temporal);
     SafeRelease(m_historyDepthShader);
     for (auto*& ps : m_composite)
+        SafeRelease(ps);
+    for (auto*& ps : m_noisyComposite)
         SafeRelease(ps);
     for (auto*& ps : m_litComposite)
         SafeRelease(ps);
@@ -286,17 +343,23 @@ void Renderer::LogLightChange(const FrameInputs& in, const AuthoredFog& fog, boo
         return;
     m_lightsLogged = true;
     m_lightSignature = signature;
-    if (!authored)
-    {
-        VF_LOG_INFO("map %d at (%.0f %.0f %.0f): no Classic fog data, derived layers", in.mapId, in.camPos[0],
-                    in.camPos[1], in.camPos[2]);
-        return;
-    }
     char lights[160] = {};
     int used = 0;
     for (int i = 0; i < fog.lightCount && used < static_cast<int>(sizeof(lights)) - 24; ++i)
         used += std::snprintf(lights + used, sizeof(lights) - used, "%s%u:%.2f", i ? " " : "", fog.lightIds[i],
                               fog.lightWeights[i]);
+    if (!authored && fog.lightCount == 0)
+    {
+        VF_LOG_INFO("map %d at (%.0f %.0f %.0f): no Classic fog data, derived layers", in.mapId, in.camPos[0],
+                    in.camPos[1], in.camPos[2]);
+        return;
+    }
+    if (!authored)
+    {
+        VF_LOG_INFO("map %d at (%.0f %.0f %.0f): Classic lights %s (coverage %.2f) without Classic fog, derived layers",
+                    in.mapId, in.camPos[0], in.camPos[1], in.camPos[2], lights, fog.coverage);
+        return;
+    }
     VF_LOG_INFO("map %d at (%.0f %.0f %.0f): Classic lights %s, %d layers, storm %.1f, screen effect slot %d",
                 in.mapId, in.camPos[0], in.camPos[1], in.camPos[2], lights, fog.layerCount,
                 loggedStormStep / kLoggedStormBlendSteps, selection.screenEffectSlot);
@@ -328,11 +391,20 @@ bool Renderer::EnsureShaders(IDirect3DDevice9* dev)
         {"ps_lit_march_low", g_ps_lit_march_low, &m_litMarch[0]},
         {"ps_lit_march_mid", g_ps_lit_march_mid, &m_litMarch[1]},
         {"ps_lit_march_high", g_ps_lit_march_high, &m_litMarch[2]},
+        {"ps_noisy_march_low", g_ps_noisy_march_low, &m_noisyMarch[0]},
+        {"ps_noisy_march_mid", g_ps_noisy_march_mid, &m_noisyMarch[1]},
+        {"ps_noisy_march_high", g_ps_noisy_march_high, &m_noisyMarch[2]},
+        {"ps_lit_noisy_march_low", g_ps_lit_noisy_march_low, &m_litNoisyMarch[0]},
+        {"ps_lit_noisy_march_mid", g_ps_lit_noisy_march_mid, &m_litNoisyMarch[1]},
+        {"ps_lit_noisy_march_high", g_ps_lit_noisy_march_high, &m_litNoisyMarch[2]},
         {"ps_temporal", g_ps_temporal, &m_temporal},
         {"ps_history_depth", g_ps_history_depth, &m_historyDepthShader},
         {"ps_composite_low", g_ps_composite_low, &m_composite[0]},
         {"ps_composite_mid", g_ps_composite_mid, &m_composite[1]},
         {"ps_composite_high", g_ps_composite_high, &m_composite[2]},
+        {"ps_noisy_composite_low", g_ps_noisy_composite_low, &m_noisyComposite[0]},
+        {"ps_noisy_composite_mid", g_ps_noisy_composite_mid, &m_noisyComposite[1]},
+        {"ps_noisy_composite_high", g_ps_noisy_composite_high, &m_noisyComposite[2]},
         {"ps_lit_composite_low", g_ps_lit_composite_low, &m_litComposite[0]},
         {"ps_lit_composite_mid", g_ps_lit_composite_mid, &m_litComposite[1]},
         {"ps_lit_composite_high", g_ps_lit_composite_high, &m_litComposite[2]},
@@ -379,6 +451,8 @@ void Renderer::ReleaseSplitComposites()
     SafeRelease(m_silhouetteMask);
     for (auto*& ps : m_splitComposite)
         SafeRelease(ps);
+    for (auto*& ps : m_noisySplitComposite)
+        SafeRelease(ps);
     for (auto*& ps : m_litSplitComposite)
         SafeRelease(ps);
 }
@@ -389,15 +463,18 @@ bool Renderer::EnsureSplitComposites(IDirect3DDevice9* dev)
         return true;
     if (m_splitCompositesUnavailable)
         return false;
-    const BYTE* const code[2][kQualityLevels] = {
+    const BYTE* const code[][kQualityLevels] = {
         {g_ps_split_composite_low, g_ps_split_composite_mid, g_ps_split_composite_high},
+        {g_ps_noisy_split_composite_low, g_ps_noisy_split_composite_mid, g_ps_noisy_split_composite_high},
         {g_ps_lit_split_composite_low, g_ps_lit_split_composite_mid, g_ps_lit_split_composite_high},
     };
-    IDirect3DPixelShader9** const shaders[2] = {m_splitComposite, m_litSplitComposite};
+    IDirect3DPixelShader9** const shaders[] = {m_splitComposite, m_noisySplitComposite, m_litSplitComposite};
+    static_assert(std::size(code) == std::size(shaders), "one split composite array per shader family");
     HRESULT result = D3D_OK;
-    for (int lit = 0; lit < 2 && SUCCEEDED(result); ++lit)
+    for (size_t family = 0; family < std::size(shaders) && SUCCEEDED(result); ++family)
         for (int quality = 0; quality < kQualityLevels && SUCCEEDED(result); ++quality)
-            result = dev->CreatePixelShader(reinterpret_cast<const DWORD*>(code[lit][quality]), &shaders[lit][quality]);
+            result = dev->CreatePixelShader(reinterpret_cast<const DWORD*>(code[family][quality]),
+                                            &shaders[family][quality]);
     if (SUCCEEDED(result))
         result = dev->CreatePixelShader(reinterpret_cast<const DWORD*>(g_ps_silhouette_mask), &m_silhouetteMask);
     if (SUCCEEDED(result))
@@ -413,12 +490,14 @@ bool Renderer::EnsureSplitComposites(IDirect3DDevice9* dev)
     return false;
 }
 
-IDirect3DPixelShader9* Renderer::CompositeShader(bool lit, bool splitSamples, int quality) const
+IDirect3DPixelShader9* Renderer::CompositeShader(const CompositeChoice& choice, bool splitSamples) const
 {
-    const int index = std::clamp(quality, 1, kQualityLevels) - 1;
-    if (splitSamples)
-        return (lit ? m_litSplitComposite : m_splitComposite)[index];
-    return (lit ? m_litComposite : m_composite)[index];
+    const int index = std::clamp(choice.quality, 1, kQualityLevels) - 1;
+    if (choice.lit)
+        return (splitSamples ? m_litSplitComposite : m_litComposite)[index];
+    if (choice.noisy)
+        return (splitSamples ? m_noisySplitComposite : m_noisyComposite)[index];
+    return (splitSamples ? m_splitComposite : m_composite)[index];
 }
 
 void Renderer::MarkSilhouetteSamples(IDirect3DDevice9* dev, IDirect3DSurface9* sampleDepth, const D3DVIEWPORT9& vp)
@@ -465,7 +544,7 @@ void Renderer::DrawSamplesMarked(IDirect3DDevice9* dev, DWORD marker, IDirect3DP
 }
 
 void Renderer::DrawCompositeBySampleDepth(IDirect3DDevice9* dev, IDirect3DSurface9* sampleDepth,
-                                          const D3DVIEWPORT9& vp, bool lit, int quality, bool overwrites)
+                                          const D3DVIEWPORT9& vp, const CompositeChoice& choice, bool overwrites)
 {
     const float ownSideDrawn = overwrites ? 1.0f : 0.0f;
     const Float4 nearSide = {0.0f, ownSideDrawn, 0.0f, 0.0f};
@@ -475,15 +554,15 @@ void Renderer::DrawCompositeBySampleDepth(IDirect3DDevice9* dev, IDirect3DSurfac
     {
         dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
         dev->SetDepthStencilSurface(nullptr);
-        dev->SetPixelShader(CompositeShader(lit, false, quality));
+        dev->SetPixelShader(CompositeShader(choice, false));
         DrawFullscreen(dev);
         dev->SetDepthStencilSurface(sampleDepth);
         dev->SetRenderState(D3DRS_STENCILENABLE, TRUE);
     }
     else
-        DrawSamplesMarked(dev, kUnmarkedSamples, CompositeShader(lit, false, quality), nullptr);
-    DrawSamplesMarked(dev, kNearSamples, CompositeShader(lit, true, quality), &nearSide.x);
-    DrawSamplesMarked(dev, kFarSamples, CompositeShader(lit, true, quality), &farSide.x);
+        DrawSamplesMarked(dev, kUnmarkedSamples, CompositeShader(choice, false), nullptr);
+    DrawSamplesMarked(dev, kNearSamples, CompositeShader(choice, true), &nearSide.x);
+    DrawSamplesMarked(dev, kFarSamples, CompositeShader(choice, true), &farSide.x);
     dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
     dev->SetDepthStencilSurface(nullptr);
     dev->SetViewport(&vp);
@@ -722,6 +801,37 @@ void Renderer::BindTexture(IDirect3DDevice9* dev, DWORD stage, IDirect3DBaseText
     dev->SetSamplerState(stage, D3DSAMP_MAXMIPLEVEL, 0);
 }
 
+void Renderer::BindWrappedVolume(IDirect3DDevice9* dev, DWORD stage, IDirect3DVolumeTexture9* volume)
+{
+    BindTexture(dev, stage, volume, true);
+    dev->SetSamplerState(stage, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+    dev->SetSamplerState(stage, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+    dev->SetSamplerState(stage, D3DSAMP_ADDRESSW, D3DTADDRESS_WRAP);
+}
+
+FogParams Renderer::DrawableFog(IDirect3DDevice9* dev, const FogParams& fog)
+{
+    if (!AnyLayerNoise(fog))
+        return fog;
+    if (!m_authoredNoise && !CreateAuthoredNoise(dev, &m_authoredNoise))
+        return WithMeanNoise(fog);
+    return fog;
+}
+
+void Renderer::UploadLayerNoise(IDirect3DDevice9* dev, const FogParams& fog, const float* camera,
+                                long long now)
+{
+    const double elapsed = m_noiseTicks ? std::min(TickSeconds(now - m_noiseTicks), kMaxNoiseStepSeconds) : 0.0;
+    m_noiseTicks = now;
+    m_noiseScroll.Advance(fog, camera, elapsed);
+    LayerNoiseRegisters registers[kSceneLayers];
+    m_noiseScroll.Registers(fog, registers);
+    static_assert(sizeof(registers) == 4 * kSceneLayers * sizeof(Float4), "noise registers of the scene layers");
+    dev->SetPixelShaderConstantF(kLayerNoiseRegister, &registers[0].octaveOffsetAndInverseTile[0][0],
+                                 4 * kSceneLayers);
+    BindWrappedVolume(dev, kAuthoredNoiseStage, m_authoredNoise);
+}
+
 IDirect3DTexture9* Renderer::FilterWithHistory(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture,
                                                const float* viewToPreviousClip, bool historyValid,
                                                float historyWeight)
@@ -749,8 +859,9 @@ IDirect3DTexture9* Renderer::FilterWithHistory(IDirect3DDevice9* dev, IDirect3DT
 }
 
 void Renderer::LogFrameSummary(IDirect3DDevice9* dev, long long now, const FrameInputs& in, const Config& cfg,
-                               const FogParams& fog, const D3DSURFACE_DESC& depthDesc, const float* viewToWorld,
-                               const float* toLightInView, const float* sunPx, float rayStrength)
+                               const FogParams& fog, const AuthoredFog& authored, const D3DSURFACE_DESC& depthDesc,
+                               const float* viewToWorld, const float* toLightInView, const float* sunPx,
+                               float rayStrength)
 {
     const D3DVIEWPORT9& vp = in.viewport;
     const bool viewChanged = std::fabs(in.farClip - m_loggedFarClip) > 1.0f || vp.Width != m_loggedViewport.Width ||
@@ -800,6 +911,8 @@ void Renderer::LogFrameSummary(IDirect3DDevice9* dev, long long now, const Frame
                     l.emissive[2], l.upperHeight, l.upperFalloff, l.lowerHeight, l.lowerFalloff, l.shadowed,
                     std::min(l.endDistance, 99999.0f));
     }
+    if (authored.lightCount > 0)
+        LogAuthoredExtras(authored, fog, cfg);
 }
 
 bool Renderer::Render(IDirect3DDevice9* dev, const SceneDepth& depth, const FrameInputs& in, const Config& cfg)
@@ -880,7 +993,8 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDir
     AuthoredFog authored = {};
     const bool hasAuthored =
         cfg.dataMode == 1 && GlobalFogData().Resolve(in.mapId, in.camPos, in.dayFraction, in.lightParams, authored);
-    const FogParams fog = BuildFogParams(in, cfg, hasAuthored ? &authored : nullptr);
+    const FogParams fog = DrawableFog(dev, BuildFogParams(in, cfg, hasAuthored ? &authored : nullptr));
+    const bool samplesNoise = AnyLayerNoise(fog);
     LogLightChange(in, authored, hasAuthored);
     const float* proj = in.glProjection;
     const WorldDepthMapping worldDepth = MapWorldDepth(proj, vp);
@@ -937,7 +1051,7 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDir
     const float rayStrength = cfg.godRays * fog.lightVisibility * sunScreenFade;
     const bool rays = rayStrength > 0.005f;
 
-    LogFrameSummary(dev, now, in, cfg, fog, depthDesc, viewToWorld, toLightInView, sunPx, rayStrength);
+    LogFrameSummary(dev, now, in, cfg, fog, authored, depthDesc, viewToWorld, toLightInView, sunPx, rayStrength);
 
     if (LogEnabled(LogLevel::Info))
         m_gpuTimer.Begin(dev);
@@ -1016,15 +1130,16 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDir
     }
     const Float4 localControl = {static_cast<float>(pointLightCount), marchLightLimit, 0.0f, 0.0f};
     const bool marchesLocalLights = pointLightCount > 0;
-    dev->SetPixelShader((marchesLocalLights ? m_litMarch : m_march)[std::clamp(cfg.quality, 1, 3) - 1]);
+    IDirect3DPixelShader9* const* marches = marchesLocalLights ? (samplesNoise ? m_litNoisyMarch : m_litMarch)
+                                                               : (samplesNoise ? m_noisyMarch : m_march);
+    m_drawnMarch = marches[std::clamp(cfg.quality, 1, 3) - 1];
+    dev->SetPixelShader(m_drawnMarch);
     dev->SetPixelShaderConstantF(53, &localControl.x, 1);
     BindTexture(dev, 8, m_localLightData, false);
     if (cfg.noiseAmount > 0.0f && !m_densityNoise)
         CreateDensityNoise(dev, &m_densityNoise);
-    BindTexture(dev, 9, m_densityNoise, true);
-    dev->SetSamplerState(9, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
-    dev->SetSamplerState(9, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
-    dev->SetSamplerState(9, D3DSAMP_ADDRESSW, D3DTADDRESS_WRAP);
+    BindWrappedVolume(dev, 9, m_densityNoise);
+    UploadLayerNoise(dev, fog, in.camPos, now);
     const double windPeriod = static_cast<double>(kDensityNoiseSize) / std::max(cfg.noiseScale, 0.001f);
     const Float4 variation = {m_densityNoise ? cfg.noiseAmount : 0.0f, cfg.noiseScale,
                               static_cast<float>(std::fmod(TickSeconds(now) * cfg.noiseWindSpeed, windPeriod)), 0.0f};
@@ -1032,7 +1147,8 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDir
     BindTexture(dev, 0, depthTexture, false);
     DrawFullscreen(dev);
 
-    m_adaptiveLightingHistory = pointLightCount > 0 || m_prevLocalLightCount > 0 || cfg.noiseAmount > 0.0f;
+    m_adaptiveLightingHistory =
+        pointLightCount > 0 || m_prevLocalLightCount > 0 || cfg.noiseAmount > 0.0f || samplesNoise;
     const bool temporalFiltering = cfg.temporal > 0.0f;
     IDirect3DTexture9* const fogResult =
         temporalFiltering ? FilterWithHistory(dev, depthTexture, reproj, historyValid, cfg.temporal) : m_marchTarget;
@@ -1101,11 +1217,15 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDir
     dev->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD);
     dev->SetRenderState(D3DRS_COLORWRITEENABLE,
                         D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
+    const CompositeChoice compositeChoice = {marchesLocalLights, samplesNoise, cfg.quality};
     const bool splitSamples = depth.Multisampled() && EnsureSplitComposites(dev);
-    dev->SetPixelShader(CompositeShader(marchesLocalLights, false, cfg.quality));
+    m_drawnComposite = CompositeShader(compositeChoice, false);
+    m_drawnSplitComposite = splitSamples ? CompositeShader(compositeChoice, true) : nullptr;
+    dev->SetPixelShader(m_drawnComposite);
     dev->SetPixelShaderConstantF(9, &celestialLight.x, 1);
     dev->SetPixelShaderConstantF(11, &march.x, 1);
-    dev->SetPixelShaderConstantF(12, &fog.layers[0].start, 6 * kFogLayers);
+    const FogParams compositeMarchFog = marchesLocalLights ? WithMeanNoise(fog) : fog;
+    dev->SetPixelShaderConstantF(12, &compositeMarchFog.layers[0].start, 6 * kFogLayers);
     const Float4 composite[3] = {
         {fog.authored ? cfg.classicExposure : cfg.exposure, rays && sceneBlend ? rayStrength : 0.0f,
          static_cast<float>(cfg.debugView), blendMode},
@@ -1120,7 +1240,7 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDir
     BindTexture(dev, 3, sceneBlend ? m_sceneCopy : nullptr, false);
     BindTexture(dev, 4, m_marchTarget, false);
     if (splitSamples)
-        DrawCompositeBySampleDepth(dev, depth.bound, vp, marchesLocalLights, cfg.quality, sceneBlend);
+        DrawCompositeBySampleDepth(dev, depth.bound, vp, compositeChoice, sceneBlend);
     else
         DrawFullscreen(dev);
     m_gpuTimer.End();

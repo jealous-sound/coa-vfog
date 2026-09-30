@@ -4,6 +4,7 @@
 #include "fog_data.h"
 #include "hooks.h"
 #include "log.h"
+#include "noise_volume.h"
 #include "overlay.h"
 #include "water_data.h"
 #include "water_renderer.h"
@@ -49,6 +50,8 @@ void Attach(HMODULE module)
     }
     const bool engineHooks = InstallEngineHooks();
     AllowFogOnNewDevices(engineHooks);
+    if (engineHooks)
+        PrepareAuthoredNoise();
     if (engineHooks && InstallWaterHooks())
         GlobalWaterData().Load(dir + "waterdata.bin");
     InstallFarClipHooks();
@@ -106,6 +109,12 @@ extern "C" void __cdecl vf_test_suppress_depth_write(int suppress)
 extern "C" int __cdecl vf_test_adaptive_lighting_history()
 {
     return AdaptiveLightingHistory(LatestFogDevice()) ? 1 : 0;
+}
+
+extern "C" void __cdecl vf_test_drawn_fog_shaders(IDirect3DPixelShader9** march, IDirect3DPixelShader9** composite,
+                                                   IDirect3DPixelShader9** splitComposite)
+{
+    DrawnFogShaders(LatestFogDevice(), march, composite, splitComposite);
 }
 
 extern "C" int __cdecl vf_test_overlay_visible()

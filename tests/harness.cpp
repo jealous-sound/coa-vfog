@@ -28,6 +28,9 @@ extern "C" __declspec(dllimport) void __cdecl vf_test_set_config(const Config*);
 extern "C" __declspec(dllimport) void __cdecl vf_test_get_config(Config*);
 extern "C" __declspec(dllimport) int __cdecl vf_test_render(const FrameInputs*, const char**);
 extern "C" __declspec(dllimport) int __cdecl vf_test_adaptive_lighting_history();
+extern "C" __declspec(dllimport) void __cdecl vf_test_drawn_fog_shaders(IDirect3DPixelShader9**,
+                                                                        IDirect3DPixelShader9**,
+                                                                        IDirect3DPixelShader9**);
 extern "C" __declspec(dllimport) void __cdecl vf_test_force_depth_write(int);
 extern "C" __declspec(dllimport) void __cdecl vf_test_suppress_depth_write(int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_overlay_visible();
@@ -293,8 +296,8 @@ Image Capture(IDirect3DDevice9* dev)
     return img;
 }
 
-constexpr DWORD kFogPassTextureStages = 10;
-constexpr UINT kFogPassPixelConstants = 99;
+constexpr DWORD kFogPassTextureStages = 11;
+constexpr UINT kFogPassPixelConstants = 100;
 
 struct Sentinel
 {
@@ -667,13 +670,13 @@ void CheckClassicData(const FogData& data)
               stormwindWeight > 0.05f && stormwindWeight < 0.1f,
           "Classic light blend at the harbour (light 77 falloff edge)");
     Check(wall && haze && std::fabs(wall->start - 3000.0f) < 0.5f &&
-              std::fabs(wall->density - (globalWeight * 0.6f + stormwindWeight * 0.1f)) < 1e-4f &&
-              std::fabs(haze->density - (globalWeight * 0.12f + stormwindWeight * 0.1f)) < 1e-4f,
+              std::fabs(wall->density - (globalWeight * 0.6f + stormwindWeight * 1.0f)) < 1e-4f &&
+              std::fabs(haze->density - (globalWeight * 0.12f + stormwindWeight * 0.125f)) < 1e-4f,
           "Classic layers blended by light weight at a key time");
 
     AuthoredFog mid = {};
     data.Resolve(kEasternKingdoms, harbourAtStormwindLightEdge, kDayFraction1845, kClearWeather, mid);
-    float expected = WeightOf(mid, kEasternKingdomsGlobalLight) * 0.8f + WeightOf(mid, kStormwindLight) * 0.3f;
+    float expected = WeightOf(mid, kEasternKingdomsGlobalLight) * 0.8f + WeightOf(mid, kStormwindLight) * 0.75f;
     const AuthoredLayer* midWall = FarWall(mid);
     std::printf("     harbour at 18:45: far wall density %.4f (expected %.4f)\n", midWall ? midWall->density : -1.0f,
                 expected);
@@ -728,12 +731,12 @@ void CheckStormBlendsLayersByClassicIndex(const FogData& data)
               Near(clear.layers[1].start, 3000.0f) && Near(clear.layers[1].density, 0.3f) &&
               Near(clear.layers[2].density, 0.1f),
           "open sea resolves only the Eastern Kingdoms light");
-    Check(storm.layerCount == 3 && storm.layers[0].density == 0.0f && Near(storm.layers[1].start, 800.0f) &&
-              Near(storm.layers[1].density, 0.75f) && Near(storm.layers[2].density, 0.75f),
+    Check(storm.layerCount == 3 && storm.layers[0].density == 0.0f && Near(storm.layers[1].start, 500.0f) &&
+              Near(storm.layers[1].density, 0.75f) && Near(storm.layers[2].density, 0.3f),
           "a full storm uses the storm layers at their Classic indices");
     Check(Near(half.layers[0].density, 0.015f) && Near(half.layers[0].g, clear.layers[0].g) &&
-              Near(half.layers[1].start, 1900.0f) && Near(half.layers[1].density, 0.525f) &&
-              Near(half.layers[2].density, 0.425f),
+              Near(half.layers[1].start, 1750.0f) && Near(half.layers[1].density, 0.525f) &&
+              Near(half.layers[2].density, 0.2f),
           "a half storm blends matching layers and thins the clear-only haze");
 }
 
@@ -1553,12 +1556,15 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
     DrawOverlayFrames(1);
 }
 
+#include "authored_fog_checks.h"
 #include "fog_integration_checks.h"
 #include "local_lights_checks.h"
 #include "noise_variation_checks.h"
+#include "classic_phase_checks.h"
 #include "march_layer_checks.h"
 #include "local_light_gpu_checks.h"
 #include "silhouette_quality_checks.h"
+#include "authored_noise_checks.h"
 #include "grazing_upsample_checks.h"
 #include "god_ray_quality_checks.h"
 #include "temporal_quality_checks.h"
@@ -1615,6 +1621,9 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckDenseClassicFogAtHarbourSunset(classic);
     CheckThinClassicFogAtHyjalMidnight(classic);
     CheckFogThinsIntoFoglessClassicLight(classic);
+    authored_fog::CheckAuthoredFogExtras(classic);
+    authored_noise::CheckAuthoredNoise(classic);
+    classic_phase::CheckClassicPhase();
 
     CreateDirectoryW(outDir.c_str(), nullptr);
     g_harnessLog = FullPath(outDir + L"\\harness.log");
@@ -1698,6 +1707,8 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckLocalLightInputs();
     CheckInteriorFogInputs();
     CheckNoiseVariation(h.dev);
+    authored_noise::CheckAuthoredNoiseOnTheGpu(h.dev);
+    classic_phase::CheckIsotropicSlabSaturation(h.dev);
     march_layers::CheckUnrolledMarchMatchesLoopedMarch(h.dev);
     local_light_gpu::CheckLocalLightIntegration(h.dev);
     silhouette_quality::CheckSilhouettes(h.dev);
@@ -2064,6 +2075,8 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
 
     runtime_cost::CheckDisabledTemporalSkipsHistoryPasses(h, eye, at, proj, resized);
     CheckRendererSwitchesLitShaders(h);
+    authored_noise::CheckRendererDrawsStormNoise(h);
+    runtime_cost::CheckFrameSummaryLogsClassicExtras(h);
     runtime_cost::CheckDepthProbeAndGpuTimeLog(h, eye, at);
     runtime_cost::CheckGpuTimerRetriesTransientCreationFailures(h.dev);
     runtime_cost::CheckGpuTimerReportsUnsupportedBeforeFirstSummary(h.dev);
@@ -2315,7 +2328,13 @@ void PrintLayers(const FogParams& fog)
     }
 }
 
-int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
+struct HarbourOptions
+{
+    int classicPhase = 0;
+    float stormBlend = 0.0f;
+};
+
+int RunHarbour(const std::wstring& outDir, const std::string& dataPath, const HarbourOptions& options)
 {
     FogData classic;
     if (!classic.Load(dataPath))
@@ -2379,7 +2398,8 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
     const float aspect = static_cast<float>(kHarbourWidth) / kHarbourHeight;
     float proj[16];
     EngineGlDepthProjection(kHarbourLoggedP11, aspect, kHarbourNear, kHarbourFar, proj);
-    const Config shippedCfg = {};
+    Config shippedCfg = {};
+    shippedCfg.classicPhase = options.classicPhase;
 
     auto inputsFor = [&](const float* view, Vec3 at) {
         FrameInputs in = MakeInputs(view, proj, kHarbourEye, at, vp);
@@ -2402,6 +2422,7 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
         in.farClip = kHarbourFar;
         in.inLiquid = false;
         in.mapId = kEasternKingdoms;
+        in.lightParams = Storm(options.stormBlend);
         return in;
     };
 
@@ -2411,7 +2432,9 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
         CameraRelativeLookAt(kHarbourEye, at, view);
         FrameInputs in = inputsFor(view, at);
         AuthoredFog authored = {};
-        bool resolved = classic.Resolve(kEasternKingdoms, in.camPos, in.dayFraction, kClearWeather, authored);
+        bool resolved = classic.Resolve(kEasternKingdoms, in.camPos, in.dayFraction, in.lightParams, authored);
+        std::printf("harbour frame: ClassicPhase %d, storm weight %.2f\n", shippedCfg.classicPhase,
+                    in.lightParams.stormBlend);
         std::printf("harbour frame: camera (%.1f %.1f %.1f), day %.4f, toLight (%.3f %.3f %.3f) = azimuth %.1f "
                     "elevation %.2f deg\n",
                     in.camPos[0], in.camPos[1], in.camPos[2], in.dayFraction, toLight.x, toLight.y, toLight.z, sunAz,
@@ -2426,9 +2449,9 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
         {
             const AuthoredLayer& a = authored.layers[i];
             std::printf("  authored %d: start %.1f density %.4f g %.3f intensity %.2f strength %.3f exponent %.3f "
-                        "diffuse %.3f %.3f %.3f emissive %.3f %.3f %.3f flags %u\n",
+                        "diffuse %.3f %.3f %.3f emissive %.3f %.3f %.3f flags %u noise %.2f\n",
                         i, a.start, a.density, a.g, a.intensity, a.strength, a.exponent, a.diffuse[0], a.diffuse[1],
-                        a.diffuse[2], a.emissive[0], a.emissive[1], a.emissive[2], a.flags);
+                        a.diffuse[2], a.emissive[0], a.emissive[1], a.emissive[2], a.flags, a.noise.presence);
         }
         FogParams fog = BuildFogParams(in, shippedCfg, resolved ? &authored : nullptr);
         std::printf("  fog params (as the DLL logs them): refZ %.1f maxDistance %.0f horizonStart %.1f farLimit %.1f "
@@ -2503,8 +2526,9 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
         SavePng(stem + L"-depth.png", depth.w, depth.h, depth.bgra);
 
         AuthoredFog authored = {};
-        bool resolved = classic.Resolve(kEasternKingdoms, in.camPos, in.dayFraction, kClearWeather, authored);
-        FogParams fog = BuildFogParams(in, shippedCfg, resolved ? &authored : nullptr);
+        bool resolved = classic.Resolve(kEasternKingdoms, in.camPos, in.dayFraction, in.lightParams, authored);
+        const FogParams drawn = BuildFogParams(in, shippedCfg, resolved ? &authored : nullptr);
+        const FogParams fog = WithMeanNoise(drawn);
         float sunV[3];
         TransformDirection(in.toLight, view, sunV);
         std::printf("\nview %ls: %s (azimuth %.1f, pitch %.1f; sun view-space %.3f %.3f %.3f, refZ %.1f, "
@@ -2514,6 +2538,9 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
         std::printf("  %-31s %6s %6s %6s %13s %6s %15s %15s %15s %15s %6s  %s\n", "probe", "px", "py", "dist",
                     "viewZ/shader", "alpha", "fog rgb", "fog rgb / a", "before", "after", "cpu a",
                     "cpu tau L0 L1 L2 L3");
+        if (AnyLayerNoise(drawn))
+            std::printf("  cpu a and tau take the authored noise at its mean density; the GPU samples the noise, so "
+                        "probes differ where it is patchy\n");
         for (const HarbourProbe& p : kHarbourProbes)
         {
             Vec3 d = ProbeOffsetFromEye(p, hv.baseAzimuth, sunAz, sunEl);
@@ -2597,10 +2624,15 @@ int wmain(int argc, wchar_t** argv)
     std::wstring ini = L"CoAVolFog.ini";
     std::wstring scene;
     D3DMULTISAMPLE_TYPE samples = D3DMULTISAMPLE_NONE;
+    HarbourOptions harbour;
     for (int i = 1; i + 1 < argc; ++i)
     {
         if (std::wcscmp(argv[i], L"--samples") == 0 && _wtoi(argv[i + 1]) > 1)
             samples = static_cast<D3DMULTISAMPLE_TYPE>(_wtoi(argv[i + 1]));
+        if (std::wcscmp(argv[i], L"--classic-phase") == 0)
+            harbour.classicPhase = _wtoi(argv[i + 1]);
+        if (std::wcscmp(argv[i], L"--storm") == 0)
+            harbour.stormBlend = static_cast<float>(_wtof(argv[i + 1]));
         if (std::wcscmp(argv[i], L"--out") == 0)
             out = argv[i + 1];
         if (std::wcscmp(argv[i], L"--data") == 0)
@@ -2625,7 +2657,7 @@ int wmain(int argc, wchar_t** argv)
         }
     }
     if (scene == L"harbour")
-        return RunHarbour(out, data);
+        return RunHarbour(out, data, harbour);
     if (scene == L"performance")
         return RunPerformance(samples);
     if (!scene.empty())

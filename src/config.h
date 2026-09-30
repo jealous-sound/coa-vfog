@@ -35,6 +35,7 @@ struct Config
     int stockFog = 1;
     int dataMode = 1;
     int colorSpace = 1;
+    int classicPhase = 0;
     float sunScatter = 1.0f;
     float ambient = 1.0f;
     float exposure = 1.0f;
@@ -46,6 +47,7 @@ struct Config
     float noiseAmount = 0.15f;
     float noiseScale = 0.025f;
     float noiseWindSpeed = 0.5f;
+    bool classicNoise = true;
     float godRays = 0.0f;
     bool glowCompensation = true;
     float farClipMax = kFarClipMaxKeepsClientCap;

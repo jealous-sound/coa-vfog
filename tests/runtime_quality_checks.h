@@ -183,15 +183,18 @@ struct FogFixtureHeader
     uint32_t layerCount;
     uint32_t zoneCount;
     uint32_t pointCount;
+    uint32_t gradingCurveCount;
 };
 
 constexpr size_t kFogFixtureLightBytes = 60;
-constexpr size_t kFogFixtureParamsBytes = 12;
-constexpr size_t kFogFixtureKeyBytes = 12;
+constexpr size_t kFogFixtureParamsBytes = 16;
+constexpr size_t kFogFixtureKeyBytes = 16;
 constexpr size_t kFogFixtureFirstKeyOffset = 4;
 constexpr size_t kFogFixtureKeyCountOffset = 8;
 constexpr size_t kFogFixtureFirstLayerOffset = 4;
 constexpr size_t kFogFixtureLayerCountOffset = 2;
+constexpr size_t kFogFixtureGradingCurveOffset = 12;
+constexpr uint32_t kFogFixtureEarlierFormat = 3;
 
 template <typename T>
 void SetFogFixtureValue(std::vector<unsigned char>& bytes, size_t offset, T value)
@@ -272,7 +275,19 @@ void CheckFogDataBounds(const std::wstring& outDir, const std::string& dataPath)
     CheckRejectedFogFixture(fixture, bytes, "fogdata rejects overflowing layer ranges");
 
     bytes = original;
+    SetFogFixtureValue<uint32_t>(bytes, keysOffset + kFogFixtureGradingCurveOffset, header.gradingCurveCount + 1);
+    CheckRejectedFogFixture(fixture, bytes, "fogdata rejects a grading curve index beyond its curve table");
+
+    bytes = original;
     bytes.pop_back();
     CheckRejectedFogFixture(fixture, bytes, "fogdata rejects a truncated record array");
+
+    bytes = original;
+    SetFogFixtureValue<uint32_t>(bytes, offsetof(FogFixtureHeader, version), kFogFixtureEarlierFormat);
+    const size_t logStart = ReadText(g_harnessLog).size();
+    CheckRejectedFogFixture(fixture, bytes, "fogdata rejects the earlier format 3");
+    const std::string logged = ReadText(g_harnessLog).substr(logStart);
+    Check(logged.find("is format 3, but this build reads format 4; regenerate it") != std::string::npos,
+          "a rejected fogdata format names both formats and the converter in the log");
     DeleteFileW(fixture.c_str());
 }
