@@ -86,6 +86,10 @@ const BoolSetting kBoolSettings[] = {
     {"Water", &Config::water},
 };
 
+const BoolSetting kWaterBoolSettings[] = {
+    {"WaterClientSplashes", &Config::waterClientSplashes},
+};
+
 template <typename Visit>
 void ForEachIntSetting(Visit visit)
 {
@@ -101,6 +105,15 @@ void ForEachFloatSetting(Visit visit)
     for (const FloatSetting& s : kFloatSettings)
         visit(s);
     for (const FloatSetting& s : kWaterFloatSettings)
+        visit(s);
+}
+
+template <typename Visit>
+void ForEachBoolSetting(Visit visit)
+{
+    for (const BoolSetting& s : kBoolSettings)
+        visit(s);
+    for (const BoolSetting& s : kWaterBoolSettings)
         visit(s);
 }
 
@@ -312,7 +325,8 @@ bool SameFogSettings(const Config& a, const Config& b)
 
 bool SameLiveSettings(const Config& a, const Config& b)
 {
-    return SameFogSettings(a, b) && SameValues(kWaterIntSettings, a, b) && SameValues(kWaterFloatSettings, a, b);
+    return SameFogSettings(a, b) && SameValues(kWaterIntSettings, a, b) && SameValues(kWaterFloatSettings, a, b) &&
+           SameValues(kWaterBoolSettings, a, b);
 }
 
 std::string SettingChanges(const Config& before, const Config& after)
@@ -337,9 +351,10 @@ std::string SettingChanges(const Config& before, const Config& after)
         if (from != to)
             add(s.key, from, to);
     });
-    for (const BoolSetting& s : kBoolSettings)
+    ForEachBoolSetting([&](const BoolSetting& s) {
         if (before.*s.value != after.*s.value)
             add(s.key, before.*s.value ? "1" : "0", after.*s.value ? "1" : "0");
+    });
     return changes;
 }
 
@@ -419,13 +434,12 @@ bool ConfigStore::Save()
         if (merged.*s.value != onDisk.*s.value)
             written = WriteSetting(m_path, s.key, text) && written;
     });
-    for (const BoolSetting& s : kBoolSettings)
-    {
+    ForEachBoolSetting([&](const BoolSetting& s) {
         if (m_config.*s.value == m_saved.*s.value)
             merged.*s.value = onDisk.*s.value;
         else if (m_config.*s.value != onDisk.*s.value)
             written = WriteSetting(m_path, s.key, m_config.*s.value ? "1" : "0") && written;
-    }
+    });
     m_stamp = FileStamp(m_path);
     if (!written)
     {
@@ -475,8 +489,7 @@ Config ConfigStore::ReadFile() const
     c.overlayKey = ReadHotkey(p, "OverlayKey", c.overlayKey);
     ForEachIntSetting([&](const IntSetting& s) { c.*s.value = ReadInt(p, s.key, c.*s.value, s.lo, s.hi); });
     ForEachFloatSetting([&](const FloatSetting& s) { c.*s.value = ReadFloat(p, s.key, c.*s.value, s.lo, s.hi); });
-    for (const BoolSetting& s : kBoolSettings)
-        c.*s.value = ReadInt(p, s.key, c.*s.value ? 1 : 0, 0, 1) != 0;
+    ForEachBoolSetting([&](const BoolSetting& s) { c.*s.value = ReadInt(p, s.key, c.*s.value ? 1 : 0, 0, 1) != 0; });
     ClampLiveSettings(c);
     return c;
 }
