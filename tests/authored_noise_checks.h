@@ -162,7 +162,12 @@ double CircularDistance(double a, double b)
     return std::fmin(d, 1.0 - d);
 }
 
-void CheckScrollWrapsByWholeTiles()
+double UploadedTileCoordinate(const float* octaveRegister, const double* position, int axis)
+{
+    return PositiveFraction((position[axis] - octaveRegister[axis]) * octaveRegister[3]);
+}
+
+void CheckScrollDriftsWithinOneTile()
 {
     FogParams fog = {};
     LayerNoise& noise = fog.noise[1];
@@ -171,35 +176,100 @@ void CheckScrollWrapsByWholeTiles()
     noise.inverseTileYards[1] = 1.0f / 250.0f;
     const float velocity[2][3] = {{15.0f, -7.0f, 2.0f}, {-30.0f, 4.0f, 0.5f}};
     std::memcpy(noise.velocity, velocity, sizeof(velocity));
+    const float camera[3] = {-8576.0f, 1007.0f, 104.0f};
     AuthoredNoiseScroll scroll;
+    LayerNoiseRegisters start[kSceneLayers];
+    scroll.Advance(fog, camera, 0.0);
+    scroll.Registers(fog, start);
     const double seconds[] = {0.016, 1000.5, 3600.0};
     for (double step : seconds)
-        scroll.Advance(fog, step);
-    LayerNoiseRegisters registers[kSceneLayers];
-    scroll.Registers(fog, registers);
+        scroll.Advance(fog, camera, step);
+    LayerNoiseRegisters end[kSceneLayers];
+    scroll.Registers(fog, end);
     const double elapsed = 0.016 + 1000.5 + 3600.0;
-    bool accumulated = true;
     bool wrapped = true;
     double worst = 0.0;
     const double positions[][3] = {{-8576.0, 1007.0, 104.0}, {5458.0, -2934.0, 1481.0}, {12.5, -0.25, 0.0}};
     for (int octave = 0; octave < kAuthoredNoiseOctaves; ++octave)
     {
+        const float* before = start[1].octaveOffsetAndInverseTile[octave];
+        const float* after = end[1].octaveOffsetAndInverseTile[octave];
         const double tile = 1.0 / noise.inverseTileYards[octave];
-        const double* offset = scroll.Offset(1, octave);
-        const float* uploaded = registers[1].octaveOffsetAndInverseTile[octave];
         for (int axis = 0; axis < 3; ++axis)
         {
-            accumulated = accumulated && std::fabs(offset[axis] - velocity[octave][axis] * elapsed) < 1e-6;
-            wrapped = wrapped && uploaded[axis] >= 0.0f && uploaded[axis] < tile;
+            wrapped = wrapped && after[axis] >= 0.0f && after[axis] <= tile;
             for (const double* p : positions)
-                worst = std::fmax(worst, CircularDistance(PositiveFraction((p[axis] - offset[axis]) / tile),
-                                                          PositiveFraction((p[axis] - uploaded[axis]) / tile)));
+            {
+                const double drifted[3] = {p[0] + velocity[octave][0] * elapsed, p[1] + velocity[octave][1] * elapsed,
+                                           p[2] + velocity[octave][2] * elapsed};
+                worst = std::fmax(worst, CircularDistance(UploadedTileCoordinate(before, p, axis),
+                                                          UploadedTileCoordinate(after, drifted, axis)));
+            }
         }
     }
-    std::printf("     noise scroll after %.0f s: largest pattern shift from wrapping %.2g of a tile\n", elapsed, worst);
-    Check(accumulated && wrapped && worst < 1e-5 && registers[1].fadeAndAlpha[3] == 1.0f &&
-              registers[0].octaveOffsetAndInverseTile[0][3] == 0.0f,
-          "noise scroll offsets accumulate drift and wrap by whole tiles without moving the pattern");
+    std::printf("     noise scroll after %.0f s: pattern off its drift by at most %.2g of a tile\n", elapsed, worst);
+    Check(wrapped && worst < 1e-5 && end[1].fadeAndAlpha[3] == 1.0f &&
+              end[0].octaveOffsetAndInverseTile[0][3] == 0.0f,
+          "noise scroll moves the pattern by direction x speed x time and uploads offsets within one tile");
+}
+
+constexpr int kWeatherBlendSteps = 100;
+constexpr double kWeatherBlendStepSeconds = 0.05;
+constexpr double kHour = 3600.0;
+constexpr double kMaxBlendPathTiles = 0.1;
+constexpr double kPathGrowthTolerance = 1e-3;
+
+double HyjalStormBlendPath(const FogData& data, double clearSeconds, float* tiles)
+{
+    const FrameInputs hyjal = HyjalMidnight();
+    const double pointNearCamera[3] = {hyjal.camPos[0] + 212.0, hyjal.camPos[1] + 212.0, hyjal.camPos[2]};
+    const Config config;
+    AuthoredNoiseScroll scroll;
+    double coordinates[kAuthoredNoiseOctaves][3] = {};
+    double path[kAuthoredNoiseOctaves][3] = {};
+    for (int step = -1; step <= kWeatherBlendSteps; ++step)
+    {
+        const float storm = static_cast<float>(std::max(step, 0)) / kWeatherBlendSteps;
+        AuthoredFog fog = {};
+        data.Resolve(kKalimdor, hyjal.camPos, hyjal.dayFraction, Storm(storm), fog);
+        const FogParams params = BuildFogParams(hyjal, config, &fog);
+        scroll.Advance(params, hyjal.camPos, step < 0 ? clearSeconds : kWeatherBlendStepSeconds);
+        LayerNoiseRegisters registers[kSceneLayers];
+        scroll.Registers(params, registers);
+        for (int octave = 0; octave < kAuthoredNoiseOctaves; ++octave)
+        {
+            const float* uploaded = registers[0].octaveOffsetAndInverseTile[octave];
+            tiles[(step < 0 ? 0 : kAuthoredNoiseOctaves) + octave] = uploaded[3] > 0.0f ? 1.0f / uploaded[3] : 0.0f;
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                const double coordinate = UploadedTileCoordinate(uploaded, pointNearCamera, axis);
+                if (step >= 0)
+                    path[octave][axis] += CircularDistance(coordinates[octave][axis], coordinate);
+                coordinates[octave][axis] = coordinate;
+            }
+        }
+    }
+    double longest = 0.0;
+    for (const auto& octave : path)
+        for (double axis : octave)
+            longest = std::fmax(longest, axis);
+    return longest;
+}
+
+void CheckStormKeepsTheScrollAcrossTileBlends(const FogData& data)
+{
+    float tiles[2 * kAuthoredNoiseOctaves] = {};
+    const double afterASecond = HyjalStormBlendPath(data, 1.0, tiles);
+    const double afterAnHour = HyjalStormBlendPath(data, kHour, tiles);
+    const double afterThreeHours = HyjalStormBlendPath(data, 3.0 * kHour, tiles);
+    std::printf("     Hyjal haze tiles %.0f/%.0f yd clear, %.0f/%.0f yd in a storm; a 5 s storm blend moves the noise "
+                "300 yd from the camera by %.3f tiles after 1 s of clear weather, %.3f after 1 h, %.3f after 3 h\n",
+                tiles[0], tiles[1], tiles[2], tiles[3], afterASecond, afterAnHour, afterThreeHours);
+    Check(tiles[0] != tiles[2] || tiles[1] != tiles[3], "Hyjal's clear and storm haze noise differ in tile size");
+    Check(afterASecond < kMaxBlendPathTiles && std::fabs(afterAnHour - afterASecond) < kPathGrowthTolerance &&
+              std::fabs(afterThreeHours - afterASecond) < kPathGrowthTolerance,
+          "a weather blend between noise tiles moves the pattern near the camera by a bounded amount that does not "
+          "grow with the time the noise has scrolled");
 }
 
 double TrilinearNoise(const double* tileCoordinate)
@@ -608,7 +678,8 @@ void CheckAuthoredNoise(const FogData& data)
     CheckCurveMatchesForever();
     CheckVolumeIsBalancedAndTileable();
     CheckModelTakesAuthoredNoise(data);
-    CheckScrollWrapsByWholeTiles();
+    CheckScrollDriftsWithinOneTile();
+    CheckStormKeepsTheScrollAcrossTileBlends(data);
 }
 
 void CheckAuthoredNoiseOnTheGpu(IDirect3DDevice9* device)

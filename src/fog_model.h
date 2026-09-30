@@ -90,12 +90,12 @@ FogParams WithMeanNoise(const FogParams& fog);
 class AuthoredNoiseScroll
 {
 public:
-    void Advance(const FogParams& fog, double seconds);
+    void Advance(const FogParams& fog, const float* camera, double seconds);
     void Registers(const FogParams& fog, LayerNoiseRegisters* out) const;
-    const double* Offset(int layer, int octave) const { return m_offsets[layer][octave]; }
 
 private:
-    double m_offsets[kSceneLayers][kAuthoredNoiseOctaves][3] = {};
+    double m_phaseInTiles[kSceneLayers][kAuthoredNoiseOctaves][3] = {};
+    double m_inverseTileYards[kSceneLayers][kAuthoredNoiseOctaves] = {};
 };
 
 void Mul4x4(const float* a, const float* b, float* out);

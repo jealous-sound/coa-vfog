@@ -55,7 +55,7 @@ private:
     void BindTexture(IDirect3DDevice9* dev, DWORD stage, IDirect3DBaseTexture9* tex, bool linear);
     void BindWrappedVolume(IDirect3DDevice9* dev, DWORD stage, IDirect3DVolumeTexture9* volume);
     FogParams DrawableFog(IDirect3DDevice9* dev, const FogParams& fog);
-    void UploadLayerNoise(IDirect3DDevice9* dev, const FogParams& fog, long long now);
+    void UploadLayerNoise(IDirect3DDevice9* dev, const FogParams& fog, const float* camera, long long now);
     bool RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* target,
                       const D3DSURFACE_DESC& depthDesc, const FrameInputs& in, const Config& cfg);
 

@@ -437,12 +437,23 @@ FogParams WithMeanNoise(const FogParams& fog)
     return mean;
 }
 
-void AuthoredNoiseScroll::Advance(const FogParams& fog, double seconds)
+void AuthoredNoiseScroll::Advance(const FogParams& fog, const float* camera, double seconds)
 {
     for (int layer = 0; layer < kSceneLayers; ++layer)
         for (int octave = 0; octave < kAuthoredNoiseOctaves; ++octave)
+        {
+            const double inverseTile = fog.noise[layer].inverseTileYards[octave];
+            double& previousInverseTile = m_inverseTileYards[layer][octave];
             for (int axis = 0; axis < 3; ++axis)
-                m_offsets[layer][octave][axis] += fog.noise[layer].velocity[octave][axis] * seconds;
+            {
+                const double scaledAboutCamera = camera[axis] * (inverseTile - previousInverseTile);
+                const double drift = fog.noise[layer].velocity[octave][axis] * inverseTile * seconds;
+                double& phase = m_phaseInTiles[layer][octave][axis];
+                phase += scaledAboutCamera + drift;
+                phase -= std::floor(phase);
+            }
+            previousInverseTile = inverseTile;
+        }
 }
 
 void AuthoredNoiseScroll::Registers(const FogParams& fog, LayerNoiseRegisters* out) const
@@ -460,10 +471,7 @@ void AuthoredNoiseScroll::Registers(const FogParams& fog, LayerNoiseRegisters* o
                 continue;
             const double tile = 1.0 / noise.inverseTileYards[octave];
             for (int axis = 0; axis < 3; ++axis)
-            {
-                const double offset = m_offsets[layer][octave][axis];
-                octaveRegister[axis] = static_cast<float>(offset - tile * std::floor(offset / tile));
-            }
+                octaveRegister[axis] = static_cast<float>(m_phaseInTiles[layer][octave][axis] * tile);
             registers.octaveWeights[octave] = noise.octaveWeight[octave];
         }
         std::memcpy(registers.fadeAndAlpha, noise.fade, sizeof(noise.fade));

@@ -165,9 +165,13 @@ The column mapping is inferred (confidence in brackets) and lives in one place, 
   presets, so it does not behave like a per-layer alpha.
 
 Alpha is the share of a layer's blend weight that carries the noise, so the noise fades in over key, light and weather
-blends; the octave weights and the noise parameters are averaged over the contributions that carry them. The scroll
-offset accumulates direction × speed × elapsed seconds on the CPU in double precision, since the modern shader
-subtracts a CPU offset, and is uploaded wrapped by whole tiles. The frame summary logs each noisy layer's share,
+blends; the octave weights and the noise parameters are averaged over the contributions that carry them. The modern
+shader subtracts a CPU scroll offset; here each octave keeps it as a phase in tiles, advanced by direction × speed ×
+elapsed seconds ÷ tile and wrapped to one tile, and uploads phase × tile. When a blend changes an octave's tile size,
+the phase moves so that the pattern scales about the camera. An offset kept in yards would instead slide the pattern
+by offset × Δ(1/tile), which grows with the time the noise has scrolled: after an hour at Hyjal a storm's 5-second
+blend would sweep the haze through 11 tiles. Scaled about the camera, fog 300 yd away moves by 0.03 tiles. The
+frame summary logs each noisy layer's share,
 tiles, drift and fade colour, and `ClassicNoise=0` turns the noise off.
 
 The modern client's noise texture (`t_perlinNoise3D`) is not in the kit, so the volume is ours: a 64³ tileable

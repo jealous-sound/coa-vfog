@@ -657,11 +657,12 @@ FogParams Renderer::DrawableFog(IDirect3DDevice9* dev, const FogParams& fog)
     return fog;
 }
 
-void Renderer::UploadLayerNoise(IDirect3DDevice9* dev, const FogParams& fog, long long now)
+void Renderer::UploadLayerNoise(IDirect3DDevice9* dev, const FogParams& fog, const float* camera,
+                                long long now)
 {
     const double elapsed = m_noiseTicks ? std::min(TickSeconds(now - m_noiseTicks), kMaxNoiseStepSeconds) : 0.0;
     m_noiseTicks = now;
-    m_noiseScroll.Advance(fog, elapsed);
+    m_noiseScroll.Advance(fog, camera, elapsed);
     LayerNoiseRegisters registers[kSceneLayers];
     m_noiseScroll.Registers(fog, registers);
     static_assert(sizeof(registers) == 4 * kSceneLayers * sizeof(Float4), "noise registers of the scene layers");
@@ -972,7 +973,7 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     if (cfg.noiseAmount > 0.0f && !m_densityNoise)
         CreateDensityNoise(dev, &m_densityNoise);
     BindWrappedVolume(dev, 9, m_densityNoise);
-    UploadLayerNoise(dev, fog, now);
+    UploadLayerNoise(dev, fog, in.camPos, now);
     const double windPeriod = static_cast<double>(kDensityNoiseSize) / std::max(cfg.noiseScale, 0.001f);
     const Float4 variation = {m_densityNoise ? cfg.noiseAmount : 0.0f, cfg.noiseScale,
                               static_cast<float>(std::fmod(TickSeconds(now) * cfg.noiseWindSpeed, windPeriod)), 0.0f};
