@@ -678,11 +678,13 @@ shaded water with the real data, and the hold on the client's sprite value, driv
 value and code image, with the unit walk refused and the ripple map unsupported or failing. The multisampling suite
 creates a 4x device through the wrapper with the client's D24X8 depth (and D16) and its target-and-depth clear: the
 sample counts offered to the game, the kept back buffer and the D24S8 depth that replaces the stencil-less one, the
-fog and water on the copied depth against the drawn depth and a single-sampled frame, the fog blended by coverage at
-a silhouette in both blend modes and with a Classic layer's authored noise, `Reset` 4x→1x→4x, the cost of the game's
-multisample list, and the fallbacks (`Multisampling=0`, no copy method, a failing self-test). It expects the copy
-method the DLL's own probe finds; without one it prints a `SKIP` line with the probe's reason instead of the 4x
-device checks. They do not establish in-game appearance or performance. It writes
+fog and water on the copied depth against the drawn depth and a single-sampled frame, a wading unit's ripples in the
+4x water (the normals against the same slope at the surface depth the copy holds, one sample per pixel and up to 1%
+off the pixel centre's, the shading changed only around the path, and the tagged edges still blended by coverage),
+the fog blended by coverage at a silhouette in both blend modes and with a Classic layer's authored noise, `Reset`
+4x→1x→4x, the cost of the game's multisample list, and the fallbacks (`Multisampling=0`, no copy method, a failing
+self-test). It expects the copy method the DLL's own probe finds; without one it prints a `SKIP` line with the
+probe's reason instead of the 4x device checks. They do not establish in-game appearance or performance. It writes
 `before.png`, `after.png`, `overlay.png` and the debug views to `build/harness-out`.
 
 `vfog_harness --scene harbour <dir> --data data/fogdata.bin` renders the logged in-game frame at the
@@ -837,9 +839,10 @@ Classic.
   reporting AMD) has not run on hardware; its self-test decides. DXVK on NVIDIA reports NVIDIA without an NVAPI
   depth copy and stays single-sampled. The multisampled depth is D24S8 where the game asks for D24X8 (or D16); a
   driver without multisampled D24S8 keeps the game single-sampled. The depth copy holds one sample per pixel, so
-  the water shades a partly covered edge pixel with that sample's depth. Multisampling does not smooth
-  alpha-tested leaves and grass (alpha-to-coverage is a follow-up), and without a copy method no post-process
-  antialiasing replaces it (SMAA is a follow-up).
+  the water shades a partly covered edge pixel with that sample's depth, and every pixel reads the ripple map at
+  that depth along its centre ray (in the harness view up to 1% off the depth at the pixel centre).
+  Multisampling does not smooth alpha-tested leaves and grass (alpha-to-coverage is a follow-up), and without a
+  copy method no post-process antialiasing replaces it (SMAA is a follow-up).
 - The silhouette split sees only the one-sample copy of the 3×3 neighbourhood: geometry thinner than a pixel that
   no copied sample hits takes the far fog, a pixel with three depth layers is split in two, and over the scene
   copy both sides blend with the resolved scene colour. On the RTX 2060 Max-Q at 1920×1080 (performance scene,

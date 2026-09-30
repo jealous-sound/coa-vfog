@@ -526,46 +526,211 @@ WaterFrames RenderWaterFrames(Harness& m)
     return frames;
 }
 
-void CheckWaterOnMultisampledTargets(const WaterFrames& frames, const std::wstring& outDir)
+struct ReshadedCoverage
 {
-    const Image& mask = frames.mask.image;
-    const Image& stock = frames.stock.image;
-    const Image& shaded = frames.shaded.image;
-    water_checks::SaveImage(outDir, L"msaa-water-shaded", shaded);
     size_t full = 0;
     size_t fullChanged = 0;
     size_t edges = 0;
     size_t edgesChanged = 0;
     size_t dryChanged = 0;
+};
+
+ReshadedCoverage CountReshaded(const Image& mask, const Image& stock, const Image& shaded)
+{
+    ReshadedCoverage c;
     for (UINT y = 0; y < shaded.h; ++y)
         for (UINT x = 0; x < shaded.w; ++x)
         {
             const bool changed = std::memcmp(shaded.At(x, y), stock.At(x, y), 3) != 0;
             if (IsFullWater(mask, x, y))
             {
-                ++full;
-                fullChanged += changed ? 1 : 0;
+                ++c.full;
+                c.fullChanged += changed ? 1 : 0;
             }
             else if (IsDry(mask, stock, x, y))
-                dryChanged += changed ? 1 : 0;
+                c.dryChanged += changed ? 1 : 0;
             else
             {
-                ++edges;
-                edgesChanged += changed ? 1 : 0;
+                ++c.edges;
+                c.edgesChanged += changed ? 1 : 0;
             }
         }
-    std::printf("     4x water: %zu covered pixels (%zu reshaded), %zu partly covered edge pixels (%zu reshaded), "
-                "%zu dry pixels changed\n",
-                full, fullChanged, edges, edgesChanged, dryChanged);
-    Check(frames.shaded.began && frames.shaded.stateKept && frames.shaded.armWritesDocumented &&
-              frames.shaded.tagWritesDocumented && frames.shaded.untagRestores,
+    return c;
+}
+
+bool EdgesBlendByCoverage(const ReshadedCoverage& c)
+{
+    return c.full > 0 && c.fullChanged >= kMinShadedWaterFraction * c.full && c.dryChanged == 0 && c.edges > 0 &&
+           c.edgesChanged > 0;
+}
+
+void PrintReshaded(const char* what, const ReshadedCoverage& c)
+{
+    std::printf("     %s: %zu covered pixels (%zu reshaded), %zu partly covered edge pixels (%zu reshaded), %zu dry "
+                "pixels changed\n",
+                what, c.full, c.fullChanged, c.edges, c.edgesChanged, c.dryChanged);
+}
+
+bool TaggedAndRestored(const water_checks::WaterFrameResult& frame)
+{
+    return frame.began && frame.stateKept && frame.armWritesDocumented && frame.tagWritesDocumented &&
+           frame.untagRestores;
+}
+
+void CheckWaterOnMultisampledTargets(const WaterFrames& frames, const std::wstring& outDir)
+{
+    water_checks::SaveImage(outDir, L"msaa-water-shaded", frames.shaded.image);
+    const ReshadedCoverage coverage = CountReshaded(frames.mask.image, frames.stock.image, frames.shaded.image);
+    PrintReshaded("4x water", coverage);
+    Check(TaggedAndRestored(frames.shaded),
           (std::string("on a 4x device the water pass arms, tags the multisampled stencil and restores the state ") +
            frames.shaded.skip)
               .c_str());
-    Check(full > 0 && fullChanged >= kMinShadedWaterFraction * full && dryChanged == 0 && edges > 0 &&
-              edgesChanged > 0,
+    Check(EdgesBlendByCoverage(coverage),
           "on a 4x device the tagged water samples are reshaded, water edges blend by coverage and no dry pixel "
           "changes");
+}
+
+struct CopiedSurfaceDepths
+{
+    std::vector<float> rows;
+    bool read = false;
+    float largestCentreOffset = 0.0f;
+};
+
+CopiedSurfaceDepths ReadCopiedWaterRows(const water_checks::WaterView& v, const Image& mask)
+{
+    CopiedSurfaceDepths depths;
+    depths.rows.assign(mask.h, 0.0f);
+    std::vector<DepthTexel> texels;
+    for (UINT y = 0; y < mask.h; ++y)
+        for (UINT x = 0; x < mask.w; ++x)
+            if (IsFullWater(mask, x, y))
+            {
+                texels.push_back({x, y});
+                break;
+            }
+    std::vector<float> raw(texels.size());
+    depths.read = !texels.empty() &&
+                  vf_test_read_scene_depth(texels.data(), static_cast<int>(texels.size()), raw.data()) != 0;
+    if (!depths.read)
+        return depths;
+    float d3dProj[16];
+    RemapToD3DDepthRange(v.proj, d3dProj);
+    for (size_t i = 0; i < texels.size(); ++i)
+    {
+        const float copied = d3dProj[14] / (raw[i] - d3dProj[10]);
+        const float centre = water_checks::PixelCentreSurfaceDepth(v, texels[i].x, texels[i].y);
+        depths.rows[texels[i].y] = copied;
+        depths.largestCentreOffset = std::max(depths.largestCentreOffset, std::fabs(copied / centre - 1.0f));
+    }
+    return depths;
+}
+
+struct RippledWaterFrames
+{
+    water_checks::WaterFrameResult stock;
+    water_checks::WaterFrameResult mask;
+    water_checks::WaterFrameResult calmNormals;
+    water_checks::WaterFrameResult rippledNormals;
+    water_checks::WaterFrameResult rippledShading;
+    water_checks::WaterFrameResult calmShading;
+    WaterRippleStats stats;
+    water_checks::RippleShadingReference reference;
+    bool mapRead = false;
+    CopiedSurfaceDepths surface;
+};
+
+water_checks::WaterView RippleWaterView()
+{
+    return water_checks::MakeWaterView(water_checks::kRippleEye, water_checks::kRippleEyeTarget);
+}
+
+Config RippledWaterConfig(float ripples, int debugView)
+{
+    Config cfg = water_checks::RippleConfig(water_checks::OpticsOnlyConfig(MultisamplingConfig(true)), ripples);
+    cfg.waterDebugView = debugView;
+    return cfg;
+}
+
+water_checks::WaterFrameResult RenderRippledWaterFrame(water_checks::BasinClient& client, float ripples,
+                                                       int debugView, double seconds)
+{
+    const Config cfg = RippledWaterConfig(ripples, debugView);
+    vf_test_set_config(&cfg);
+    return water_checks::RenderRippleFrame(client, client.View(), seconds, {});
+}
+
+RippledWaterFrames RenderRippledWaterFrames(Harness& m)
+{
+    water_checks::BasinClient client(m, RippleWaterView());
+    water_checks::WaterFrame none;
+    none.calls = water_checks::WaterCalls::None;
+    water_checks::WaterFrame mask = none;
+    mask.opaqueMask = true;
+    RippledWaterFrames frames;
+    frames.stock = client.Render(none);
+    frames.mask = client.Render(mask);
+    const int normals = water_checks::kNormalDebugView;
+    const float gain = water_checks::kSlopeCheckGain;
+    frames.calmNormals = RenderRippledWaterFrame(client, 0.0f, normals, water_checks::kRippleStart);
+    const Config wading = RippledWaterConfig(gain, normals);
+    vf_test_set_config(&wading);
+    const double start = water_checks::kRippleStart + water_checks::kRippleGap;
+    water_checks::RunUnitThroughWater(client, client.View(), start);
+    const double between = start + water_checks::kRippleFrames * water_checks::kRippleFrame +
+                           water_checks::kSlopeCheckStepFraction * kWaterRippleStepSeconds;
+    frames.rippledNormals = RenderRippledWaterFrame(client, gain, normals, between);
+    frames.surface = ReadCopiedWaterRows(client.View(), frames.mask.image);
+    frames.stats = water_checks::RippleStats();
+    vf_test_water_ripple_shading(&frames.reference.constants);
+    frames.mapRead = water_ripple_checks::ReadRippleMap(m.dev, frames.reference.constants.map, frames.reference.map);
+    frames.rippledShading = RenderRippledWaterFrame(client, gain, 0, between);
+    frames.calmShading = RenderRippledWaterFrame(client, 0.0f, 0, between);
+    return frames;
+}
+
+bool FollowsForeverSlope(const water_checks::NormalComparison& c)
+{
+    return c.tilted >= water_checks::kMinTiltedPixels && c.outliers <= water_checks::kMaxOutlierShare * c.compared &&
+           c.worst <= water_checks::kMaxOutlierNormalLevels;
+}
+
+bool OnlyAroundThePath(const water_checks::PathComparison& c)
+{
+    return c.changedNearPath >= water_checks::kMinRipplePixels && c.changedElsewhere == 0;
+}
+
+void CheckRippledWaterOnMultisampledTargets(Harness& m, const std::wstring& outDir)
+{
+    const RippledWaterFrames frames = RenderRippledWaterFrames(m);
+    const water_checks::WaterView view = RippleWaterView();
+    water_checks::SaveImage(outDir, L"msaa-water-ripple-normals", frames.rippledNormals.image);
+    water_checks::SaveImage(outDir, L"msaa-water-rippled", frames.rippledShading.image);
+    const std::vector<float>& rows = frames.surface.rows;
+    const water_checks::NormalComparison normals =
+        water_checks::CompareRippleNormals(view, frames.reference, frames.calmNormals.image,
+                                           frames.rippledNormals.image, [&rows](UINT, UINT y) { return rows[y]; });
+    const water_checks::PathComparison path =
+        water_checks::CompareAroundPath(view, frames.rippledShading.image, frames.calmShading.image);
+    const ReshadedCoverage coverage =
+        CountReshaded(frames.mask.image, frames.stock.image, frames.rippledShading.image);
+    std::printf("     4x wading unit: %llu ripple steps; the depth copy holds one sample per pixel, up to %.2f%% off "
+                "the water depth at the pixel centre; at that depth the normals of %zu water pixels near the path "
+                "against the 7552035 slope: %zu tilted, %zu outside it, worst %.2f/255; shading changed at %zu of %zu "
+                "pixels near the path, %zu elsewhere\n",
+                static_cast<unsigned long long>(frames.stats.steps), frames.surface.largestCentreOffset * 100.0f,
+                normals.compared, normals.tilted, normals.outliers, normals.worst, path.changedNearPath,
+                path.nearPath, path.changedElsewhere);
+    PrintReshaded("4x rippled water", coverage);
+    Check(TaggedAndRestored(frames.rippledNormals) && TaggedAndRestored(frames.rippledShading) &&
+              frames.calmNormals.began && frames.calmShading.began && frames.stats.shaded && frames.mapRead &&
+              frames.surface.read && FollowsForeverSlope(normals) && OnlyAroundThePath(path) &&
+              EdgesBlendByCoverage(coverage),
+          "on a 4x device a wading unit's ripples reach the shaded water: at the surface depth the copy holds, its "
+          "normals follow the 7552035 slope within the single-sampled tolerances, the shading changes around its "
+          "path and nowhere else, the multisampled stencil tags still blend the water edges by coverage, no dry "
+          "pixel changes and the state is restored");
 }
 
 void CheckWaterMatchesSingleSampled(const WaterFrames& multisampled, const WaterFrames& single)
@@ -946,6 +1111,8 @@ void CheckMultisampledDevice(Harness& m, const DepthCopyProbe& probe, const std:
     vf_test_set_water_seconds(water_checks::kFrameSeconds);
     const WaterFrames multisampledWater = RenderWaterFrames(m);
     CheckWaterOnMultisampledTargets(multisampledWater, outDir);
+    CheckRippledWaterOnMultisampledTargets(m, outDir);
+    vf_test_set_water_seconds(water_checks::kFrameSeconds);
     const SilhouetteFrames multisampledSilhouette = RenderSilhouetteFrames(m);
     CheckSilhouetteFogBlendsByCoverage(multisampledSilhouette, outDir);
     CheckStormSilhouetteBlendsByCoverage(m, outDir);

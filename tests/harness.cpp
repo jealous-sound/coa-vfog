@@ -1650,10 +1650,10 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "water_contact_checks.h"
 #include "water_ripple_checks.h"
 #include "water_checks.h"
-#include "multisampling_checks.h"
 #include "water_ripple_pass_checks.h"
 #include "ripple_scene.h"
 #include "client_sprite_checks.h"
+#include "multisampling_checks.h"
 
 void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3 at,
                                    const float* proj, const D3DVIEWPORT9& world)

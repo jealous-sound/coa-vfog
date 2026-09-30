@@ -252,13 +252,17 @@ double RippleCoverageAt(const WaterView& v, const WaterRippleShading& c, UINT x,
     return window * std::clamp(1.0 - (footprint - kRippleFullDetailTexels) / kRippleDetailFadeTexels, 0.0, 1.0);
 }
 
-bool ExpectedRippleNormal(const WaterView& v, const RippleShadingReference& r, UINT x, UINT y, float depthScale,
+float PixelCentreSurfaceDepth(const WaterView& v, UINT x, UINT y)
+{
+    return ViewDepthOfPlane(v, PixelRay(v, x + 0.5f, y + 0.5f), kWaterSurfaceZ);
+}
+
+bool ExpectedRippleNormal(const WaterView& v, const RippleShadingReference& r, UINT x, UINT y, float depth,
                           double normal[3])
 {
     const Vec3 ray = PixelRay(v, x + 0.5f, y + 0.5f);
-    if (ray.z >= 0.0f)
+    if (ray.z >= 0.0f || !(depth > 0.0f))
         return false;
-    const float depth = ViewDepthOfPlane(v, ray, kWaterSurfaceZ) * depthScale;
     const WaterRippleShading& c = r.constants;
     const double u = (static_cast<double>(v.eye.x + ray.x * depth) - c.window[0]) * c.window[2];
     const double w = (static_cast<double>(v.eye.y + ray.y * depth) - c.window[1]) * c.window[2];
@@ -303,12 +307,13 @@ struct NormalRange
     double tilt = 0.0;
 };
 
-bool ExpectedNormalRange(const WaterView& v, const RippleShadingReference& r, UINT x, UINT y, NormalRange& range)
+bool ExpectedNormalRange(const WaterView& v, const RippleShadingReference& r, UINT x, UINT y, float surfaceDepth,
+                         NormalRange& range)
 {
     for (float depthScale : {1.0f - kDepthCopyPrecision, 1.0f, 1.0f + kDepthCopyPrecision})
     {
         double normal[3];
-        if (!ExpectedRippleNormal(v, r, x, y, depthScale, normal))
+        if (!ExpectedRippleNormal(v, r, x, y, surfaceDepth * depthScale, normal))
             return false;
         for (int axis = 0; axis < 3; ++axis)
         {
@@ -322,15 +327,17 @@ bool ExpectedNormalRange(const WaterView& v, const RippleShadingReference& r, UI
     return true;
 }
 
+template <typename SurfaceDepth>
 NormalComparison CompareRippleNormals(const WaterView& v, const RippleShadingReference& r, const Image& calm,
-                                      const Image& rippled)
+                                      const Image& rippled, SurfaceDepth surfaceDepth)
 {
     NormalComparison c;
     for (UINT y = 0; y < rippled.h; ++y)
         for (UINT x = 0; x < rippled.w; ++x)
         {
             NormalRange range;
-            if (!NearRipplePath(v, x, y) || !FlatWaterNormal(calm, x, y) || !ExpectedNormalRange(v, r, x, y, range))
+            if (!NearRipplePath(v, x, y) || !FlatWaterNormal(calm, x, y) ||
+                !ExpectedNormalRange(v, r, x, y, surfaceDepth(x, y), range))
                 continue;
             const BYTE* p = rippled.At(x, y);
             const BYTE shaded[3] = {p[2], p[1], p[0]};
@@ -343,6 +350,12 @@ NormalComparison CompareRippleNormals(const WaterView& v, const RippleShadingRef
             c.tilted += range.tilt >= kMinTiltLevels ? 1 : 0;
         }
     return c;
+}
+
+NormalComparison CompareRippleNormals(const WaterView& v, const RippleShadingReference& r, const Image& calm,
+                                      const Image& rippled)
+{
+    return CompareRippleNormals(v, r, calm, rippled, [&v](UINT x, UINT y) { return PixelCentreSurfaceDepth(v, x, y); });
 }
 
 void CheckRippleSlopeFollowsForever(Harness& h, BasinClient& client, const Config& base)
