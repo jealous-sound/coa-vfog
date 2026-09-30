@@ -264,8 +264,9 @@ extern "C" void __cdecl vf_test_fail_water_mask_uploads(int count)
     FailWaterMaskUploads(count);
 }
 
-extern "C" int __cdecl vf_test_water_masks_uploaded()
+extern "C" int __cdecl vf_test_water_masks_uploaded(int* required)
 {
+    *required = RequiredWaterMasks(LatestFogDevice());
     return UploadedWaterMasks(LatestFogDevice());
 }
 

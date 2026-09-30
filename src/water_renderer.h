@@ -4,6 +4,7 @@
 #include "engine.h"
 #include "fog_model.h"
 #include "gpu_timing.h"
+#include "water_data.h"
 #include "water_fft.h"
 #include "water_types.h"
 
@@ -58,6 +59,7 @@ public:
     unsigned HeldResources() const;
     int FoamMaskPool() const;
     int UploadedMasks() const;
+    int RequiredMasks() const { return static_cast<int>(m_foamMasks.size()); }
     int LastShadingVariant() const { return m_shadingVariant; }
     const char* LastSkipReason() const { return m_skip; }
 
@@ -109,6 +111,14 @@ private:
         ReflectionFog reflectionFog;
     };
 
+    struct FoamMaskTexture
+    {
+        int32_t sources[kWaveFoamMaskSlots];
+        bool packed;
+        bool present[kWaveFoamMaskSlots];
+        IDirect3DTexture9* texture;
+    };
+
     struct SavedTargets
     {
         IDirect3DSurface9* colour[4] = {};
@@ -123,9 +133,13 @@ private:
     bool EnsureStateBlock(IDirect3DDevice9* dev);
     bool EnsureCopies(IDirect3DDevice9* dev, IDirect3DSurface9* target, UINT w, UINT h);
     bool EnsureFlatTexture(IDirect3DDevice9* dev);
+    void PlanFoamMasks(const WaterData& data);
     void EnsureMasks(IDirect3DDevice9* dev);
     void ReleaseMasks();
+    const FoamMaskTexture* SingleMask(int32_t index) const;
+    const FoamMaskTexture* WaveFoamMasks(const WaterPreset& preset) const;
     IDirect3DTexture9* MaskTexture(int32_t index) const;
+    bool MaskPresent(const WaterPreset& preset, int slot) const;
     bool UsableTargets(IDirect3DSurface9* depthSurface, const D3DVIEWPORT9& vp, D3DSURFACE_DESC& depthDesc);
     void SaveTargets(IDirect3DDevice9* dev);
     void ReleaseTargets();
@@ -165,7 +179,8 @@ private:
     IDirect3DTexture9* m_sceneDepth = nullptr;
     IDirect3DTexture9* m_waterDepth = nullptr;
     IDirect3DTexture9* m_flat = nullptr;
-    std::vector<IDirect3DTexture9*> m_masks;
+    std::vector<FoamMaskTexture> m_foamMasks;
+    bool m_masksPlanned = false;
     bool m_masksUploaded = false;
     int m_maskRetryPasses = 0;
     uint32_t m_maskRevision = 0;

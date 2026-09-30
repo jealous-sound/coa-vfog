@@ -29,7 +29,11 @@ constexpr DWORD kSceneDepthStage = 1;
 constexpr DWORD kWaterDepthStage = 2;
 constexpr DWORD kFirstSurfaceStage = 3;
 constexpr DWORD kFirstFoamStateStage = 7;
-constexpr DWORD kFirstMaskStage = 11;
+constexpr DWORD kWaveFoamMaskStage = 11;
+constexpr DWORD kShoreFoamMaskStage = 14;
+constexpr DWORD kDepthFoamMaskStage = 15;
+constexpr int kShoreFoamSlot = static_cast<int>(WaterMaskSlot::ShoreFoam);
+constexpr int kDepthFoamSlot = static_cast<int>(WaterMaskSlot::DepthFoam);
 constexpr DWORD kStencilAllBits = 0xFF;
 constexpr DWORD kColourWriteRgb = D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE;
 constexpr DWORD kColourWriteAll = kColourWriteRgb | D3DCOLORWRITEENABLE_ALPHA;
@@ -320,13 +324,54 @@ IDirect3DTexture9* CreateMaskStaging(IDirect3DDevice9* dev, const WaterMaskLevel
     return staging;
 }
 
+bool TakeInjectedMaskUploadFailure()
+{
+    if (g_failingMaskUploads <= 0)
+        return false;
+    --g_failingMaskUploads;
+    return true;
+}
+
+bool FillPackedLevel(IDirect3DTexture9* texture, UINT level, const std::vector<uint32_t>& texels, uint32_t side)
+{
+    D3DLOCKED_RECT locked = {};
+    if (FAILED(texture->LockRect(level, &locked, nullptr, 0)))
+        return false;
+    for (uint32_t y = 0; y < side; ++y)
+        std::memcpy(static_cast<uint8_t*>(locked.pBits) + static_cast<size_t>(y) * locked.Pitch,
+                    texels.data() + static_cast<size_t>(y) * side, side * sizeof(uint32_t));
+    return SUCCEEDED(texture->UnlockRect(level));
+}
+
+IDirect3DTexture9* CreatePackedMaskTexture(IDirect3DDevice9* dev, const WaterPackedMask& packed)
+{
+    if (TakeInjectedMaskUploadFailure() || packed.levels.empty())
+        return nullptr;
+    const UINT levels = static_cast<UINT>(packed.levels.size());
+    IDirect3DTexture9* staging = nullptr;
+    IDirect3DTexture9* texture = nullptr;
+    bool uploaded = SUCCEEDED(dev->CreateTexture(packed.size, packed.size, levels, 0, D3DFMT_A8R8G8B8,
+                                                 D3DPOOL_SYSTEMMEM, &staging, nullptr));
+    for (UINT level = 0; uploaded && level < levels; ++level)
+        uploaded = FillPackedLevel(staging, level, packed.levels[level], MipSide(packed.size, level));
+    uploaded = uploaded &&
+               SUCCEEDED(dev->CreateTexture(packed.size, packed.size, levels, 0, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT,
+                                            &texture, nullptr)) &&
+               SUCCEEDED(dev->UpdateTexture(staging, texture));
+    if (staging)
+        staging->Release();
+    if (!uploaded && texture)
+    {
+        texture->Release();
+        texture = nullptr;
+    }
+    return texture;
+}
+
 IDirect3DTexture9* CreateMaskTexture(IDirect3DDevice9* dev, const WaterMaskLevels& mask)
 {
-    if (g_failingMaskUploads > 0)
-    {
-        --g_failingMaskUploads;
+    if (TakeInjectedMaskUploadFailure())
         return nullptr;
-    }
     const UINT levels = static_cast<UINT>(mask.levels.size());
     const UINT size = mask.info.size;
     for (D3DFORMAT format : {D3DFMT_L8, D3DFMT_A8R8G8B8})
@@ -429,9 +474,10 @@ void WaterRenderer::ReleaseAll()
 
 void WaterRenderer::ReleaseMasks()
 {
-    for (auto*& mask : m_masks)
-        SafeRelease(mask);
-    m_masks.clear();
+    for (FoamMaskTexture& mask : m_foamMasks)
+        SafeRelease(mask.texture);
+    m_foamMasks.clear();
+    m_masksPlanned = false;
     m_masksUploaded = false;
     m_maskRetryPasses = 0;
 }
@@ -590,13 +636,39 @@ bool WaterRenderer::EnsureFlatTexture(IDirect3DDevice9* dev)
     return true;
 }
 
+void WaterRenderer::PlanFoamMasks(const WaterData& data)
+{
+    ReleaseMasks();
+    auto plan = [this](const int32_t (&sources)[kWaveFoamMaskSlots], bool packed) {
+        for (const FoamMaskTexture& mask : m_foamMasks)
+            if (mask.packed == packed && std::equal(std::begin(sources), std::end(sources), mask.sources))
+                return;
+        FoamMaskTexture mask = {{sources[0], sources[1], sources[2]}, packed, {}, nullptr};
+        m_foamMasks.push_back(mask);
+    };
+    for (const WaterPreset& preset : data.Presets())
+    {
+        const int32_t wave[kWaveFoamMaskSlots] = {preset.masks[static_cast<int>(WaterMaskSlot::HighFoam)],
+                                                   preset.masks[static_cast<int>(WaterMaskSlot::MidFoam)],
+                                                   preset.masks[static_cast<int>(WaterMaskSlot::LowFoam)]};
+        if (std::any_of(std::begin(wave), std::end(wave), [](int32_t index) { return index >= 0; }))
+            plan(wave, true);
+        for (int slot : {kShoreFoamSlot, kDepthFoamSlot})
+        {
+            const int32_t single[kWaveFoamMaskSlots] = {preset.masks[slot], kWaterNoIndex, kWaterNoIndex};
+            if (single[0] >= 0)
+                plan(single, false);
+        }
+    }
+    m_masksPlanned = true;
+}
+
 void WaterRenderer::EnsureMasks(IDirect3DDevice9* dev)
 {
     const WaterData& data = GlobalWaterData();
-    if (m_maskRevision != data.Revision() || m_masks.size() != data.Masks().size())
+    if (m_maskRevision != data.Revision() || !m_masksPlanned)
     {
-        ReleaseMasks();
-        m_masks.assign(data.Masks().size(), nullptr);
+        PlanFoamMasks(data);
         m_maskRevision = data.Revision();
     }
     if (m_masksUploaded)
@@ -607,20 +679,26 @@ void WaterRenderer::EnsureMasks(IDirect3DDevice9* dev)
         return;
     }
     int uploaded = 0;
-    for (size_t i = 0; i < m_masks.size(); ++i)
+    for (FoamMaskTexture& mask : m_foamMasks)
     {
-        if (!m_masks[i])
-            m_masks[i] = CreateMaskTexture(dev, data.Masks()[i]);
-        uploaded += m_masks[i] ? 1 : 0;
+        if (!mask.texture && mask.packed)
+        {
+            const WaterPackedMask packed = PackWaveFoamMasks(data.Masks(), mask.sources);
+            mask.texture = CreatePackedMaskTexture(dev, packed);
+            std::copy(std::begin(packed.present), std::end(packed.present), mask.present);
+        }
+        else if (!mask.texture)
+            mask.texture = CreateMaskTexture(dev, data.Masks()[mask.sources[0]]);
+        uploaded += mask.texture ? 1 : 0;
     }
-    m_masksUploaded = uploaded == static_cast<int>(m_masks.size());
+    m_masksUploaded = uploaded == RequiredMasks();
     m_maskRetryPasses = m_masksUploaded ? 0 : kMaskUploadRetryPasses;
     const bool newData = !m_masksLogged || m_loggedMaskRevision != data.Revision() || uploaded != m_loggedMaskUploads;
     m_loggedMaskRevision = data.Revision();
     m_masksLogged = true;
     m_loggedMaskUploads = uploaded;
     LogWrite(newData ? LogLevel::Info : LogLevel::Debug, "water foam masks uploaded: %d of %d%s", uploaded,
-             static_cast<int>(m_masks.size()), m_masksUploaded ? "" : "; retrying the others later");
+             RequiredMasks(), m_masksUploaded ? "" : "; retrying the others later");
 }
 
 unsigned WaterRenderer::HeldResources() const
@@ -630,18 +708,17 @@ unsigned WaterRenderer::HeldResources() const
         held |= kWaterSceneCopiesHeld;
     if (m_fft.HoldsDeviceResources())
         held |= kWaterWaveMapsHeld;
-    for (IDirect3DTexture9* mask : m_masks)
-        if (mask)
-            held |= kWaterFoamMasksHeld;
+    if (UploadedMasks() > 0)
+        held |= kWaterFoamMasksHeld;
     return held;
 }
 
 int WaterRenderer::FoamMaskPool() const
 {
-    for (IDirect3DTexture9* mask : m_masks)
+    for (const FoamMaskTexture& mask : m_foamMasks)
     {
         D3DSURFACE_DESC desc = {};
-        if (mask && SUCCEEDED(mask->GetLevelDesc(0, &desc)))
+        if (mask.texture && SUCCEEDED(mask.texture->GetLevelDesc(0, &desc)))
             return static_cast<int>(desc.Pool);
     }
     return -1;
@@ -649,14 +726,39 @@ int WaterRenderer::FoamMaskPool() const
 
 int WaterRenderer::UploadedMasks() const
 {
-    return static_cast<int>(std::count_if(m_masks.begin(), m_masks.end(), [](IDirect3DTexture9* mask) {
-        return mask != nullptr;
+    return static_cast<int>(std::count_if(m_foamMasks.begin(), m_foamMasks.end(), [](const FoamMaskTexture& mask) {
+        return mask.texture != nullptr;
     }));
+}
+
+const WaterRenderer::FoamMaskTexture* WaterRenderer::SingleMask(int32_t index) const
+{
+    for (const FoamMaskTexture& mask : m_foamMasks)
+        if (!mask.packed && mask.sources[0] == index && mask.texture)
+            return &mask;
+    return nullptr;
+}
+
+const WaterRenderer::FoamMaskTexture* WaterRenderer::WaveFoamMasks(const WaterPreset& preset) const
+{
+    for (const FoamMaskTexture& mask : m_foamMasks)
+        if (mask.packed && mask.texture && std::equal(mask.sources, mask.sources + kWaveFoamMaskSlots, preset.masks))
+            return &mask;
+    return nullptr;
 }
 
 IDirect3DTexture9* WaterRenderer::MaskTexture(int32_t index) const
 {
-    return index >= 0 && static_cast<size_t>(index) < m_masks.size() ? m_masks[index] : nullptr;
+    const FoamMaskTexture* mask = SingleMask(index);
+    return mask ? mask->texture : nullptr;
+}
+
+bool WaterRenderer::MaskPresent(const WaterPreset& preset, int slot) const
+{
+    if (slot >= kWaveFoamMaskSlots)
+        return MaskTexture(preset.masks[slot]) != nullptr;
+    const FoamMaskTexture* wave = WaveFoamMasks(preset);
+    return wave && wave->present[slot];
 }
 
 void WaterRenderer::SaveTargets(IDirect3DDevice9* dev)
@@ -1052,7 +1154,7 @@ void WaterRenderer::FillClassConstants(ShadingConstants& c, const WaterPreset& p
     for (int slot = 0; slot < kWaterShadedMaskSlots; ++slot)
     {
         const int32_t mask = preset.masks[slot];
-        if (!MaskTexture(mask))
+        if (!MaskPresent(preset, slot))
             continue;
         const WaterMask& info = data.Masks()[mask].info;
         float low[3];
@@ -1115,12 +1217,13 @@ void WaterRenderer::BindClassTextures(IDirect3DDevice9* dev, const WaterPreset& 
         BindSampler(dev, kFirstFoamStateStage + k, foam ? foam : m_flat, D3DTADDRESS_WRAP, D3DTEXF_LINEAR,
                     D3DTEXF_NONE);
     }
-    for (int slot = 0; slot < kWaterShadedMaskSlots; ++slot)
-    {
-        IDirect3DTexture9* mask = MaskTexture(preset.masks[slot]);
-        BindSampler(dev, kFirstMaskStage + slot, mask ? mask : m_flat, D3DTADDRESS_WRAP, D3DTEXF_LINEAR,
-                    D3DTEXF_LINEAR);
-    }
+    const FoamMaskTexture* wave = WaveFoamMasks(preset);
+    IDirect3DTexture9* shore = MaskTexture(preset.masks[kShoreFoamSlot]);
+    IDirect3DTexture9* depth = MaskTexture(preset.masks[kDepthFoamSlot]);
+    BindSampler(dev, kWaveFoamMaskStage, wave ? wave->texture : m_flat, D3DTADDRESS_WRAP, D3DTEXF_LINEAR,
+                D3DTEXF_LINEAR);
+    BindSampler(dev, kShoreFoamMaskStage, shore ? shore : m_flat, D3DTADDRESS_WRAP, D3DTEXF_LINEAR, D3DTEXF_LINEAR);
+    BindSampler(dev, kDepthFoamMaskStage, depth ? depth : m_flat, D3DTADDRESS_WRAP, D3DTEXF_LINEAR, D3DTEXF_LINEAR);
 }
 
 void WaterRenderer::ShadeClasses(IDirect3DDevice9* dev, IDirect3DSurface9* target, IDirect3DSurface9* depthSurface,

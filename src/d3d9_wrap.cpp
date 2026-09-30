@@ -958,3 +958,9 @@ int LastWaterShadingVariant(FogDevice* device)
 {
     return device ? device->Water().LastShadingVariant() : -1;
 }
+
+int RequiredWaterMasks(FogDevice* device)
+{
+    return device ? device->Water().RequiredMasks() : 0;
+}
+

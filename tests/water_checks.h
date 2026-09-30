@@ -1557,19 +1557,19 @@ void CheckFailedFoamMaskUploadsRetry(BasinClient& client, const Config& base)
     const Config on = WaterConfig(base);
     vf_test_set_config(&on);
     const SyntheticWaterData data = MakeSyntheticWaterData();
-    const int maskCount = static_cast<int>(data.maskInfo.size());
     const bool assigned = AssignWaterData(data);
     vf_test_fail_water_mask_uploads(1);
     WaterFrame frame;
     const WaterFrameResult failed = client.Render(frame);
-    const int afterFailure = vf_test_water_masks_uploaded();
+    int maskCount = 0;
+    const int afterFailure = vf_test_water_masks_uploaded(&maskCount);
     int passes = 0;
     int uploaded = afterFailure;
     while (uploaded < maskCount && passes < kMaxMaskRetryPasses)
     {
         client.Render(frame);
         ++passes;
-        uploaded = vf_test_water_masks_uploaded();
+        uploaded = vf_test_water_masks_uploaded(&maskCount);
     }
     vf_test_fail_water_mask_uploads(0);
     std::printf("     foam masks: %d of %d after a failed upload, %d after %d more water passes\n", afterFailure,

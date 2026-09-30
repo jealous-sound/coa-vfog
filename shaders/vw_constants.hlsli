@@ -38,9 +38,7 @@ sampler2D sFoamState0 : register(s7);
 sampler2D sFoamState1 : register(s8);
 sampler2D sFoamState2 : register(s9);
 sampler2D sFoamState3 : register(s10);
-sampler2D sHighFoamMask : register(s11);
-sampler2D sMidFoamMask : register(s12);
-sampler2D sLowFoamMask : register(s13);
+sampler2D sWaveFoamMasks : register(s11);
 sampler2D sShoreFoamMask : register(s14);
 sampler2D sDepthFoamMask : register(s15);
 
@@ -199,3 +197,4 @@ float3 MaskTintHigh(int slot)
 {
     return cMaskTints[slot * 2 + 1].rgb;
 }
+

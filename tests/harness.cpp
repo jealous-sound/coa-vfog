@@ -61,7 +61,7 @@ extern "C" __declspec(dllimport) const void* __cdecl vf_test_water_pass_thunk(ui
 extern "C" __declspec(dllimport) void __cdecl vf_test_water_pass_begin_reuses_argument_slot(int);
 extern "C" __declspec(dllimport) void __cdecl vf_test_record_fog_frame(int, int, const char*);
 extern "C" __declspec(dllimport) void __cdecl vf_test_fail_water_mask_uploads(int);
-extern "C" __declspec(dllimport) int __cdecl vf_test_water_masks_uploaded();
+extern "C" __declspec(dllimport) int __cdecl vf_test_water_masks_uploaded(int*);
 extern "C" __declspec(dllimport) void __cdecl vf_test_force_water_shading_variant(int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_water_shading_variant();
 
@@ -1542,6 +1542,7 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "water_data_checks.h"
 #include "water_settings_checks.h"
 #include "water_fft_checks.h"
+#include "water_mask_packing_checks.h"
 #include "water_checks.h"
 
 void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3 at,
@@ -1677,6 +1678,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckLightDisappearanceHistory(h);
     CheckSunOccluderLeavesFogLit(h);
     water_fft_checks::CheckWaterFft(h.dev);
+    water_mask_packing_checks::CheckWaveFoamMaskPacking(h.dev);
     const float aspect = 1280.0f / 688.0f;
     const D3DVIEWPORT9 world = {0, 0, 1280, 688, 0.0f, 1.0f};
     float proj[16];

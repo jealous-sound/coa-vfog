@@ -128,10 +128,15 @@ float2 AdtUv(float3 position, float2 slope)
     return (kAdtGridOrigin - position.yx) * kAdtTilesPerYard + slope * kSlopeToAdtUv;
 }
 
+float4 TintedFoam(int slot, float maskCoverage)
+{
+    float coverage = maskCoverage * MaskPresent(slot);
+    return float4(lerp(MaskTintLow(slot), MaskTintHigh(slot), coverage), coverage);
+}
+
 float4 FoamLayer(sampler2D mask, int slot, float2 uv, float2 dx, float2 dy)
 {
-    float coverage = tex2Dgrad(mask, uv, dx, dy).r * MaskPresent(slot);
-    return float4(lerp(MaskTintLow(slot), MaskTintHigh(slot), coverage), coverage);
+    return TintedFoam(slot, tex2Dgrad(mask, uv, dx, dy).r);
 }
 
 float FoamFade(float distance, float fadeDistance)
@@ -145,9 +150,12 @@ float FoamFade(float distance, float fadeDistance)
 float4 WaveFoam(float2 adtUv, float2 dx, float2 dy, float f)
 {
     float3 scale = cWaveFoamScaling.xyz;
-    float4 high = FoamLayer(sHighFoamMask, kHighFoamSlot, adtUv * scale.x + cFoamScroll.xy, dx * scale.x, dy * scale.x);
-    float4 mid = FoamLayer(sMidFoamMask, kMidFoamSlot, adtUv * scale.y + cFoamScroll.xy, dx * scale.y, dy * scale.y);
-    float4 low = FoamLayer(sLowFoamMask, kLowFoamSlot, adtUv * scale.z + cFoamScroll.xy, dx * scale.z, dy * scale.z);
+    float4 high = TintedFoam(kHighFoamSlot, tex2Dgrad(sWaveFoamMasks, adtUv * scale.x + cFoamScroll.xy, dx * scale.x,
+                                                      dy * scale.x).r);
+    float4 mid = TintedFoam(kMidFoamSlot, tex2Dgrad(sWaveFoamMasks, adtUv * scale.y + cFoamScroll.xy, dx * scale.y,
+                                                    dy * scale.y).g);
+    float4 low = TintedFoam(kLowFoamSlot, tex2Dgrad(sWaveFoamMasks, adtUv * scale.z + cFoamScroll.xy, dx * scale.z,
+                                                    dy * scale.z).b);
     float rootF = sqrt(f);
     return saturate(low * rootF + mid * f * rootF + high * pow(f, 4.5)) * WaveFoamIntensity();
 }
