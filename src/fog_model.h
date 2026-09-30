@@ -79,6 +79,7 @@ struct FogParams
 void UnpackColor(uint32_t argb, float* rgb);
 FogParams BuildFogParams(const FrameInputs& in, const Config& cfg, const AuthoredFog* authored);
 bool AnyLayerNoise(const FogParams& fog);
+float EnergyNormalisedPhaseScale(float g);
 
 float NoiseDensityCurve(float x);
 float MeanNoiseDensity(const LayerNoise& noise);

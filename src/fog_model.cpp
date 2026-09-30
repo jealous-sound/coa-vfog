@@ -39,6 +39,9 @@ constexpr uint32_t kFlagRelativeHeights = 0x2;
 constexpr float kDerivedLayerLimit = 1500.0f;
 
 constexpr float kNoiseCurveShape = (kNoiseCurveContrast - 1.0f) / (2.0f - kNoiseCurveContrast);
+constexpr float kFourPi = 12.5663706f;
+constexpr float kMaxEnergyNormalisedPhaseG = 0.95f;
+constexpr int kEnergyNormalisedClassicPhase = 1;
 
 constexpr float kLightSettingHalfWidth = 0.02f;
 constexpr float kMinClassicDirectLuminance = 1.0e-3f;
@@ -184,7 +187,9 @@ void AuthoredLayers(const AuthoredFog& fog, const Config& cfg, const FogParams& 
         Encode(l.emissive, p.linear);
         Encode(l.diffuse, p.linear);
         Encode(l.shadowEmissive, p.linear);
-        Scale(l.diffuse, a.intensity * sunScatter, l.diffuse);
+        const float phaseScale =
+            cfg.classicPhase == kEnergyNormalisedClassicPhase ? EnergyNormalisedPhaseScale(l.g) : 1.0f;
+        Scale(l.diffuse, a.intensity * sunScatter * phaseScale, l.diffuse);
     }
 }
 
@@ -365,6 +370,12 @@ FogParams BuildFogParams(const FrameInputs& in, const Config& cfg, const Authore
     }
     ApplyInteriorFog(interiorWeight, cfg, p);
     return p;
+}
+
+float EnergyNormalisedPhaseScale(float g)
+{
+    const float capped = std::min(g, kMaxEnergyNormalisedPhaseG);
+    return (1.0f + capped) / (kFourPi * (1.0f - capped) * (1.0f - capped));
 }
 
 bool AnyLayerNoise(const FogParams& fog)

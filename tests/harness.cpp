@@ -1532,6 +1532,7 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "local_lights_checks.h"
 #include "noise_variation_checks.h"
 #include "authored_noise_checks.h"
+#include "classic_phase_checks.h"
 #include "march_layer_checks.h"
 #include "local_light_gpu_checks.h"
 #include "silhouette_quality_checks.h"
@@ -1592,6 +1593,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckFogThinsIntoFoglessClassicLight(classic);
     authored_fog::CheckAuthoredFogExtras(classic);
     authored_noise::CheckAuthoredNoise(classic);
+    classic_phase::CheckClassicPhase();
 
     CreateDirectoryW(outDir.c_str(), nullptr);
     g_harnessLog = FullPath(outDir + L"\\harness.log");
@@ -1673,6 +1675,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckInteriorFogInputs();
     CheckNoiseVariation(h.dev);
     authored_noise::CheckAuthoredNoiseOnTheGpu(h.dev);
+    classic_phase::CheckIsotropicSlabSaturation(h.dev);
     march_layers::CheckUnrolledMarchMatchesLoopedMarch(h.dev);
     local_light_gpu::CheckLocalLightIntegration(h.dev);
     silhouette_quality::CheckSilhouettes(h.dev);
@@ -2289,7 +2292,13 @@ void PrintLayers(const FogParams& fog)
     }
 }
 
-int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
+struct HarbourOptions
+{
+    int classicPhase = 0;
+    float stormBlend = 0.0f;
+};
+
+int RunHarbour(const std::wstring& outDir, const std::string& dataPath, const HarbourOptions& options)
 {
     FogData classic;
     if (!classic.Load(dataPath))
@@ -2353,7 +2362,8 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
     const float aspect = static_cast<float>(kHarbourWidth) / kHarbourHeight;
     float proj[16];
     EngineGlDepthProjection(kHarbourLoggedP11, aspect, kHarbourNear, kHarbourFar, proj);
-    const Config shippedCfg = {};
+    Config shippedCfg = {};
+    shippedCfg.classicPhase = options.classicPhase;
 
     auto inputsFor = [&](const float* view, Vec3 at) {
         FrameInputs in = MakeInputs(view, proj, kHarbourEye, at, vp);
@@ -2376,6 +2386,7 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
         in.farClip = kHarbourFar;
         in.inLiquid = false;
         in.mapId = kEasternKingdoms;
+        in.lightParams = Storm(options.stormBlend);
         return in;
     };
 
@@ -2385,7 +2396,9 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
         CameraRelativeLookAt(kHarbourEye, at, view);
         FrameInputs in = inputsFor(view, at);
         AuthoredFog authored = {};
-        bool resolved = classic.Resolve(kEasternKingdoms, in.camPos, in.dayFraction, kClearWeather, authored);
+        bool resolved = classic.Resolve(kEasternKingdoms, in.camPos, in.dayFraction, in.lightParams, authored);
+        std::printf("harbour frame: ClassicPhase %d, storm weight %.2f\n", shippedCfg.classicPhase,
+                    in.lightParams.stormBlend);
         std::printf("harbour frame: camera (%.1f %.1f %.1f), day %.4f, toLight (%.3f %.3f %.3f) = azimuth %.1f "
                     "elevation %.2f deg\n",
                     in.camPos[0], in.camPos[1], in.camPos[2], in.dayFraction, toLight.x, toLight.y, toLight.z, sunAz,
@@ -2400,9 +2413,9 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
         {
             const AuthoredLayer& a = authored.layers[i];
             std::printf("  authored %d: start %.1f density %.4f g %.3f intensity %.2f strength %.3f exponent %.3f "
-                        "diffuse %.3f %.3f %.3f emissive %.3f %.3f %.3f flags %u\n",
+                        "diffuse %.3f %.3f %.3f emissive %.3f %.3f %.3f flags %u noise %.2f\n",
                         i, a.start, a.density, a.g, a.intensity, a.strength, a.exponent, a.diffuse[0], a.diffuse[1],
-                        a.diffuse[2], a.emissive[0], a.emissive[1], a.emissive[2], a.flags);
+                        a.diffuse[2], a.emissive[0], a.emissive[1], a.emissive[2], a.flags, a.noise.presence);
         }
         FogParams fog = BuildFogParams(in, shippedCfg, resolved ? &authored : nullptr);
         std::printf("  fog params (as the DLL logs them): refZ %.1f maxDistance %.0f horizonStart %.1f farLimit %.1f "
@@ -2477,7 +2490,7 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
         SavePng(stem + L"-depth.png", depth.w, depth.h, depth.bgra);
 
         AuthoredFog authored = {};
-        bool resolved = classic.Resolve(kEasternKingdoms, in.camPos, in.dayFraction, kClearWeather, authored);
+        bool resolved = classic.Resolve(kEasternKingdoms, in.camPos, in.dayFraction, in.lightParams, authored);
         FogParams fog = BuildFogParams(in, shippedCfg, resolved ? &authored : nullptr);
         float sunV[3];
         TransformDirection(in.toLight, view, sunV);
@@ -2570,8 +2583,13 @@ int wmain(int argc, wchar_t** argv)
     std::string waterData = "waterdata.bin";
     std::wstring ini = L"CoAVolFog.ini";
     std::wstring scene;
+    HarbourOptions harbour;
     for (int i = 1; i + 1 < argc; ++i)
     {
+        if (std::wcscmp(argv[i], L"--classic-phase") == 0)
+            harbour.classicPhase = _wtoi(argv[i + 1]);
+        if (std::wcscmp(argv[i], L"--storm") == 0)
+            harbour.stormBlend = static_cast<float>(_wtof(argv[i + 1]));
         if (std::wcscmp(argv[i], L"--out") == 0)
             out = argv[i + 1];
         if (std::wcscmp(argv[i], L"--data") == 0)
@@ -2596,7 +2614,7 @@ int wmain(int argc, wchar_t** argv)
         }
     }
     if (scene == L"harbour")
-        return RunHarbour(out, data);
+        return RunHarbour(out, data, harbour);
     if (scene == L"performance")
         return RunPerformance();
     if (!scene.empty())
