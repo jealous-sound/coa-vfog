@@ -929,7 +929,9 @@ through the hooks after a fog exception, curve uploads only on change and after 
 `TransparentFog=1` the same three hand-offs go through the frame-begin, opaque, liquid, world-done and frame-end hooks:
 the glow is fed before the early composite at the liquid end, whose glow constant is then the delivered byte; and the
 grading at the frame end is checked pixel by pixel against the curve of the finished fogged frame, god rays and the
-viewport's first column included, after the single composite and after the early composite.
+viewport's first column included, after the single composite and after the early composite, each frame checked to
+have taken its path (with `TransparentFog=1` the glare and the fog at the liquid end, the glare skipped at its own call
+and the god rays added at the end of the world; with `TransparentFog=0` nothing at the liquid end).
 The multisampling suite creates a 4x device through the wrapper with the client's D24X8 depth (and D16) and its
 target-and-depth clear: the sample counts offered to the game, the kept back buffer and the D24S8 depth that replaces
 the stencil-less one, the fog and water on the copied depth against the drawn depth and a single-sampled frame, a wading
