@@ -191,6 +191,12 @@ ForeverLookFrame GlowFrame(const FakeGlowGraph& graph, float coverage, float for
     return frame;
 }
 
+void UseNoForeverLook()
+{
+    const ForeverLookFrame none = {};
+    vf_test_use_forever_look_frame(&none);
+}
+
 void UseForeverGlow(bool on)
 {
     Config cfg = {};
@@ -401,7 +407,8 @@ void CheckGuardsCompareOnlyUnpatchedBytes()
     const int count = vf_test_forever_look_guards(guards, kMaxGuardRanges);
     const uintptr_t callSites[] = {engine::kWorldRenderSite,    engine::kOpaqueM2PassSite,  engine::kLiquidSurfaceSite,
                                    engine::kWorldTextDrawSite,  engine::kScreenEffectsSite, engine::kWaterPassSite,
-                                   engine::kFarClipCVarSetSite, engine::kFarClipMapLoadSite};
+                                   engine::kFarClipCVarSetSite, engine::kFarClipMapLoadSite, engine::kM2BatchFogSite,
+                                   engine::kGlarePassSite};
     const uintptr_t pointerSlots[] = {engine::kGetProcAddressSlot, engine::kWaterMaterialRenderSlot,
                                       engine::kWaterNoSpecMaterialRenderSlot};
     std::vector<PatchedRange> patched;
@@ -480,6 +487,7 @@ void CheckForeverGlow()
     CheckCompensationTakesTheDeliveredByte();
     CheckFrameEndWithoutWorldDone();
     CheckGuardsCompareOnlyUnpatchedBytes();
+    UseNoForeverLook();
     Config defaults = {};
     vf_test_set_config(&defaults);
 }
@@ -948,6 +956,7 @@ void CheckFogCompensatesTheDeliveredGlow(Harness& h, const Config& fog, const D3
         std::printf("     %s: the fog composite's glow (c98.w) %.4f, expected %.4f\n", handOff.what, drawn, expected);
         compensated = compensated && std::fabs(drawn - expected) < kDeliveredGlowTolerance;
     }
+    UseNoForeverLook();
     vf_test_set_config(&fog);
     Check(compensated,
           "through the world-done hook the fog is compensated for the glow byte the composite receives (0 when "

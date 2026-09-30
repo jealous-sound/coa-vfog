@@ -15,6 +15,7 @@
 #include "water_ripples.h"
 #include "water_spectrum.h"
 #include "status_log.h"
+#include "transparent_fog.h"
 
 #include <windows.h>
 #include <d3d9.h>
@@ -71,6 +72,17 @@ extern "C" __declspec(dllimport) int __cdecl vf_test_water_status(const char**);
 extern "C" __declspec(dllimport) const void* __cdecl vf_test_water_pass_thunk(uintptr_t);
 extern "C" __declspec(dllimport) void __cdecl vf_test_water_pass_begin_reuses_argument_slot(int);
 extern "C" __declspec(dllimport) void __cdecl vf_test_record_fog_frame(int, int, const char*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_use_fog_hook_client(const FrameInputs*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_stock_fog(engine::StockFog*, const engine::StockFog*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_frame_begin();
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_liquid_end();
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_world_done();
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_m2_batch_fog(M2BatchFogArgs*);
+extern "C" __declspec(dllimport) const void* __cdecl vf_test_m2_batch_fog_thunk(uintptr_t);
+extern "C" __declspec(dllimport) const void* __cdecl vf_test_glare_pass_thunk(uintptr_t);
+extern "C" __declspec(dllimport) void __cdecl vf_test_log_transparent_fog_stats();
+extern "C" __declspec(dllimport) void __cdecl vf_test_clear_transparent_fog_failure();
+extern "C" __declspec(dllimport) void __cdecl vf_test_force_fog_params(const FogParams*);
 extern "C" __declspec(dllimport) void __cdecl vf_test_fail_water_mask_uploads(int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_water_masks_uploaded(int*);
 extern "C" __declspec(dllimport) void __cdecl vf_test_force_water_shading_variant(int);
@@ -123,6 +135,8 @@ constexpr UINT kOverlayProbeRight = 400;
 constexpr UINT kOverlayProbeBottom = 300;
 constexpr int kOverlayTitleBarX = 200;
 constexpr int kOverlayTitleBarY = 40;
+constexpr UINT kSkyRowsFraction = 4;
+constexpr int kMaxAdjacentSkyColumnDifference = 2;
 constexpr int kBesideOverlayX = 1100;
 constexpr int kBesideOverlayY = 600;
 constexpr int kOverlayBodyX = 480;
@@ -1669,7 +1683,23 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "ripple_scene.h"
 #include "client_sprite_checks.h"
 #include "forever_look_checks.h"
+#include "transparent_fog_checks.h"
+#include "early_composite_look_checks.h"
 #include "multisampling_checks.h"
+
+void CheckFirstColumnIsFogged(const Image& transmittance, const D3DVIEWPORT9& world)
+{
+    int largest = 0;
+    for (UINT y = world.Y; y < world.Y + world.Height / kSkyRowsFraction; ++y)
+        for (int c = 0; c < 3; ++c)
+            largest = std::max(largest, std::abs(static_cast<int>(transmittance.At(world.X, y)[c]) -
+                                                 transmittance.At(world.X + 1, y)[c]));
+    std::printf("     transmittance view over the sky: largest difference between the viewport's first two columns "
+                "%d/255\n",
+                largest);
+    Check(largest <= kMaxAdjacentSkyColumnDifference,
+          "the full-screen fog passes cover the viewport's first column (their triangle's left edge lies outside it)");
+}
 
 void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3 at,
                                    const float* proj, const D3DVIEWPORT9& world)
@@ -1718,6 +1748,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     authored_fog::CheckAuthoredFogExtras(classic);
     authored_noise::CheckAuthoredNoise(classic);
     classic_phase::CheckClassicPhase();
+    transparent_fog_checks::CheckStockFogFit(classic);
 
     CreateDirectoryW(outDir.c_str(), nullptr);
     g_harnessLog = FullPath(outDir + L"\\harness.log");
@@ -1730,6 +1761,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     forever_look_checks::CheckLookSettings(outDir, FullPath(iniPath));
     water_data_checks::CheckWaterData(outDir, waterDataPath);
     water_settings_checks::CheckWaterSettings(outDir, FullPath(iniPath));
+    transparent_fog_checks::CheckTransparentFogSetting(outDir, FullPath(iniPath));
 
     WNDCLASSW wc = {};
     wc.lpfnWndProc = ClientWindowProc;
@@ -1942,6 +1974,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     SavePng(outDir + L"\\debug-radiance.png", radiance.w, radiance.h, radiance.bgra);
     Image transmittance = renderDebug(2, 5000.0f);
     SavePng(outDir + L"\\debug-transmittance.png", transmittance.w, transmittance.h, transmittance.bgra);
+    CheckFirstColumnIsFogged(transmittance, world);
 
     {
         Config c = cfg;
@@ -2141,6 +2174,8 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
 
     CheckDepthWriteStateBlockRestore(h.dev);
     CheckWorldTextDepthIsolation(h);
+    transparent_fog_checks::CheckTransparentFog(h);
+    early_composite_look::CheckLookThroughTheEarlyComposite(h);
     Config restored = cfg;
     vf_test_set_config(&restored);
     water_checks::CheckWaterRipplePass(h, outDir);

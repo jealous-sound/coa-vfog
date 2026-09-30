@@ -8,6 +8,8 @@
 #include "log.h"
 #include "noise_volume.h"
 #include "overlay.h"
+#include "renderer.h"
+#include "transparent_fog.h"
 #include "water_data.h"
 #include "water_renderer.h"
 
@@ -55,6 +57,7 @@ void Attach(HMODULE module)
     if (engineHooks)
     {
         PrepareAuthoredNoise();
+        InstallTransparentFogHooks();
         EnableForeverLookOnHookedClient();
     }
     if (engineHooks && InstallWaterHooks())
@@ -293,6 +296,60 @@ extern "C" const void* __cdecl vf_test_water_pass_thunk(uintptr_t target)
 extern "C" void __cdecl vf_test_water_pass_begin_reuses_argument_slot(int reuse)
 {
     ReuseWaterPassBeginArgumentSlot(reuse != 0);
+}
+
+extern "C" void __cdecl vf_test_use_fog_hook_client(const FrameInputs* in)
+{
+    UseTestFogClient(*in);
+}
+
+extern "C" void __cdecl vf_test_hook_stock_fog(engine::StockFog* read, const engine::StockFog* write)
+{
+    if (write)
+        SetTestClientStockFog(*write);
+    if (read)
+        *read = TestClientStockFog();
+}
+
+extern "C" void __cdecl vf_test_hook_frame_begin()
+{
+    vf_on_frame_begin();
+}
+
+extern "C" void __cdecl vf_test_hook_liquid_end()
+{
+    vf_on_liquid_end();
+    vf_on_transparents_begin();
+}
+
+extern "C" void __cdecl vf_test_hook_m2_batch_fog(M2BatchFogArgs* args)
+{
+    vf_on_m2_batch_fog(args);
+}
+
+extern "C" const void* __cdecl vf_test_m2_batch_fog_thunk(uintptr_t target)
+{
+    return RetargetM2BatchFogThunk(target);
+}
+
+extern "C" const void* __cdecl vf_test_glare_pass_thunk(uintptr_t target)
+{
+    return RetargetGlarePassThunk(target);
+}
+
+extern "C" void __cdecl vf_test_log_transparent_fog_stats()
+{
+    LogTransparentFogStatsAtFrameEnd();
+}
+
+extern "C" void __cdecl vf_test_clear_transparent_fog_failure()
+{
+    ClearTransparentFogFailure();
+}
+
+extern "C" void __cdecl vf_test_force_fog_params(const FogParams* fog)
+{
+    ForceFogParams(fog);
 }
 
 extern "C" void __cdecl vf_test_record_fog_frame(int rendered, int cameraUnderLiquid, const char* skip)

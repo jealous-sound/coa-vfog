@@ -273,14 +273,19 @@ struct FogFrame
     double lumaChange = 0.0;
 };
 
+void DrawDepthQuads(Harness& m)
+{
+    m.DrawPretransformedQuadAtRawDepth(40.0f, kQuadTop, 600.0f, kQuadBottom, kNearQuadDepth);
+    m.DrawPretransformedQuadAtRawDepth(680.0f, kQuadTop, 1240.0f, kQuadBottom, kFarQuadDepth);
+}
+
 FogFrame RenderFogOverDepthQuads(Harness& m)
 {
     const WorldCamera camera;
     FogFrame f;
     m.BeginFrame();
     m.DrawScene(camera.eye, camera.view, camera.proj, camera.world);
-    m.DrawPretransformedQuadAtRawDepth(40.0f, kQuadTop, 600.0f, kQuadBottom, kNearQuadDepth);
-    m.DrawPretransformedQuadAtRawDepth(680.0f, kQuadTop, 1240.0f, kQuadBottom, kFarQuadDepth);
+    DrawDepthQuads(m);
     const Image before = Capture(m.dev);
     m.SetEngineState(camera.world);
     m.dev->SetRenderState(D3DRS_ZFUNC, kClientDepthFunction);
@@ -1185,6 +1190,11 @@ void CheckMultisampledDevice(Harness& m, const DepthCopyProbe& probe, const std:
     Check(FogFrameDrawn(fog), "fog draws on a 4x device and its INTZ copy equals the depth the scene drew");
     Check(fog.statesKept && fog.depthFunction == kClientDepthFunction && fog.stencilKept,
           "on a 4x device the fog restores render, sampler, shader, constant, target, depth-test and stencil state");
+    const DepthTexel quadTexels[2] = {kNearQuadTexel, kFarQuadTexel};
+    const float quadDepths[2] = {kNearQuadDepth, kFarQuadDepth};
+    transparent_fog_checks::CheckEarlyCompositeOnMultisampledDevice(m, WorldCamera().world, quadTexels, quadDepths,
+                                                                    &DrawDepthQuads);
+    vf_test_set_config(&keep);
 
     water_checks::AssignWaterData(water_checks::MakeSyntheticWaterData());
     vf_test_set_water_seconds(water_checks::kFrameSeconds);

@@ -65,6 +65,11 @@ constexpr uintptr_t kWorldTextDrawTarget = 0x006BCE40;
 constexpr uintptr_t kScreenEffectsSite = 0x004F9281;
 constexpr uintptr_t kScreenEffectsTarget = 0x008C1010;
 
+constexpr uintptr_t kM2BatchFogSite = 0x0081FD15;
+constexpr uintptr_t kM2BatchFogTarget = 0x00873210;
+constexpr uintptr_t kGlarePassSite = 0x004F9213;
+constexpr uintptr_t kGlarePassTarget = 0x007F0870;
+
 constexpr uintptr_t kWaterPassSite = 0x00790AA2;
 constexpr uintptr_t kWaterPassTarget = 0x008A2240;
 constexpr uintptr_t kWaterMaterialRenderSlot = 0x00A5954C;
@@ -139,6 +144,8 @@ void ClearOpaqueState();
 bool BuildFrameInputs(FrameInputs& out, bool withPointLights, const PointLightUpload& upload);
 bool BuildWaterInputs(WaterInputs& out);
 bool WaterClientLayoutMatches();
+bool TransparentFogClientLayoutMatches();
+void DescribeGlarePassEntry(char* text, size_t size);
 bool TransparentLiquidsQueued(const void* liquidRenderer);
 WaterClass ClassifyWaterSettings(const void* liquidSettings);
 }

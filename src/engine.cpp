@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 namespace engine
@@ -167,6 +168,48 @@ const CodeBytes kGradingPlacement[] = {
     {"FFX pass end default target", 0x008C15A7, 13,
      {0x8B, 0x01, 0x8B, 0x50, 0x5C, 0x6A, 0x00, 0x6A, 0x00, 0x6A, 0x00, 0xFF, 0xD2}},
 };
+
+const CodeBytes kTransparentFogClientLayout[] = {
+    {"M2 fog exponent argument", 0x0081FCEE, 9, {0x8B, 0x46, 0x70, 0xD9, 0x80, 0xB4, 0x00, 0x00, 0x00}},
+    {"M2 fog colour argument address", 0x0081FCF7, 4, {0x8D, 0x4D, 0xFC, 0x51}},
+    {"M2 fog argument block", 0x0081FCFB, 7, {0x83, 0xEC, 0x0C, 0xD9, 0x5C, 0x24, 0x08}},
+    {"M2 fog end argument", 0x0081FD02, 10, {0xD9, 0x80, 0xAC, 0x00, 0x00, 0x00, 0xD9, 0x5C, 0x24, 0x04}},
+    {"M2 fog start argument", 0x0081FD0C, 9, {0xD9, 0x80, 0xA8, 0x00, 0x00, 0x00, 0xD9, 0x1C, 0x24}},
+    {"M2 fog upload and argument pop", 0x0081FD1A, 10, {0x6A, 0x01, 0xE8, 0x6F, 0x36, 0x05, 0x00, 0x83, 0xC4, 0x14}},
+    {"M2 fog setter prologue", 0x00873210, 13,
+     {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x14, 0x83, 0x3D, 0x20, 0x30, 0xD4, 0x00, 0x00}},
+    {"fog colour red byte read", 0x00873225, 7, {0x8B, 0x75, 0x14, 0x0F, 0xB6, 0x46, 0x02}},
+    {"fog colour green byte read", 0x00873242, 4, {0x0F, 0xB6, 0x4E, 0x01}},
+    {"fog colour blue byte read", 0x00873254, 3, {0x0F, 0xB6, 0x16}},
+    {"fog start and end read", 0x00873263, 8, {0xD9, 0x45, 0x0C, 0xD9, 0x45, 0x08, 0xD8, 0xE9}},
+    {"fog exponent read", 0x0087328C, 3, {0xD9, 0x45, 0x10}},
+    {"blend mode fog table read", 0x0081FB7B, 7, {0x8B, 0x04, 0x8D, 0x90, 0x53, 0xA4, 0x00}},
+    {"blend mode fog table", 0x00A45390, 16,
+     {0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00}},
+    {"blend mode fog table end", 0x00A453A0, 16,
+     {0x02, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"fog colour mode dispatch", 0x0081FBA3, 7, {0xFF, 0x24, 0x85, 0x7C, 0xFE, 0x81, 0x00}},
+    {"fog colour mode jump table", 0x0081FE7C, 16,
+     {0xAA, 0xFB, 0x81, 0x00, 0xAE, 0xFC, 0x81, 0x00, 0xC2, 0xFC, 0x81, 0x00, 0xD8, 0xFC, 0x81, 0x00}},
+    {"zero fog colour alpha register", 0x0081FB20, 2, {0x33, 0xDB}},
+    {"lighting fog colour alpha", 0x0081FC5D, 4, {0xC6, 0x45, 0xFB, 0xFF}},
+    {"black fog colour alpha", 0x0081FCB7, 3, {0x88, 0x5D, 0xFB}},
+    {"white fog colour alpha", 0x0081FCCD, 3, {0x88, 0x5D, 0xFB}},
+    {"grey fog colour alpha", 0x0081FCE3, 3, {0x88, 0x5D, 0xFB}},
+    {"glare call argument pop before", 0x004F9210, 3, {0x83, 0xC4, 0x14}},
+    {"world text call after the glare", 0x004F9218, 5, {0xE8, 0x63, 0xC3, 0x2E, 0x00}},
+    {"glare pass visibility test", 0x007F0877, 14,
+     {0x74, 0x3C, 0xD9, 0x05, 0x48, 0x8B, 0xD3, 0x00, 0x51, 0xB9, 0xA8, 0x8E, 0xD3, 0x00}},
+    {"glare pass moon tail jump", 0x007F08AB, 10, {0xB9, 0x58, 0x8F, 0xD3, 0x00, 0xE9, 0x4B, 0xBB, 0x1B, 0x00}},
+    {"glare pass return", 0x007F08B5, 1, {0xC3}},
+};
+
+constexpr size_t kGlarePassEntrySize = 7;
+constexpr unsigned char kGlarePassEntry[kGlarePassEntrySize] = {0x83, 0x3D, 0xCC, 0x8C, 0xD3, 0x00, 0x00};
+constexpr unsigned char kJumpRel32Opcode = 0xE9;
+constexpr size_t kJumpRel32Size = 5;
+constexpr unsigned char kMoveEaxImm32Opcode = 0xB8;
+constexpr unsigned char kJumpEax[] = {0xFF, 0xE0};
 
 struct OpaqueState
 {
@@ -382,6 +425,19 @@ bool CodeBytesMatch(const CodeBytes& code)
     __try
     {
         return std::memcmp(reinterpret_cast<const void*>(code.address), code.bytes, code.size) == 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+bool CopyCode(uintptr_t address, unsigned char* out, size_t size)
+{
+    __try
+    {
+        std::memcpy(out, reinterpret_cast<const void*>(address), size);
+        return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
@@ -881,6 +937,35 @@ bool TransparentLiquidsQueued(const void* liquidRenderer)
 bool WaterClientLayoutMatches()
 {
     return AllCodeBytesMatch(kWaterClientLayout, "water hooks");
+}
+
+bool TransparentFogClientLayoutMatches()
+{
+    return AllCodeBytesMatch(kTransparentFogClientLayout, "transparent fog hooks");
+}
+
+void DescribeGlarePassEntry(char* text, size_t size)
+{
+    unsigned char entry[kGlarePassEntrySize] = {};
+    if (!CopyCode(kGlarePassTarget, entry, sizeof(entry)))
+    {
+        std::snprintf(text, size, "unreadable");
+        return;
+    }
+    int32_t rel = 0;
+    std::memcpy(&rel, entry + 1, sizeof(rel));
+    uintptr_t target = 0;
+    std::memcpy(&target, entry + 1, sizeof(target));
+    if (std::memcmp(entry, kGlarePassEntry, sizeof(entry)) == 0)
+        std::snprintf(text, size, "the 12340 code (not detoured)");
+    else if (entry[0] == kJumpRel32Opcode)
+        std::snprintf(text, size, "a jump to 0x%08X (detoured)",
+                      static_cast<unsigned>(kGlarePassTarget + kJumpRel32Size + rel));
+    else if (entry[0] == kMoveEaxImm32Opcode && std::memcmp(entry + 5, kJumpEax, sizeof(kJumpEax)) == 0)
+        std::snprintf(text, size, "mov eax, 0x%08X; jmp eax (detoured)", static_cast<unsigned>(target));
+    else
+        std::snprintf(text, size, "%02X %02X %02X %02X %02X %02X %02X (unknown)", entry[0], entry[1], entry[2],
+                      entry[3], entry[4], entry[5], entry[6]);
 }
 
 WaterClass ClassifyWaterSettings(const void* liquidSettings)

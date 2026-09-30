@@ -35,18 +35,21 @@ are compiled with `fxc`. `README.md` holds the design and the reverse-engineerin
 - `proxy/` — the `version.dll` loader that forwards to the system copy.
 - `src/` — `d3d9_wrap` (device wrapper, INTZ depth), `msaa_depth` (multisampled depth copy into INTZ: NVAPI, RESZ,
   self-test), `hooks` (call-site thunks), `engine` (client addresses and frame inputs), `engine_actors` (unit walk
-  for water contacts), `fog_data` (Classic fog data), `fog_model` (layer parameters), `renderer` (passes), `overlay`
-  (ImGui settings window: input chaining, drawing at `Present`), `settings_panel` (its widgets), `config`, `log`,
-  `status_log`; water: `water_data` (Forever presets, FFT tiles, foam masks), `water_classify` (liquid classes),
-  `water_spectrum` and `water_fft` (GPU FFT waves), `water_contacts` (contact tracker, ring impulses at the client's
-  ripple events), `water_ripples` (ripple map simulation), `client_ripple_sprites` (hold on the client's
+  for water contacts), `fog_data` (Classic fog data), `fog_model` (layer parameters), `renderer` (passes),
+  `transparent_fog` (linear stock fog fitted to the volumetric fog for see-through models after the early composite),
+  `overlay` (ImGui settings window: input chaining, drawing at `Present`), `settings_panel` (its widgets), `config`,
+  `log`, `status_log`; water: `water_data` (Forever presets, FFT tiles, foam masks), `water_classify` (liquid
+  classes), `water_spectrum` and `water_fft` (GPU FFT waves), `water_contacts` (contact tracker, ring impulses at the
+  client's ripple events), `water_ripples` (ripple map simulation), `client_ripple_sprites` (hold on the client's
   `waterRipples` splash and wake sprites), `water_renderer` (copies, stencil tagging, shading); look: `forever_look`
-  (Forever glow byte and grading decisions at world done and frame end), `grading_renderer` (colour grading pass).
+  (Forever glow byte before the fog composite, grading decisions at world done and frame end), `grading_renderer`
+  (colour grading pass).
 - `shaders/` — the ps_3_0 passes: `vf_*` fog (march, temporal, composite and its multisampled silhouette split, god
-  rays, depth probe and depth-copy check), `vw_*` water (FFT, ripple step, depth copy, shading) and `vp_grade`
-  (colour grading).
+  rays and their late composite after an early one, depth probe and depth-copy check), `vw_*` water (FFT, ripple
+  step, depth copy, shading) and `vp_grade` (colour grading).
 - `tests/harness.cpp` — the offline D3D9 harness; `--scene harbour` renders a logged in-game frame, `--scene ripples`
-  units wading through the basin.
+  units wading through the basin. `tests/shaders/` holds a copy of the client's M2 fog shader for the transparent fog
+  checks.
 - `tools/` — the Classic fog and Forever water data converters and the comment check.
 
 ## Maintaining guidance

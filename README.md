@@ -91,18 +91,19 @@ bleach bright fog to white, so fogged pixels are pre-compensated with the glow a
 this frame. God rays use the remaining display highlight range after the glow and need a scene copy; without one
 they are omitted.
 
-**Glow and colour grading.** Both use the existing hooks and are off by default. The client converts its day/night
-glow to a byte and stores it as the alpha of the glow composite's pass colour, which the composite draws as its
-vertex colour (see Engine inputs). With `ForeverGlow=1` the DLL rewrites that byte in both of the glow effect's pass
-lists just before the frame effects run, to `lerp(client byte/255, Forever glow, t)` clamped to 0..1, with
-`t = saturate((coverage − 0.5)/0.5)` from the Classic lights' share of the blend, so the glow fades back to the
-client's where Classic coverage ends and Forever's data takes over only under full coverage. It never touches the
-day/night glow itself, so the ghost view (which reads it) and Ascension's Extensions.dll keep theirs, and it writes
-nothing while the ghost effect is current or the effect graph differs from the client's (vtables, pass counts). At
-the frame end each byte that still holds the DLL's value gets the client's back, so the client's second FFX path
-and a byte someone else wrote are untouched. `GlowCompensation` always uses the byte the composite receives,
-which also fixes a mismatch without `ForeverGlow`: Extensions.dll's `ambientGlow` can raise the glow above 1, where
-the client's byte wraps (1.1 gives 24) while the compensation clamped it to 1.
+**Glow and colour grading.** Both use the existing hooks and are off by default. The client converts its day/night glow
+to a byte and stores it as the alpha of the glow composite's pass colour, which the composite draws as its vertex colour
+(see Engine inputs). With `ForeverGlow=1` the DLL rewrites that byte in both of the glow effect's pass lists once per
+frame before the fog composite reads it, in the world-done hook or, with `TransparentFog=1`, when the liquid pass
+returns before the early composite, to `lerp(client byte/255, Forever glow, t)` clamped to 0..1, with
+`t = saturate((coverage − 0.5)/0.5)` from the Classic lights' share of the blend, so the glow fades back to the client's
+where Classic coverage ends and Forever's data takes over only under full coverage. It never touches the day/night glow
+itself, so the ghost view (which reads it) and Ascension's Extensions.dll keep theirs, and it writes nothing while the
+ghost effect is current or the effect graph differs from the client's (vtables, pass counts). At the frame end each byte
+that still holds the DLL's value gets the client's back, so the client's second FFX path and a byte someone else wrote
+are untouched. `GlowCompensation` always uses the byte the composite receives, which also fixes a mismatch without
+`ForeverGlow`: Extensions.dll's `ambientGlow` can raise the glow above 1, where the client's byte wraps (1.1 gives 24)
+while the compensation clamped it to 1.
 
 `ColorGrading` grades the 3D view at the end of the world render, after the glow and before names, icons and the
 interface: the saved world viewport is copied (a resolve when the back buffer is multisampled), then one ps_3_0 pass
@@ -112,6 +113,41 @@ float texture that is updated only when the curve changes. The ghost view and th
 graded, and neither is a frame whose world did not finish its frame effects. Where none of the Classic lights around
 the camera has a grading key the curve is the identity, so the pass does not draw. The copy is released while
 `ColorGrading=0`; while grading it costs one world-sized render target of the back buffer's format.
+
+**Transparent fog.** Fog drawn once after the world gives every see-through effect (particles, spell effects,
+ribbons, alpha and additive models) the fog of the surface behind it: an additive glow 10 yd away in front of
+terrain 800 yd away is dimmed to the far terrain's transmittance, while the stock client fogs it by its own
+distance. With `TransparentFog=1`, above water, the fog is composited at the end of the liquid pass instead, when
+the sky, terrain, buildings, opaque models, models beyond a water plane and the shaded water are in the colour and
+depth and no see-through model on the camera's side has been drawn yet. The sun and moon glare pass is called just
+before that composite and skipped at its own call, so it is fogged per pixel as before. From then to the end of the
+world render every M2 batch fog call is rewritten: its start and end become a linear fog fitted to the volumetric
+fog, its exponent 1, and its colour the fitted fog colour when the client passes the model's lighting colour
+(alpha 0xFF); the black, white and grey colours of additive, modulate and modulate-2x batches are kept, which is
+the stock form of the modern client's per-material fog modes. The fit samples the volumetric transmittance and
+in-scatter within 100 yd along 15 rays across the view (weighted toward the centre, rise clamped to ±0.26) with the
+march's layer terms at the layers' mean noise, and solves the least-squares line in planar view depth, the depth
+the client's M2 shaders fog by; samples clamped to zero by the shader are refitted without. When the fog within
+100 yd is thin (weighted transmittance at 100 yd above 0.9, for example fog that begins farther out), the fitted range
+grows smoothly toward the depth where the transmittance along the view axis halves, which it reaches when the first
+100 yd are clear (above 0.995); only a view clear of fog to the far clip fits no fog. The colour is the
+in-scatter over the opacity, exposed, rolled off, gamma-encoded and glow-compensated as the composite shows it. God
+rays are traced from the scene copied just before the early composite, the unfogged image the single composite traces
+them from, and added over the finished world at the end of the world render, over a new scene copy. Under water,
+with `StockFog=0`, a debug view or the sun marker, or when the early composite cannot run, the fog is drawn after the
+world as before and the glare at its own call. The composite's preconditions (device ready, valid frame inputs, the
+fog's depth bound with the target's size and sample count, the world viewport inside the target) are checked before
+the glare is drawn; a failure only the draw itself finds (the multisampled depth copy, a fog target allocation, a
+view matrix that cannot be inverted) falls back to the fog after the world with that frame's glare already drawn
+before M2 pass 1. The fit is linear in depth, so it cannot follow the medium's height and distance-curve shape: in
+the harness it stays within 0.03 of the volumetric transmittance along the view axis and within 0.06 at the side of
+the view over the first 100 yd for thin homogeneous fog, ground fog and the Classic harbour sunset; each vertex is
+fogged by its own planar depth, as in the stock client. Every see-through batch beyond 100 yd gets the same line,
+extrapolated: between 100 and 600 yd it departs from the volumetric transmittance by up to 0.36 for homogeneous
+0.002/yd fog, 0.32 for the harbour sunset and 0.41 for the derived layers, denser than the fog around the batch in the
+first two cases and thinner in the third (0.55 against 0.14 at 400 yd). Past the line's end (504, 588 and 883 yd
+there) a batch is fully fogged, so additive effects, whose fog colour is black, vanish and others take the flat fog
+colour, where the volumetric fog still shows about 30% of the scene at 600 yd in the first two cases.
 
 **Water.** The client draws every water and ocean surface, and nothing else, inside one call of its liquid
 renderer. Before that call the DLL copies the scene colour and its linear depth, clears the stencil and turns on
@@ -411,22 +447,31 @@ rates from fields 4–9. The water is tuned by eye against this mapping, not mat
   otherwise the device stays single-sampled.
 - **Hooks.** Five 5-byte call displacements: the world render call (`0x4FB03D`, stock-fog override and restore),
   after the opaque M2 pass (`0x4F911D`, captures camera inputs), the liquid surface pass (`0x4F9170`, forces
-  depth writes), world-name text (`0x7E5818`, suppresses depth writes), and before the frame effects
-  (`0x4F9281`, draws the fog over the completed world). The original bytes are checked first; on any mismatch
-  nothing is patched. Two more retarget the far-clip clamp calls (`0x780810`, `0x781444`) when `FarClipMax` is
-  set at start-up, independently of the fog hooks.
+  depth writes; with `TransparentFog=1` it draws the glare and the fog when the pass returns), world-name text
+  (`0x7E5818`, suppresses depth writes), and before the frame effects (`0x4F9281`, draws the fog over the
+  completed world, or only the god rays after an early composite). The original bytes are checked first; on any
+  mismatch nothing is patched. Two more retarget the far-clip clamp calls (`0x780810`, `0x781444`) when
+  `FarClipMax` is set at start-up, independently of the fog hooks.
+- **Transparent fog hooks.** Installed after the fog hooks, whatever `TransparentFog` says, so the setting can be
+  turned on and off in the game: the M2 batch fog call (`0x81FD15`) and the glare pass call (`0x4F9213`). The
+  M2 thunk forwards straight to the client while nothing is armed and no counters run; otherwise it hands the
+  caller's cdecl argument block to the DLL (`pushad; lea eax, [esp+0x24]`) and jumps to the client's setter. Both
+  call sites and the byte runs listed under Engine inputs are checked first; on any mismatch neither is patched,
+  the log says so and the fog is drawn after the world. An exception in the M2 hook turns transparent fog off for
+  the session and leaves the fog running.
 - **Water hooks.** Installed after the fog hooks and independently of them: the water pass call (`0x790AA2`) and
   the `Render` slots of the two water material vtables (`0xA5954C`, `0xA59580`, read-only data patched under
   `VirtualProtect`). The call site, both slots and the layout bytes the classification reads are checked first; on
   any mismatch none are patched and the fog is unaffected. `waterdata.bin` is loaded only once they are installed. A
   water exception restores the device state, turns water off for the session and leaves the fog running.
-- **Glow and grading.** No further patch: the glow override runs in the world-done hook before the fog, and the
-  grading last in the world render's frame-end hook. Once the fog hooks are installed, each is enabled only if its
-  client bytes still match (see Engine inputs); a mismatch leaves it unavailable and is logged. Neither depends on
-  the fog: the world viewport is captured after the opaque pass even after a fog exception. An exception in the glow
-  override or the grading turns only that one off for the session, but one while reading their shared inputs (the
-  screen effects, the camera's liquid flag and the Classic light blend) turns both off, and `GlowCompensation` then
-  falls back to the clamped day/night glow.
+- **Glow and grading.** No further patch: the glow override runs once per frame before the fog composite, in the
+  world-done hook or in the liquid thunk before an early composite, and the grading last in the world render's frame-end
+  hook, after the water frame end (the hold on the client's sprites) and the fog's. Once the fog hooks and the
+  transparent fog hooks are installed, each is enabled only if its client bytes still match (see Engine inputs); a
+  mismatch leaves it unavailable and is logged. Neither depends on the fog: the world viewport is captured after the
+  opaque pass even after a fog exception. An exception in the glow override or the grading turns only that one off for
+  the session, but one while reading their shared inputs (the screen effects, the camera's liquid flag and the Classic
+  light blend) turns both off, and `GlowCompensation` then falls back to the clamped day/night glow.
 - **State.** Every state the passes touch is captured with a recorded state block and restored, plus render
   targets, depth and stream 0 (whose offset state blocks drop). The client's shader-constant cache stays valid:
   the pixel constants a pass sets, the grading's c0 and c1 included, are recorded in its state block, because the
@@ -537,12 +582,81 @@ Engine notes behind the code:
   writes (Gx state 15, `0x6C55BE`, dispatched as `D3DRS_ZWRITEENABLE` at `0x6A8FC7`). Suppressing the writes
   keeps glyph quads out of the depth the fog is integrated against, where they would end fog rays at the text,
   while keeping the draw and its depth test. The later name/icon path at `0x4FB042` is left in place.
-- Native glare. `0x4F9213` (`E8 58 76 2F 00`) calls the sun/moon glare pass `0x7F0870`, which is not patched.
-  Its draw `0x9AC400` adds the `sunGlare`/`moonGlare` quads (`D3DBLEND_SRCALPHA`, `D3DBLEND_ONE`) at depth
-  `[0.9990234375, 1]`, and its update `0x9AC3C0` runs a GPU occlusion query against the current world depth
-  (`0x9ABE00`). World geometry `0x7984A0` also runs after the opaque hook (`0x4F9154` calls `0x77F010`, which
-  jumps to it). Drawing the fog once at `0x4F9281` sees the completed depth and keeps the glare and its query
-  order unchanged.
+- Native glare. `0x4F9213` (`E8 58 76 2F 00`, after `83 C4 14`, before the world-text call `E8 63 C3 2E 00`)
+  calls the sun/moon glare pass `0x7F0870`, a function without arguments (`83 3D CC 8C D3 00 00 74 3C D9 05 48 8B
+  D3 00 51 B9 A8 8E D3 00`; `ret` at `0x7F08B5`) that updates and draws the sun (`0x7F088D B9 A8 8E D3 00`,
+  `0x7F0892 E8 69 BB 1B 00`) and tail-jumps to draw the moon (`0x7F08AB B9 58 8F D3 00 E9 4B BB 1B 00`). Its draw
+  `0x9AC400` adds the `sunGlare`/`moonGlare` quads (`D3DBLEND_SRCALPHA`, `D3DBLEND_ONE`) at depth
+  `[0.9990234375, 1]` with Gx fog, depth writes and depth test off (`0x9AC55E`–`0x9AC593`), and its update
+  `0x9AC3C0` runs a GPU occlusion query against the current world depth (`0x9ABE00`); `0x7EF6E0` derives each
+  frame's glare alpha from the previous one. World geometry `0x7984A0` also runs after the opaque hook (`0x4F9154`
+  calls `0x77F010`, which jumps to it). Drawing the fog once at `0x4F9281` sees the completed depth and keeps the
+  glare and its query order unchanged; with `TransparentFog=1` the glare pass is called from the liquid thunk just
+  before the early composite and its own call is skipped, so the glare and its query run before the see-through
+  models of M2 pass 1.
+- World render order. In `0x4F8EA0` the map render `0x79A870` (`0x4F909F E8 4C 5F 28 00`) draws the sky with its
+  skybox models, the WDL, terrain and the WMOs with their alpha batches, then come M2 pass 0 (`0x4F911D`) and
+  `0x7984A0` (`0x4F9154`). `0x780620` returns `[0xCD8794]`; above water M2 pass 2 (`0x4F9167 6A 02`, `0x4F916B E8
+  40 AB 32 00`), the liquid pass (`0x4F9170 E8 AB 5E 28 00`), weather (`0x4F9175 E8 B6 5E 28 00`), the barrier
+  effect (`0x4F9184 E8 F7 67 28 00`) and M2 pass 1 (`0x4F918C 6A 01`, `0x4F91B9 E8 F2 AA 32 00`) follow; under
+  water pass 1 (`0x4F91A6`), weather (`0x4F91AB`), the liquid (`0x4F91B0`) and pass 2 (`0x4F91B5 6A 02`,
+  `0x4F91B9`). Then lightning (`0x4F91D9` → `0x9AB070`, Gx fog off at `0x9AB17A`), missile arcs (`0x4F91DE` →
+  `0x6FDFB0`), render list 1 (`0x4F91FE`, `0x4F920B`), the glare (`0x4F9213`), world text (`0x4F9218`) and FFX end
+  (`0x4F9281`). The liquid pass `0x77F020` jumps to `0x790A80`, which first sets the Gx fog from group 0 (`E8 8B 0B
+  FF FF` → `0x781610`), then draws the water (`0x790AA2`) and tail-jumps to the ripples `0x79D5E0`.
+- M2 passes. The draw-list builder `0x821A20` puts a batch in class 1 when its material blend mode (word `+2`) is
+  above 1 or its alpha below 0.99999 (`0x821F47 B9 01 00 00 00 66 39 48 02 77 16 D9 05 28 55 A4 00`,
+  `[0xA45528]` = 0.99999); class 1 goes to pass 1 on the camera's side of the model's liquid plane and to pass 2
+  beyond it. Without liquid information a model is on the camera's side (the lighting constructor sets only flag
+  0x20, `0x83491E 83 4E 14 20`). Transparent ribbons and particle emitters follow the same rule; emitters with flag
+  0x40000 always go to pass 2 (`0x8219F3 39 55 18 74 0F F7 86 34 01 00 00 00 00 04 00 8D 4F 64 74 03 8D 4F 74`).
+- M2 batch fog. `0x81FB10`, reached by every M2 entry type, picks the fog colour by blend mode through the table
+  `0xA45390` = {1, 1, 1, 2, 2, 3, 4, 0} (`0x81FB7B 8B 04 8D 90 53 A4 00`) and the jump table `0x81FE7C`
+  (`0x81FBA3 FF 24 85 7C FE 81 00` → `0x81FBAA`, `0x81FCAE`, `0x81FCC2`, `0x81FCD8`): mode 1 is the model's
+  lighting fog colour with alpha 0xFF (`0x81FC5D C6 45 FB FF`), modes 2, 3 and 4 are black, white and grey 0x80
+  with alpha 0 (`ebx` zeroed at `0x81FB20 33 DB`, stored at `0x81FCB7`, `0x81FCCD` and `0x81FCE3`, `88 5D FB`), and
+  mode 0 (material flag 2, or no fog range) draws unfogged without the call. At `0x81FCEE` it pushes the lighting's
+  fog exponent, the address of the colour at `[ebp−4]`, the end and the start (`8B 46 70 D9 80 B4 00 00 00 8D 4D FC
+  51 83 EC 0C D9 5C 24 08 D9 80 AC 00 00 00 D9 5C 24 04 D9 80 A8 00 00 00 D9 1C 24`) and calls the setter at
+  `0x81FD15` (`E8 F6 34 05 00` → `0x873210`), then `0x873390(1)` and pops the arguments (`6A 01 E8 6F 36 05 00 83
+  C4 14`). The lighting holds DayNight fog group 0 or 1, copied by the lighting callback (`0x780D33`–`0x780D51` →
+  `0x834990`).
+- M2 fog setter. `0x873210` (`55 8B EC 83 EC 14 83 3D 20 30 D4 00 00`) with shaders on writes the colour's bytes +2, +1
+  and +0 times 1/255 (`0x873225 8B 75 14 0F B6 46 02`, `0x873242 0F B6 4E 01`, `0x873254 0F B6 16`) to the pixel
+  constant c2 (`vtable+0x118(4, 2, 0xD43058, 1)`) and builds `c30 = (−k/(end − start), end/(end − start), exponent, 0)`
+  from the start, end (`0x873263 D9 45 0C D9 45 08 D8 E9`) and exponent (`0x87328C D9 45 10`) with k = `[0xD4300C]` = 1;
+  `0x873390` uploads it as vertex register 30 (`0x8733C6`). Without shaders it sets the Gx fog start, end and colour,
+  which the D3D9 backend turns into `D3DRS_FOGSTART` (`0x6A8E62`, `6A 24`), `FOGEND` (`0x6A8E81`, `6A 25`) and
+  `FOGCOLOR` (`0x6A8EA0`, `6A 22`) with linear vertex fog (`0x6A3AB5 6A 03 68 8C 00 00 00`). The engine review extracted
+  the client's M2 and WMO vs_2_0/vs_3_0 shaders from its MPQs: they fog by planar view depth, `oFog =
+  min(pow(max(c30.x·z + c30.y, 0), c30.z), 1)` with `z` from `dp4 r0.z, c33, v0`, and the ps_3_0 combiners blend
+  `lerp(c2, colour, fog)`; c2.w is the alpha-test reference, which `0x873BA0` re-uploads with the colour after every
+  batch, so the DLL changes the colour only through the setter's argument. The exponent is DayNight `+0x98`/`+0xAC`,
+  light float band 2 (1.0 in about 97% of the rows), doubled under water (`0x7F1A09`–`0x7F1A1B`, `fmul 2.0`, `0x7F1A13
+  D9 1D 98 8B D3 00`); the transparent fog forces it to 1. Each WMO render resets its fog cache `[0xCFBEB0]` (`A3 B0 BE
+  CF 00` at `0x7A93C2`, `0x7AC702` and `0x7ACA51`), so a fitted c30 left by the last M2 batch does not reach the next
+  frame's WMO batches; terrain, liquids and detail doodads use other registers.
+- Weather fog. `0x78AE20` draws the weather particles through one of two pairs, chosen by its flag byte (`0x78AE37 80 3E
+  00`): the rain `0x78A640` and `0x78A030` (`0x78AE3E E8 FD F7 FF FF`, `0x78AE45 E8 E6 F1 FF FF`), or `0x7898A0` and
+  `0x7891B0` (`0x78AE53 E8 48 EA FF FF`, `0x78AE5A E8 51 E3 FF FF`). The rain pair sets its own grey fog colour and
+  uploads vertex c0 = (−0.2, 15, 1, 0) (`0x78A7C7` `fmul [0xA3EBDC]` = −0.2, `0x78A7DE` `fld [0x9E8D7C]` = 15, and again
+  at `0x78A1A8` and `0x78A1BD`), a fade 70 to 75 yd above the camera. The other pair enables the Gx fog (state 12,
+  dirty-marked at `0x78937D` and `0x789A6D`), sets its colour to 0x80808080 (`0x78940B` and `0x789AFB`, `C7 06 80 80 80
+  80`) and its start and end itself through the float state setter `0x763C70`, which indexes the Gx float cache at
+  state·24 (`0x763C8F 8D 04 52`, `0x763C92 D8 1C C6`), the slots `0x873210`'s fixed-function path writes: start 70 yd
+  (`0x7893B5 D9 05 D4 EB A3 00 51 D9 1C 24 6A 08 E8 AA A8 FD FF`, `[0xA3EBD4]` = 70.0) and end 75 yd (`0x7893C6 D9 05 58
+  FF A0 00 83 C4 04 D9 1C 24 6A 09 E8 97 A8 FD FF`, `[0xA0FF58]` = 75.0), and the same pair at `0x789AA5`–`0x789AC4`.
+  The other fog-enable writes in the weather code (`0x78766D`, `0x78B013`, `0x78B4E3`, `0x78BC1C`, `0x78BFFF`) store 0,
+  turning the fog off. No weather draw reads the zone fog, so weather keeps its own 70–75 yd fade whether or not the
+  stock fog is pushed out of range.
+- Extensions.dll. The engine review of Ascension's Extensions.dll (not re-read in this change) found detours of the
+  glare pass `0x7F0870` (7 bytes; the hook calls the original, then draws a second moon, `Textures\moon02Glare.blp`,
+  through `mov eax, 0x9AC400; jmp eax`), of the M2 functions `0x81F700`, `0x81F8F0`, `0x81F970`, `0x823ED0`,
+  `0x823F10`, `0x824ED0` and `0x824FC0`, of `0x7F2790`, `0x77EED0`, `0x7EECC0` and `0x7F3230`, a data patch at
+  `0x82080B`, and the DayNight exponent stores at `0x7F1777`, `0x7F19F4`, `0x7F1A13`, `0x7F1A1B` and `0x7F1A49`
+  patched out for a Lua setter of `[0xD38B98]`. None touches `0x4F9170`, `0x81FD15`, `0x873210`, `0x4F9213` or
+  `0x4F9281`, and none overlaps the checked byte runs. Calling `0x7F0870` from the liquid thunk enters the detour,
+  so the second moon is drawn before the fog as well. At `LogLevel=2` the log says what `0x7F0870` begins with.
 - Screen effects. FFX end runs the current effect `[0xD45780]` when the `ffx` CVar (`[0xD45774]`, int at `+0x30`)
   and the effect's own CVar (`+4`) are on. The glow effect `[0xB74364]` keeps `ffxGlow` there (`0x8BFEDB`); the
   ghost effect is `[0xB74368]` (`FFXDeath`, vtable `0xA418D8`, stored at `0x7EA274` by its constructor `0x7EA260`).
@@ -561,7 +675,9 @@ Engine notes behind the code:
   `FFXGauss4` blur `0x8C1B40` (vtable `0xA9425C`, `0x8C1B61`) and the composite `0x8C21E0` (vtable `0xA94294`,
   `0x8C2206`), which the underwater list gets only when `[0xD45768]` and a Gx capability allow (`0x8C00BC`–`0x8C00D4`;
   otherwise a null entry, `0x8C011F`). The composite's render `0x8C27B0` hands that colour to the draw `0x682400`
-  (`0x8C28A1`).
+  (`0x8C28A1`). Every branch of the world render from `0x4F8EA0` to its `ret` at `0x4F9290` jumps forward, and
+  `0x4F8F3D` follows its early returns and precedes both liquid pass calls (`0x4F9170` above water, `0x4F91B0` below),
+  so when the liquid pass returns the byte already holds the client's value for this frame.
 - FFXGlow. The 12340 shader loader `0x684970` accepts only BLS version `0x10003` (`0x6849FE`). Ascension's patch
   ships ps_3_0 `FFXGlow` and `FFXDeath` as version `0x10004`, so the loader falls back through `0x684AA4` to the
   ps_2_0 profile (`0x684A71`), whose FFXGlow is `lerp(screen, blur, v0.z) + blur²·v0.w` with the pass colour as
@@ -732,7 +848,7 @@ Engine notes behind the code:
   (`0x7EC11D`–`0x7EC152`); the client bakes the water colours into its per-frame depth ramps. The water is lit by
   the direct light (band 0, `0xD38BD8`), which `0x7EE756` copies to the world's direct light; band 9
   (`0xD38BF8`) only colours the sun and moon sprites (`0x7F36F6`).
-- Not used. `0xD38B98` is a density-like value that Extensions.dll patches (the fog end is `0xD38BA8`), and
+- Not used. `0xD38B98` is fog group 0's exponent, which Extensions.dll overrides (the fog end is `0xD38BA8`), and
   `0xD38C9C` is a near-constant model lighting direction, not the visible sun, so the fog's light direction
   follows the sprite positions.
 
@@ -772,23 +888,27 @@ Outputs in `build/Release`: `version.dll`, `CoAVolFog.dll` and `vfog_harness.exe
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-This runs the comment check and `vfog_harness`, which creates a real D3D9 device through the wrapper with the
-client's flags (`0x52`, auto depth D24X8), renders a Z-up test scene with the client's projection convention, and
-runs the fog passes through the same entry the hook uses. Its checks, in `tests/`, cover the device wrapper and state
-restoration, depth and sky handling, Classic light blending and slot selection, the authored noise, glow and grading
-the Classic data resolves, the harbour's sunset halo hue with the shipped settings, the march against CPU integrals
-at every quality, the authored noise against the modern curve and a CPU sample of the noise volume, the noisy
-composites' full-resolution march at thin silhouettes, split sample sides included, temporal filtering and
-upsampling, point lights and interiors, the text and liquid depth overrides, fog-data validation, the GPU timer and
-depth probe, the settings window and INI saving, and `Reset`. The water suites check the water data and its loader,
-the FFT against a double-precision reference, the liquid classification, the water pass driven through the hook entry
-points (state restoration, stencil tagging, optics against a CPU reference, fault recovery), the water settings, the
-packed foam masks, the unit walk on synthetic object-manager images, the contact tracker's rings against a harness
-copy of the client's ripple clock, the ripple simulation against a CPU reference, the ripples in the water pass, whose
-normals are compared with the 7552035 slope evaluated on the CPU (within the depth-copy precision, but for at most
-0.5% of the pixels, up to 6/255 off where the GPU's bilinear weights meet fresh impulses), the rings' visibility in
-shaded water with the real data, and the hold on the client's sprite value, driven through the hooks on a synthetic
-value and code image, with the unit walk refused and the ripple map unsupported or failing.
+This runs the comment check and `vfog_harness`, which creates a real D3D9 device through the wrapper with the client's
+flags (`0x52`, auto depth D24X8), renders a Z-up test scene with the client's projection convention, and runs the fog
+passes through the same entry the hook uses. Its checks, in `tests/`, cover the device wrapper and state restoration,
+depth and sky handling, the transparent fog (the fitted stock fog against the volumetric transmittance through the
+client's planar-depth formula, blend-mode colours, the M2 and glare thunks, an additive effect drawn through a copy of
+the client's M2 fog shader after the early composite, which the fog must dim by its own distance, the fallbacks to one
+composite after the world, a fault in the M2 hook, the late god rays against the single composite's, the logged
+counters, and the early composite on a 4x device), Classic light blending and slot selection, the authored noise, glow
+and grading the Classic data resolves, the harbour's sunset halo hue with the shipped settings, the march against CPU
+integrals at every quality, the authored noise against the modern curve and a CPU sample of the noise volume, the noisy
+composites' full-resolution march at thin silhouettes, split sample sides included, temporal filtering and upsampling,
+point lights and interiors, the text and liquid depth overrides, fog-data validation, the GPU timer and depth probe, the
+settings window and INI saving, and `Reset`. The water suites check the water data and its loader, the FFT against a
+double-precision reference, the liquid classification, the water pass driven through the hook entry points (state
+restoration, stencil tagging, optics against a CPU reference, fault recovery), the water settings, the packed foam
+masks, the unit walk on synthetic object-manager images, the contact tracker's rings against a harness copy of the
+client's ripple clock, the ripple simulation against a CPU reference, the ripples in the water pass, whose normals are
+compared with the 7552035 slope evaluated on the CPU (within the depth-copy precision, but for at most 0.5% of the
+pixels, up to 6/255 off where the GPU's bilinear weights meet fresh impulses), the rings' visibility in shaded water
+with the real data, and the hold on the client's sprite value, driven through the hooks on a synthetic value and code
+image, with the unit walk refused and the ripple map unsupported or failing.
 The glow suite drives the world-done and frame-end entries against a fake glow effect graph that holds the client's
 vtable values as plain integers the DLL only compares: the write to both pass lists and its restore, a foreign byte that
 survives, no write for the ghost effect or a graph that differs, the fade with Classic coverage, the clamp above 1, the
@@ -799,7 +919,11 @@ with the `ffx` CVar off). The grading suite fills the back buffer with every 8-b
 identity curve bit-exact, the Stormwind noon curve and half strength within D3D's float-to-8-bit tolerance of a CPU
 reference, the grading of what the glow drew after the world was done, a sub-rectangle world viewport, state restoration
 with c0/c1, the skips (off, no world done, ghost, under water, half coverage, lights without a grading key), the grading
-through the hooks after a fog exception, curve uploads only on change and after `Reset`, and the INI keys.
+through the hooks after a fog exception, curve uploads only on change and after `Reset`, and the INI keys. With
+`TransparentFog=1` the same three hand-offs go through the frame-begin, opaque, liquid, world-done and frame-end hooks:
+the glow is fed before the early composite at the liquid end, whose glow constant is then the delivered byte; and the
+grading at the frame end is checked pixel by pixel against the curve of the finished fogged frame, god rays and the
+viewport's first column included, after the single composite and after the early composite.
 The multisampling suite creates a 4x device through the wrapper with the client's D24X8 depth (and D16) and its
 target-and-depth clear: the sample counts offered to the game, the kept back buffer and the D24S8 depth that replaces
 the stencil-less one, the fog and water on the copied depth against the drawn depth and a single-sampled frame, a wading
@@ -902,6 +1026,16 @@ The depth probe logs raw depth, distance and fog opacity at 25 points on frame 6
 times (every 30 s without limit at `LogLevel=2`); its rows are read back on a later frame. The first reason a
 fog draw is skipped is logged as `fog skipped: <reason>`; a camera under water is logged once as `fog idle`.
 
+With `TransparentFog=1` each reason the fog is drawn after the world instead is logged once, for example
+`transparent fog: the fog is drawn after the world because camera under liquid`, and an early composite that fails
+is logged with its reason, like the fog's skips, as `transparent fog: the early composite was skipped: <reason>; the
+fog is drawn after the world`. At `LogLevel=2` the transparent
+fog hooks count every 60 s, even with `TransparentFog=0`: M2 batch fog calls before the liquid pass ends, after
+it and outside the world render, how many were rewritten, the share of lighting, black, white, grey and other fog
+colours, the share of fog exponents at, below and above 1 with the lowest and highest, the glare pass drawn
+before the fog, at its own call and skipped there, and what the glare pass entry `0x7F0870` holds (the 12340 code,
+or a jump into a detour).
+
 ## Settings
 
 `CoAVolFog.ini` is re-read within a second while the game runs (except `Enable` and `EngineHooks`); its comments
@@ -920,6 +1054,7 @@ describe every key. In the game, `Ctrl+F7` opens the same settings in a window (
 | `NoiseWindSpeed` | 0.5 | Drift of the variation along world +X in yd/s |
 | `ClassicNoise` | 1 | The modern client's authored noise on the Classic layers that carry it (mostly storms); 0 = off |
 | `StockFog` | 1 | 1 replaces the stock fog with the distance fog, 0 keeps it |
+| `TransparentFog` | 0 | 1 fogs see-through effects at their own distance, 0 at the scene behind (see Transparent fog) |
 | `DataMode` | 1 | 1 Classic layers where available, 0 derived layers everywhere |
 | `ColorSpace` | 1 | 1 scatter and blend in linear light with a highlight roll-off, 0 gamma |
 | `SunScatter`, `Ambient`, `Exposure` | 1, 1, 1 | Light in the fog |
@@ -984,7 +1119,24 @@ Forever in the game, so by default colours still differ from Classic.
 - Local lighting captures the current M2 scene's point-light table. It does not create spotlight cones or local
   shadows, and coverage of WMO-only lights is unverified. Influence is capped at 200 yd, with a smooth outer
   fade and an attenuation denominator floor of 1.
-- Transparent materials without depth writes are fogged at the depth behind them.
+- Transparent fog is opt-in (`TransparentFog=0` by default) until an owner test in the game; the harness checks the
+  equations, the hook plumbing and the device state, not the look. With `TransparentFog=0`, and in the fallbacks (under
+  water, `StockFog=0`, a debug view, the sun marker, an early composite that cannot run), see-through materials without
+  depth writes are fogged at the depth behind them. With `TransparentFog=1`: WMO alpha batches (windows) and M2 pass 2
+  (see-through models beyond a water plane, and particle emitters with flag 0x40000) are drawn before the composite and
+  keep the fog of the surface behind them; lightning, missile arcs, the barrier effect and world-name text are drawn
+  after it unfogged, and weather with only its own 70–75 yd fade, as in the stock client (see Weather fog under the
+  engine notes). Every see-through M2 batch after the composite, whatever its distance, gets the one line fitted to the
+  first 100 yd: it cannot follow height fog or the distance curves, so effects well above or below the view and far from
+  the view axis get less exact fog, and beyond 100 yd it is extrapolated, up to 0.32–0.41 away from the volumetric
+  transmittance between 100 and 600 yd in the harness cases and fully fogged past its end (504–883 yd there, while the
+  far clip can be 1583 yd), so distant additive glows vanish and distant alpha effects turn the flat fog colour. Models
+  fading in or out, which M2 pass 1 draws while their alpha is below 1 and the single composite fogs exactly at their
+  own depth, take the line too and switch to the composite's fog when they become opaque; for them and for distant
+  effects `TransparentFog=1` is less exact than `TransparentFog=0`, and a fit per model (stage 2) is what would fix it.
+  The glare and its occlusion query run before M2 pass 1, so depth writes of fading models no longer occlude it; on a
+  multisampled device the late god rays read the depth copied at the early composite; and the fitted colour is not glow
+  pre-compensated per pixel for bright effects.
 - Interior treatment follows the camera's transition weight, not rooms or portals along each ray, so views
   through doorways may differ.
 - The `gxApi d3d9ex` path is not wrapped (fog and the settings window stay off there). The settings window also

@@ -63,6 +63,13 @@ struct ForeverLookClient
     ForeverLookFrame (*frame)(const Config& cfg);
 };
 
+struct FrameRead
+{
+    bool attempted = false;
+    bool read = false;
+    ForeverLookFrame frame;
+};
+
 bool LookNeeded(const Config& cfg)
 {
     return cfg.foreverGlow != 0 || cfg.colorGrading > 0.0f;
@@ -114,6 +121,7 @@ bool g_glowFailed = false;
 bool g_gradingFailed = false;
 GlowFrame g_glow;
 GradingFrame g_grading;
+FrameRead g_frameRead;
 FogDevice* g_gradedDevice = nullptr;
 ForeverLookStatus g_status;
 StatusLog g_gradingLog;
@@ -329,6 +337,35 @@ void FailGlow()
         g_glow = GlowFrame();
     }
 }
+
+void FeedGlowGuarded(const ForeverLookFrame& frame, const Config& cfg)
+{
+    __try
+    {
+        FeedGlow(frame, cfg);
+        RecordGlowStatus();
+        LogGlowOverride();
+    }
+    __except (ForeverLookFilter(GetExceptionCode(), "the Forever glow"))
+    {
+        FailGlow();
+    }
+}
+
+bool ReadFrameAndFeedGlowOnce()
+{
+    if (g_frameRead.attempted)
+        return g_frameRead.read;
+    g_frameRead.attempted = true;
+    g_frameRead.read = ReadFrame(g_frameRead.frame);
+    if (!g_frameRead.read)
+    {
+        FailGlow();
+        return false;
+    }
+    FeedGlowGuarded(g_frameRead.frame, GlobalConfig().Get());
+    return true;
+}
 }
 
 float ForeverLookWeight(float coverage)
@@ -364,31 +401,24 @@ void UseTestForeverLookFrame(const ForeverLookFrame& frame)
     g_gradingAvailable = true;
     g_glowFailed = false;
     g_gradingFailed = false;
+    g_frameRead = FrameRead();
+}
+
+void ForeverLookBeforeEarlyFog()
+{
+    ReadFrameAndFeedGlowOnce();
 }
 
 void ForeverLookAtWorldDone()
 {
-    ForeverLookFrame frame;
-    if (!ReadFrame(frame))
+    if (!ReadFrameAndFeedGlowOnce())
     {
-        FailGlow();
         g_grading = GradingFrame();
         return;
     }
-    const Config& cfg = GlobalConfig().Get();
     __try
     {
-        FeedGlow(frame, cfg);
-        RecordGlowStatus();
-        LogGlowOverride();
-    }
-    __except (ForeverLookFilter(GetExceptionCode(), "the Forever glow"))
-    {
-        FailGlow();
-    }
-    __try
-    {
-        g_grading = PrepareGrading(frame, cfg);
+        g_grading = PrepareGrading(g_frameRead.frame, GlobalConfig().Get());
     }
     __except (ForeverLookFilter(GetExceptionCode(), "colour grading"))
     {
@@ -417,6 +447,7 @@ void ForeverLookAtFrameEnd()
         g_gradingFailed = true;
         g_grading = GradingFrame();
     }
+    g_frameRead = FrameRead();
     LogDebugSummary();
 }
 

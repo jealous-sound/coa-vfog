@@ -40,6 +40,7 @@ uint8_t ForeverGlowByte(uint8_t clientByte, float foreverGlow, float weight);
 
 void EnableForeverLook(FogDevice* (*device)(), bool glowPassColour, bool gradingPlacement);
 void UseTestForeverLookFrame(const ForeverLookFrame& frame);
+void ForeverLookBeforeEarlyFog();
 void ForeverLookAtWorldDone();
 void ForeverLookAtFrameEnd();
 bool DeliveredGlowThisFrame(float& amount);

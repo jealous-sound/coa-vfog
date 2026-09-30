@@ -15,6 +15,8 @@ constexpr DWORD kSceneStage = 0;
 constexpr DWORD kCurveStage = 1;
 constexpr DWORD kColourChannels = D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE;
 constexpr DWORD kEverySample = 0xFFFFFFFF;
+constexpr float kFullscreenTriangleLow = -1.5f;
+constexpr float kFullscreenTriangleHigh = 4.5f;
 
 struct RenderStateValue
 {
@@ -91,8 +93,9 @@ void BindPointSampled(IDirect3DDevice9* dev, DWORD stage, IDirect3DBaseTexture9*
 
 void DrawFullscreenTriangle(IDirect3DDevice9* dev)
 {
-    static const float kTriangle[3][4] = {
-        {-1.0f, -1.0f, 0.0f, 1.0f}, {-1.0f, 3.0f, 0.0f, 1.0f}, {3.0f, -1.0f, 0.0f, 1.0f}};
+    static const float kTriangle[3][4] = {{kFullscreenTriangleLow, kFullscreenTriangleLow, 0.0f, 1.0f},
+                                          {kFullscreenTriangleLow, kFullscreenTriangleHigh, 0.0f, 1.0f},
+                                          {kFullscreenTriangleHigh, kFullscreenTriangleLow, 0.0f, 1.0f}};
     dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 1, kTriangle, sizeof(kTriangle[0]));
 }
 }
