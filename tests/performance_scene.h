@@ -357,7 +357,13 @@ bool MeasureCases(Harness& h)
     D3DCAPS9 caps = {};
     h.d3d->GetAdapterIdentifier(0, 0, &adapter);
     h.dev->GetDeviceCaps(&caps);
+    MultisamplingStatus multisampling;
+    vf_test_multisampling(&multisampling);
     std::printf("1080p fog benchmark: %s; %s\n", adapter.Description, timer.Method());
+    if (multisampling.method && *multisampling.method)
+        std::printf("multisampling %dx kept, depth copied by %s\n", multisampling.samples, multisampling.method);
+    else
+        std::printf("multisampling off: %s\n", multisampling.off);
     std::printf("pixel shader slots %lu, executed instructions %lu; %d warmup and %d measured frames\n",
                 caps.MaxPixelShader30InstructionSlots, caps.MaxPShaderInstructionsExecuted,
                 kWarmupFrames, kMeasuredFrames);
@@ -419,7 +425,7 @@ bool MeasureCases(Harness& h)
 }
 }
 
-int RunPerformance()
+int RunPerformance(D3DMULTISAMPLE_TYPE samples)
 {
     WNDCLASSW windowClass = {};
     windowClass.lpfnWndProc = DefWindowProcW;
@@ -444,7 +450,8 @@ int RunPerformance()
     h.pp.BackBufferHeight = 1080;
     h.pp.BackBufferFormat = D3DFMT_X8R8G8B8;
     h.pp.EnableAutoDepthStencil = TRUE;
-    h.pp.AutoDepthStencilFormat = D3DFMT_D24S8;
+    h.pp.AutoDepthStencilFormat = kClientDepthFormat;
+    h.pp.MultiSampleType = samples;
     h.pp.hDeviceWindow = h.window;
     h.pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
     const DWORD flags = D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_PUREDEVICE | D3DCREATE_FPU_PRESERVE;

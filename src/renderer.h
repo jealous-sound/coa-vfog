@@ -4,6 +4,7 @@
 #include "engine.h"
 #include "fog_data.h"
 #include "gpu_timing.h"
+#include "msaa_depth.h"
 
 #include <d3d9.h>
 
@@ -17,8 +18,7 @@ public:
     void ReleaseDefaultPool();
     void ReleaseAll();
 
-    bool Render(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* boundDepthStencil,
-                const FrameInputs& in, const Config& cfg);
+    bool Render(IDirect3DDevice9* dev, const SceneDepth& depth, const FrameInputs& in, const Config& cfg);
 
     const char* LastSkipReason() const { return m_skip; }
     bool AdaptiveLightingHistory() const { return m_adaptiveLightingHistory; }
@@ -35,6 +35,13 @@ private:
     };
 
     bool EnsureShaders(IDirect3DDevice9* dev);
+    bool EnsureSplitComposites(IDirect3DDevice9* dev);
+    void ReleaseSplitComposites();
+    IDirect3DPixelShader9* CompositeShader(bool lit, bool splitSamples, int quality) const;
+    void MarkSilhouetteSamples(IDirect3DDevice9* dev, IDirect3DSurface9* sampleDepth, const D3DVIEWPORT9& vp);
+    void DrawSamplesMarked(IDirect3DDevice9* dev, DWORD marker, IDirect3DPixelShader9* shader, const float* side);
+    void DrawCompositeBySampleDepth(IDirect3DDevice9* dev, IDirect3DSurface9* sampleDepth, const D3DVIEWPORT9& vp,
+                                    bool lit, int quality, bool overwrites);
     bool EnsureStateBlock(IDirect3DDevice9* dev);
     bool EnsureTargets(IDirect3DDevice9* dev, UINT lowW, UINT lowH, UINT rayW, UINT rayH);
     bool EnsureSceneCopy(IDirect3DDevice9* dev, IDirect3DSurface9* target, UINT w, UINT h);
@@ -54,7 +61,7 @@ private:
                          const float* toLightInView, const float* sunPx, float rayStrength);
     void DrawFullscreen(IDirect3DDevice9* dev);
     void BindTexture(IDirect3DDevice9* dev, DWORD stage, IDirect3DBaseTexture9* tex, bool linear);
-    bool RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* target,
+    bool RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDirect3DSurface9* target,
                       const D3DSURFACE_DESC& depthDesc, const FrameInputs& in, const Config& cfg);
 
     IDirect3DVertexShader9* m_vs = nullptr;
@@ -65,6 +72,10 @@ private:
     IDirect3DPixelShader9* m_historyDepthShader = nullptr;
     IDirect3DPixelShader9* m_composite[3] = {};
     IDirect3DPixelShader9* m_litComposite[3] = {};
+    IDirect3DPixelShader9* m_silhouetteMask = nullptr;
+    IDirect3DPixelShader9* m_splitComposite[3] = {};
+    IDirect3DPixelShader9* m_litSplitComposite[3] = {};
+    bool m_splitCompositesUnavailable = false;
     IDirect3DPixelShader9* m_rayMask = nullptr;
     IDirect3DPixelShader9* m_rayBlur = nullptr;
     IDirect3DPixelShader9* m_probe = nullptr;

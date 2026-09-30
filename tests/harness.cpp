@@ -4,6 +4,7 @@
 #include "fog_model.h"
 #include "gpu_timing.h"
 #include "log.h"
+#include "msaa_depth.h"
 #include "noise_volume.h"
 #include "water_data.h"
 #include "water_fft.h"
@@ -64,10 +65,15 @@ extern "C" __declspec(dllimport) void __cdecl vf_test_fail_water_mask_uploads(in
 extern "C" __declspec(dllimport) int __cdecl vf_test_water_masks_uploaded();
 extern "C" __declspec(dllimport) void __cdecl vf_test_force_water_shading_variant(int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_water_shading_variant();
+extern "C" __declspec(dllimport) void __cdecl vf_test_force_depth_copy_method(int);
+extern "C" __declspec(dllimport) int __cdecl vf_test_read_scene_depth(const DepthTexel*, int, float*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_multisampling(MultisamplingStatus*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_probe_depth_copy(IDirect3D9*, DepthCopyProbe*);
 
 namespace
 {
 constexpr D3DFORMAT kIntz = static_cast<D3DFORMAT>(MAKEFOURCC('I', 'N', 'T', 'Z'));
+constexpr D3DFORMAT kClientDepthFormat = D3DFMT_D24X8;
 constexpr float kPi = 3.14159265f;
 constexpr float kNear = 0.4f;
 constexpr float kFar = 1000.0f;
@@ -240,6 +246,19 @@ struct Image
     }
 };
 
+IDirect3DSurface9* ResolvedCopy(IDirect3DDevice9* dev, IDirect3DSurface9* target, const D3DSURFACE_DESC& desc)
+{
+    IDirect3DSurface9* resolved = nullptr;
+    if (SUCCEEDED(dev->CreateRenderTarget(desc.Width, desc.Height, desc.Format, D3DMULTISAMPLE_NONE, 0, FALSE,
+                                          &resolved, nullptr)) &&
+        SUCCEEDED(dev->StretchRect(target, nullptr, resolved, nullptr, D3DTEXF_NONE)))
+        return resolved;
+    if (resolved)
+        resolved->Release();
+    target->AddRef();
+    return target;
+}
+
 Image Capture(IDirect3DDevice9* dev)
 {
     Image img;
@@ -248,6 +267,12 @@ Image Capture(IDirect3DDevice9* dev)
     dev->GetRenderTarget(0, &bb);
     D3DSURFACE_DESC desc;
     bb->GetDesc(&desc);
+    if (desc.MultiSampleType != D3DMULTISAMPLE_NONE)
+    {
+        IDirect3DSurface9* resolved = ResolvedCopy(dev, bb, desc);
+        bb->Release();
+        bb = resolved;
+    }
     dev->CreateOffscreenPlainSurface(desc.Width, desc.Height, desc.Format, D3DPOOL_SYSTEMMEM, &sys, nullptr);
     dev->GetRenderTargetData(bb, sys);
     D3DLOCKED_RECT lr;
@@ -390,6 +415,7 @@ struct Harness
     IDirect3DPixelShader9* enginePs = nullptr;
     IDirect3DVertexDeclaration9* engineDecl = nullptr;
     D3DCOLOR clearColor = 0xFF6FA0DC;
+    DWORD clearFlags = D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL;
 
     void CreateEngineObjects()
     {
@@ -425,7 +451,7 @@ struct Harness
         dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
         for (DWORD t = 0; t < kFogPassTextureStages; ++t)
             dev->SetTexture(t, nullptr);
-        dev->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL, clearColor, 1.0f, 0);
+        dev->Clear(0, nullptr, clearFlags, clearColor, 1.0f, 0);
     }
 
     void DrawScene(Vec3 eye, const float* view, const float* engineProj, const D3DVIEWPORT9& vp)
@@ -1543,6 +1569,7 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "water_settings_checks.h"
 #include "water_fft_checks.h"
 #include "water_checks.h"
+#include "multisampling_checks.h"
 
 void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3 at,
                                    const float* proj, const D3DVIEWPORT9& world)
@@ -1615,10 +1642,13 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     if (!h.d3d)
         return 1;
 
+    Config withoutMultisampling = {};
+    withoutMultisampling.multisampling = false;
+    vf_test_set_config(&withoutMultisampling);
     D3DMULTISAMPLE_TYPE ms = D3DMULTISAMPLE_4_SAMPLES;
     Check(h.d3d->CheckDeviceMultiSampleType(0, D3DDEVTYPE_HAL, D3DFMT_X8R8G8B8, TRUE, ms, nullptr) ==
               D3DERR_NOTAVAILABLE,
-          "multisampling reported unavailable while fog is enabled");
+          "with Multisampling=0 multisampling is reported unavailable while fog is enabled");
 
     h.pp.Windowed = TRUE;
     h.pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
@@ -1626,7 +1656,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     h.pp.BackBufferHeight = 720;
     h.pp.BackBufferFormat = D3DFMT_X8R8G8B8;
     h.pp.EnableAutoDepthStencil = TRUE;
-    h.pp.AutoDepthStencilFormat = D3DFMT_D24S8;
+    h.pp.AutoDepthStencilFormat = kClientDepthFormat;
     h.pp.hDeviceWindow = h.window;
     h.pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
     DWORD engineFlags = D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_PUREDEVICE | D3DCREATE_FPU_PRESERVE;
@@ -1647,7 +1677,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     h.dev->GetDeviceCaps(&caps);
     std::printf("     adapter %s, PS3 slots %lu, executed instructions %lu\n", adapter.Description,
                 caps.MaxPixelShader30InstructionSlots, caps.MaxPShaderInstructionsExecuted);
-    Check(h.pp.EnableAutoDepthStencil == TRUE && h.pp.AutoDepthStencilFormat == D3DFMT_D24S8,
+    Check(h.pp.EnableAutoDepthStencil == TRUE && h.pp.AutoDepthStencilFormat == kClientDepthFormat,
           "engine-visible depth parameters preserved");
     IDirect3DSurface9* depth = nullptr;
     h.dev->GetDepthStencilSurface(&depth);
@@ -2043,6 +2073,8 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     ULONG devRefs = h.dev->Release();
     ULONG d3dRefs = h.d3d->Release();
     Check(devRefs == 0 && d3dRefs == 0, "wrapper reference counts reach zero");
+    multisampling_checks::CheckMultisampling(realCreate, h.window, outDir, FullPath(iniPath));
+    vf_test_set_config(&restored);
     DestroyWindow(h.window);
     CoUninitialize();
     std::printf("%s (%d failure%s)\n", g_failures ? "FAILED" : "OK", g_failures, g_failures == 1 ? "" : "s");
@@ -2330,7 +2362,7 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
     h.pp.BackBufferHeight = kHarbourHeight;
     h.pp.BackBufferFormat = D3DFMT_X8R8G8B8;
     h.pp.EnableAutoDepthStencil = TRUE;
-    h.pp.AutoDepthStencilFormat = D3DFMT_D24S8;
+    h.pp.AutoDepthStencilFormat = kClientDepthFormat;
     h.pp.hDeviceWindow = h.window;
     h.pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
     DWORD engineFlags = D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_PUREDEVICE | D3DCREATE_FPU_PRESERVE;
@@ -2564,8 +2596,11 @@ int wmain(int argc, wchar_t** argv)
     std::string waterData = "waterdata.bin";
     std::wstring ini = L"CoAVolFog.ini";
     std::wstring scene;
+    D3DMULTISAMPLE_TYPE samples = D3DMULTISAMPLE_NONE;
     for (int i = 1; i + 1 < argc; ++i)
     {
+        if (std::wcscmp(argv[i], L"--samples") == 0 && _wtoi(argv[i + 1]) > 1)
+            samples = static_cast<D3DMULTISAMPLE_TYPE>(_wtoi(argv[i + 1]));
         if (std::wcscmp(argv[i], L"--out") == 0)
             out = argv[i + 1];
         if (std::wcscmp(argv[i], L"--data") == 0)
@@ -2592,7 +2627,7 @@ int wmain(int argc, wchar_t** argv)
     if (scene == L"harbour")
         return RunHarbour(out, data);
     if (scene == L"performance")
-        return RunPerformance();
+        return RunPerformance(samples);
     if (!scene.empty())
     {
         std::printf("unknown scene %ls (known: harbour, performance)\n", scene.c_str());

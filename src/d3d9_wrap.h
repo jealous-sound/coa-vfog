@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "engine.h"
+#include "msaa_depth.h"
 #include "water_types.h"
 
 #include <d3d9.h>
@@ -15,6 +16,8 @@ void AllowFogOnNewDevices(bool allowedOnNewDevices);
 
 class FogDevice;
 FogDevice* LatestFogDevice();
+MultisamplingStatus CurrentMultisamplingStatus();
+bool ReadSceneDepth(FogDevice* device, const DepthTexel* texels, int count, float* values);
 FogDevice* WrapperOrLatestFogDevice(void* gameDevice);
 bool IsWrapperOf(FogDevice* device, void* gameDevice);
 IDirect3DDevice9* RealDevice(FogDevice* device);

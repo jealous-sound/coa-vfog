@@ -11,6 +11,9 @@
 #include "ps_lit_composite_low.h"
 #include "ps_lit_composite_mid.h"
 #include "ps_lit_composite_high.h"
+#include "ps_lit_split_composite_high.h"
+#include "ps_lit_split_composite_low.h"
+#include "ps_lit_split_composite_mid.h"
 #include "ps_lit_march_high.h"
 #include "ps_lit_march_low.h"
 #include "ps_lit_march_mid.h"
@@ -20,6 +23,10 @@
 #include "ps_probe.h"
 #include "ps_ray_blur.h"
 #include "ps_ray_mask.h"
+#include "ps_silhouette_mask.h"
+#include "ps_split_composite_high.h"
+#include "ps_split_composite_low.h"
+#include "ps_split_composite_mid.h"
 #include "ps_temporal.h"
 #include "ps_history_depth.h"
 #include "vs_fullscreen.h"
@@ -32,7 +39,13 @@
 
 namespace
 {
-constexpr UINT kPixelConstants = 99;
+constexpr UINT kPixelConstants = 100;
+constexpr UINT kSampleSideRegister = 99;
+constexpr int kQualityLevels = 3;
+constexpr DWORD kAllStencilBits = 0xFF;
+constexpr DWORD kUnmarkedSamples = 0;
+constexpr DWORD kNearSamples = 1;
+constexpr DWORD kFarSamples = ~kUnmarkedSamples & kAllStencilBits;
 constexpr DWORD kStages = 10;
 constexpr UINT kRayScale = 4;
 constexpr float kMinViewportDepthExtent = 0.01f;
@@ -60,7 +73,9 @@ const D3DRENDERSTATETYPE kRenderStates[] = {
     D3DRS_SRCBLEND,         D3DRS_DESTBLEND,     D3DRS_BLENDOP,           D3DRS_SEPARATEALPHABLENDENABLE,
     D3DRS_CULLMODE,         D3DRS_STENCILENABLE, D3DRS_TWOSIDEDSTENCILMODE, D3DRS_SCISSORTESTENABLE,
     D3DRS_COLORWRITEENABLE, D3DRS_SRGBWRITEENABLE, D3DRS_FOGENABLE,       D3DRS_CLIPPLANEENABLE,
-    D3DRS_FILLMODE,
+    D3DRS_FILLMODE,         D3DRS_ZFUNC,         D3DRS_STENCILFUNC,       D3DRS_STENCILREF,
+    D3DRS_STENCILMASK,      D3DRS_STENCILWRITEMASK, D3DRS_STENCILPASS,    D3DRS_STENCILFAIL,
+    D3DRS_STENCILZFAIL,
 };
 
 const D3DSAMPLERSTATETYPE kSamplerStates[] = {
@@ -249,6 +264,8 @@ void Renderer::ReleaseAll()
         SafeRelease(ps);
     for (auto*& ps : m_litComposite)
         SafeRelease(ps);
+    ReleaseSplitComposites();
+    m_splitCompositesUnavailable = false;
     SafeRelease(m_rayMask);
     SafeRelease(m_rayBlur);
     SafeRelease(m_probe);
@@ -355,6 +372,121 @@ bool Renderer::EnsureShaders(IDirect3DDevice9* dev)
     }
     LogShaderCaps(dev, LogLevel::Info);
     return true;
+}
+
+void Renderer::ReleaseSplitComposites()
+{
+    SafeRelease(m_silhouetteMask);
+    for (auto*& ps : m_splitComposite)
+        SafeRelease(ps);
+    for (auto*& ps : m_litSplitComposite)
+        SafeRelease(ps);
+}
+
+bool Renderer::EnsureSplitComposites(IDirect3DDevice9* dev)
+{
+    if (m_silhouetteMask)
+        return true;
+    if (m_splitCompositesUnavailable)
+        return false;
+    const BYTE* const code[2][kQualityLevels] = {
+        {g_ps_split_composite_low, g_ps_split_composite_mid, g_ps_split_composite_high},
+        {g_ps_lit_split_composite_low, g_ps_lit_split_composite_mid, g_ps_lit_split_composite_high},
+    };
+    IDirect3DPixelShader9** const shaders[2] = {m_splitComposite, m_litSplitComposite};
+    HRESULT result = D3D_OK;
+    for (int lit = 0; lit < 2 && SUCCEEDED(result); ++lit)
+        for (int quality = 0; quality < kQualityLevels && SUCCEEDED(result); ++quality)
+            result = dev->CreatePixelShader(reinterpret_cast<const DWORD*>(code[lit][quality]), &shaders[lit][quality]);
+    if (SUCCEEDED(result))
+        result = dev->CreatePixelShader(reinterpret_cast<const DWORD*>(g_ps_silhouette_mask), &m_silhouetteMask);
+    if (SUCCEEDED(result))
+        return true;
+    ReleaseSplitComposites();
+    if (dev->TestCooperativeLevel() == D3D_OK)
+    {
+        m_splitCompositesUnavailable = true;
+        VF_LOG_ERROR("the sample-split composite could not be created (HRESULT 0x%08lX); multisampled silhouettes take "
+                     "the fog of one sample",
+                     static_cast<unsigned long>(result));
+    }
+    return false;
+}
+
+IDirect3DPixelShader9* Renderer::CompositeShader(bool lit, bool splitSamples, int quality) const
+{
+    const int index = std::clamp(quality, 1, kQualityLevels) - 1;
+    if (splitSamples)
+        return (lit ? m_litSplitComposite : m_splitComposite)[index];
+    return (lit ? m_litComposite : m_composite)[index];
+}
+
+void Renderer::MarkSilhouetteSamples(IDirect3DDevice9* dev, IDirect3DSurface9* sampleDepth, const D3DVIEWPORT9& vp)
+{
+    D3DVIEWPORT9 fullDepthRange = vp;
+    fullDepthRange.MinZ = 0.0f;
+    fullDepthRange.MaxZ = 1.0f;
+    const D3DRECT world = {static_cast<LONG>(vp.X), static_cast<LONG>(vp.Y), static_cast<LONG>(vp.X + vp.Width),
+                           static_cast<LONG>(vp.Y + vp.Height)};
+    DWORD colourWrites = 0;
+    dev->GetRenderState(D3DRS_COLORWRITEENABLE, &colourWrites);
+    dev->SetDepthStencilSurface(sampleDepth);
+    dev->SetViewport(&fullDepthRange);
+    dev->Clear(1, &world, D3DCLEAR_STENCIL, 0, 1.0f, kUnmarkedSamples);
+    dev->SetPixelShader(m_silhouetteMask);
+    dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0);
+    dev->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+    dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESS);
+    dev->SetRenderState(D3DRS_STENCILENABLE, TRUE);
+    dev->SetRenderState(D3DRS_STENCILFUNC, D3DCMP_ALWAYS);
+    dev->SetRenderState(D3DRS_STENCILREF, kNearSamples);
+    dev->SetRenderState(D3DRS_STENCILMASK, kAllStencilBits);
+    dev->SetRenderState(D3DRS_STENCILWRITEMASK, kAllStencilBits);
+    dev->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_INVERT);
+    dev->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_REPLACE);
+    dev->SetRenderState(D3DRS_STENCILFAIL, D3DSTENCILOP_KEEP);
+    DrawFullscreen(dev);
+    dev->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
+    dev->SetRenderState(D3DRS_COLORWRITEENABLE, colourWrites);
+    dev->SetRenderState(D3DRS_STENCILFUNC, D3DCMP_EQUAL);
+    dev->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_KEEP);
+    dev->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_KEEP);
+    dev->SetRenderState(D3DRS_STENCILWRITEMASK, 0);
+}
+
+void Renderer::DrawSamplesMarked(IDirect3DDevice9* dev, DWORD marker, IDirect3DPixelShader9* shader,
+                                 const float* side)
+{
+    dev->SetRenderState(D3DRS_STENCILREF, marker);
+    dev->SetPixelShader(shader);
+    if (side)
+        dev->SetPixelShaderConstantF(kSampleSideRegister, side, 1);
+    DrawFullscreen(dev);
+}
+
+void Renderer::DrawCompositeBySampleDepth(IDirect3DDevice9* dev, IDirect3DSurface9* sampleDepth,
+                                          const D3DVIEWPORT9& vp, bool lit, int quality, bool overwrites)
+{
+    const float ownSideDrawn = overwrites ? 1.0f : 0.0f;
+    const Float4 nearSide = {0.0f, ownSideDrawn, 0.0f, 0.0f};
+    const Float4 farSide = {1.0f, ownSideDrawn, 0.0f, 0.0f};
+    MarkSilhouetteSamples(dev, sampleDepth, vp);
+    if (overwrites)
+    {
+        dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+        dev->SetDepthStencilSurface(nullptr);
+        dev->SetPixelShader(CompositeShader(lit, false, quality));
+        DrawFullscreen(dev);
+        dev->SetDepthStencilSurface(sampleDepth);
+        dev->SetRenderState(D3DRS_STENCILENABLE, TRUE);
+    }
+    else
+        DrawSamplesMarked(dev, kUnmarkedSamples, CompositeShader(lit, false, quality), nullptr);
+    DrawSamplesMarked(dev, kNearSamples, CompositeShader(lit, true, quality), &nearSide.x);
+    DrawSamplesMarked(dev, kFarSamples, CompositeShader(lit, true, quality), &farSide.x);
+    dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+    dev->SetDepthStencilSurface(nullptr);
+    dev->SetViewport(&vp);
 }
 
 bool Renderer::EnsureStateBlock(IDirect3DDevice9* dev)
@@ -670,8 +802,7 @@ void Renderer::LogFrameSummary(IDirect3DDevice9* dev, long long now, const Frame
     }
 }
 
-bool Renderer::Render(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* boundDepthStencil,
-                      const FrameInputs& in, const Config& cfg)
+bool Renderer::Render(IDirect3DDevice9* dev, const SceneDepth& depth, const FrameInputs& in, const Config& cfg)
 {
     m_skip = "";
     if (dev->TestCooperativeLevel() != D3D_OK)
@@ -691,14 +822,14 @@ bool Renderer::Render(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, ID
     D3DSURFACE_DESC depthDesc = {};
     if (!saved[0])
         Skip("no render target");
-    else if (savedDepth != boundDepthStencil)
+    else if (!depth.texture || savedDepth != depth.bound)
         Skip("fog depth surface not bound");
-    else if (FAILED(saved[0]->GetDesc(&rtDesc)) || FAILED(boundDepthStencil->GetDesc(&depthDesc)))
+    else if (FAILED(saved[0]->GetDesc(&rtDesc)) || FAILED(depth.bound->GetDesc(&depthDesc)))
         Skip("surface description failed");
     else if (rtDesc.Width != depthDesc.Width || rtDesc.Height != depthDesc.Height)
         Skip("render target and depth sizes differ");
-    else if (rtDesc.MultiSampleType != D3DMULTISAMPLE_NONE)
-        Skip("multisampled render target");
+    else if (!SameSampleCount(rtDesc, depthDesc))
+        Skip("render target and depth sample counts differ");
     else
     {
         IDirect3DVertexBuffer9* stream = nullptr;
@@ -709,7 +840,7 @@ bool Renderer::Render(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, ID
         for (DWORD i = 1; i < 4; ++i)
             if (saved[i])
                 dev->SetRenderTarget(i, nullptr);
-        ok = RenderPasses(dev, depthTexture, saved[0], depthDesc, in, cfg);
+        ok = RenderPasses(dev, depth, saved[0], depthDesc, in, cfg);
         dev->SetRenderTarget(0, saved[0]);
         for (DWORD i = 1; i < 4; ++i)
             if (saved[i])
@@ -726,7 +857,7 @@ bool Renderer::Render(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, ID
     return ok;
 }
 
-bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* target,
+bool Renderer::RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDirect3DSurface9* target,
                             const D3DSURFACE_DESC& depthDesc, const FrameInputs& in, const Config& cfg)
 {
     const D3DVIEWPORT9 vp = in.viewport;
@@ -810,6 +941,12 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
 
     if (LogEnabled(LogLevel::Info))
         m_gpuTimer.Begin(dev);
+    if (!depth.Refresh(dev))
+    {
+        m_gpuTimer.Cancel();
+        return Skip("multisampled depth copy failed");
+    }
+    IDirect3DTexture9* const depthTexture = depth.texture;
     dev->SetDepthStencilSurface(nullptr);
     dev->SetVertexShader(m_vs);
     dev->SetVertexDeclaration(m_decl);
@@ -964,7 +1101,8 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     dev->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD);
     dev->SetRenderState(D3DRS_COLORWRITEENABLE,
                         D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
-    dev->SetPixelShader((marchesLocalLights ? m_litComposite : m_composite)[cfg.quality - 1]);
+    const bool splitSamples = depth.Multisampled() && EnsureSplitComposites(dev);
+    dev->SetPixelShader(CompositeShader(marchesLocalLights, false, cfg.quality));
     dev->SetPixelShaderConstantF(9, &celestialLight.x, 1);
     dev->SetPixelShaderConstantF(11, &march.x, 1);
     dev->SetPixelShaderConstantF(12, &fog.layers[0].start, 6 * kFogLayers);
@@ -981,7 +1119,10 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     BindTexture(dev, 2, m_rays[1], true);
     BindTexture(dev, 3, sceneBlend ? m_sceneCopy : nullptr, false);
     BindTexture(dev, 4, m_marchTarget, false);
-    DrawFullscreen(dev);
+    if (splitSamples)
+        DrawCompositeBySampleDepth(dev, depth.bound, vp, marchesLocalLights, cfg.quality, sceneBlend);
+    else
+        DrawFullscreen(dev);
     m_gpuTimer.End();
 
     if (DepthProbeDue(now))

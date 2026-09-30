@@ -4,6 +4,7 @@
 #include "engine.h"
 #include "fog_model.h"
 #include "gpu_timing.h"
+#include "msaa_depth.h"
 #include "water_fft.h"
 #include "water_types.h"
 
@@ -45,11 +46,11 @@ public:
     void ReleaseDefaultPool();
     void ReleaseAll();
 
-    bool Begin(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* depthSurface,
-               const FrameInputs& in, const WaterInputs& water, const Config& cfg);
+    bool Begin(IDirect3DDevice9* dev, const SceneDepth& depth, const FrameInputs& in, const WaterInputs& water,
+               const Config& cfg);
     void Tag(IDirect3DDevice9* dev, WaterClass waterClass);
     void Untag(IDirect3DDevice9* dev);
-    bool End(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* depthSurface);
+    bool End(IDirect3DDevice9* dev, const SceneDepth& depth);
     void Abort(IDirect3DDevice9* dev);
 
     bool Armed() const { return m_armed; }
@@ -148,7 +149,7 @@ private:
     void BindClassTextures(IDirect3DDevice9* dev, const WaterPreset& preset);
     void FillClassConstants(ShadingConstants& c, const WaterPreset& preset, WaterClass waterClass,
                             double seconds) const;
-    bool ShadeTaggedWater(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* depthSurface);
+    bool ShadeTaggedWater(IDirect3DDevice9* dev, const SceneDepth& depth);
     void BuildReflectionFog();
     void AddToSummary(bool shaded);
     void LogSummaryWhenDue(IDirect3DDevice9* dev);
