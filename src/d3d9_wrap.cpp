@@ -144,6 +144,9 @@ public:
         m_water.ReleaseDefaultPool();
     }
     const WaterRenderer& Water() const { return m_water; }
+    bool Grade(const D3DVIEWPORT9& world, const float* curve, float strength, const char** skip);
+    void ReleaseGrading() { m_grading.ReleaseDefaultPool(); }
+    GradingStats Grading() const { return m_grading.Stats(); }
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** out) override;
     ULONG STDMETHODCALLTYPE AddRef() override;
@@ -565,6 +568,7 @@ private:
     MultisamplingStatus m_multisampling;
     Renderer m_renderer;
     WaterRenderer m_water;
+    GradingRenderer m_grading;
 };
 
 namespace
@@ -916,6 +920,7 @@ FogDevice::~FogDevice()
     DetachOverlay(m_real);
     Unregister(this);
     AbortWater();
+    m_grading.ReleaseAll();
     m_water.ReleaseAll();
     m_renderer.ReleaseAll();
     ReleaseDepth();
@@ -1065,6 +1070,7 @@ HRESULT FogDevice::Reset(D3DPRESENT_PARAMETERS* pp)
     ReleaseOverlayDeviceObjects(m_real);
     AbortWater();
     m_water.ReleaseDefaultPool();
+    m_grading.ReleaseDefaultPool();
     if (!m_fog)
         return m_real->Reset(pp);
 
@@ -1142,6 +1148,14 @@ void FogDevice::AbortWater()
 {
     OverrideDepthWrite(m_waterForcesDepthWrite, false);
     m_water.Abort(m_real);
+}
+
+bool FogDevice::Grade(const D3DVIEWPORT9& world, const float* curve, float strength, const char** skip)
+{
+    const bool graded = m_grading.Grade(m_real, world, curve, strength);
+    if (skip)
+        *skip = graded ? "" : m_grading.LastSkipReason();
+    return graded;
 }
 
 void SetRealDirect3DCreate9(Direct3DCreate9Fn fn)
@@ -1304,4 +1318,25 @@ void ReadWaterRippleStats(FogDevice* device, WaterRippleStats& out)
 void ReadWaterRippleShading(FogDevice* device, WaterRippleShading& out)
 {
     out = device ? device->Water().RippleShading() : WaterRippleShading();
+}
+
+bool GradeWorld(FogDevice* device, const D3DVIEWPORT9& world, const float* curve, float strength,
+                const char** skipReason)
+{
+    if (device)
+        return device->Grade(world, curve, strength, skipReason);
+    if (skipReason)
+        *skipReason = "no fog device";
+    return false;
+}
+
+void ReleaseGrading(FogDevice* device)
+{
+    if (device)
+        device->ReleaseGrading();
+}
+
+GradingStats GradingStatsOf(FogDevice* device)
+{
+    return device ? device->Grading() : GradingStats();
 }
