@@ -5,6 +5,7 @@
 #include "gpu_timing.h"
 #include "log.h"
 #include "noise_volume.h"
+#include "water_contacts.h"
 #include "water_data.h"
 #include "water_fft.h"
 #include "water_spectrum.h"
@@ -1543,6 +1544,7 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "water_settings_checks.h"
 #include "water_fft_checks.h"
 #include "water_mask_packing_checks.h"
+#include "water_contact_checks.h"
 #include "water_checks.h"
 
 void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3 at,
@@ -1679,6 +1681,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckSunOccluderLeavesFogLit(h);
     water_fft_checks::CheckWaterFft(h.dev);
     water_mask_packing_checks::CheckWaveFoamMaskPacking(h.dev);
+    water_contact_checks::CheckWaterContacts();
     const float aspect = 1280.0f / 688.0f;
     const D3DVIEWPORT9 world = {0, 0, 1280, 688, 0.0f, 1.0f};
     float proj[16];
