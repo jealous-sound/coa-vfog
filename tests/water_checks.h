@@ -84,6 +84,7 @@ constexpr unsigned kAllWaterResources = 0x7;
 constexpr int kFoamClockSteps = 20;
 constexpr double kFoamClockStep = 0.1;
 constexpr int kFoamCoverageDebugView = 2;
+constexpr int32_t kSolidFoamMask = 0;
 constexpr float kWhitecapWind = 8.0f;
 constexpr float kBeachWaterlineX = kBasinFarX - (kLandZ - kWaterSurfaceZ) * (kBasinFarX - kBeachStartX) /
                                                     (kLandZ - kBasinFloorZ);
@@ -2239,6 +2240,44 @@ void CheckCrestFoamAccumulates(BasinClient& client, const Config& base, const Im
     AssignWaterData(MakeSyntheticWaterData());
 }
 
+SyntheticWaterData SingleWaveFoamMask(int slot)
+{
+    SyntheticWaterData data = WaveFoamOnlyLake();
+    for (WaterPreset& preset : data.presets)
+    {
+        const bool waveFoam =
+            std::any_of(preset.masks, preset.masks + kWaveFoamMaskSlots, [](int32_t mask) { return mask >= 0; });
+        for (int wave = 0; waveFoam && wave < kWaveFoamMaskSlots; ++wave)
+            preset.masks[wave] = wave == slot ? kSolidFoamMask : kWaterNoIndex;
+    }
+    return data;
+}
+
+void CheckEachWaveFoamLayerReadsItsChannel(BasinClient& client, const Config& base, const Image& mask)
+{
+    bool rendered = true;
+    double coverage[kWaveFoamMaskSlots] = {};
+    for (int slot = 0; slot < kWaveFoamMaskSlots; ++slot)
+    {
+        rendered = AssignWaterData(SingleWaveFoamMask(slot)) && rendered;
+        WaterFrame frame;
+        const CrestFoamResult foam = AccumulateCrestFoam(client, WaterConfig(base), frame, mask);
+        rendered = rendered && foam.rendered;
+        coverage[slot] = foam.coverageAfter;
+    }
+    const double high = coverage[static_cast<int>(WaterMaskSlot::HighFoam)];
+    const double mid = coverage[static_cast<int>(WaterMaskSlot::MidFoam)];
+    const double low = coverage[static_cast<int>(WaterMaskSlot::LowFoam)];
+    std::printf("     crest foam coverage with only the high, mid or low wave-foam mask: %.0f, %.0f, %.0f\n", high,
+                mid, low);
+    Check(rendered && high > 0.0 && mid > high && low > mid,
+          "each wave-foam layer reads its own channel of the packed mask texture: a preset with only the high, mid or "
+          "low mask shades crest foam, weighted by f^4.5, f^1.5 and f^0.5");
+    const Config on = WaterConfig(base);
+    vf_test_set_config(&on);
+    AssignWaterData(MakeSyntheticWaterData());
+}
+
 void CheckRealDataViews(Harness& h, const Config& base, const std::string& waterDataPath, const std::wstring& outDir)
 {
     const bool loaded = vf_test_load_water_data(waterDataPath.c_str()) != 0;
@@ -2379,6 +2418,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     CheckReflectionsCarryTheirSourcesFog(h, base);
     CheckSkyReflectionsCarryTheSkysFog(h, base);
     CheckCrestFoamAccumulates(client, base, waterMask.image);
+    CheckEachWaveFoamLayerReadsItsChannel(client, base, waterMask.image);
     CheckResetKeepsWater(h, client, base);
     CheckRealDataViews(h, base, waterDataPath, outDir);
 
