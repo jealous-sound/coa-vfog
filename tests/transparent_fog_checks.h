@@ -922,8 +922,8 @@ void CheckWholeFrameFallbacks(Harness& h)
         const HookedFrame frame = RenderSettledHookedFrame(h, v, f.cfg, options);
         const Image direct = RenderWholeFrameDirectly(h, v, f.cfg, options);
         const int difference = LargestDifference(frame.image, direct, v.world);
-        const int glareDraws = frame.glarePassesBeforeTheFog + frame.glarePassesAtOwnCall;
-        const bool fellBack = PassedThrough(frame) && glareDraws == 1 && difference == 0;
+        const bool fellBack = PassedThrough(frame) && frame.glarePassesBeforeTheFog == 0 &&
+                              frame.glarePassesAtOwnCall == 1 && difference == 0;
         std::printf("     %s: M2 fog %s, glare drawn %d before the fog and %d at its own call, frame vs the fog "
                     "pass alone %d/255\n",
                     f.name, PassedThrough(frame) ? "passed through" : "rewritten", frame.glarePassesBeforeTheFog,
@@ -931,9 +931,9 @@ void CheckWholeFrameFallbacks(Harness& h)
         allFallBack = allFallBack && fellBack;
     }
     Check(allFallBack,
-          "with TransparentFog=1 a debug view, the sun marker, StockFog=0, a camera under water or a failed early "
-          "composite fall back to the single composite after the world with the M2 batch fog unarmed and one glare "
-          "draw");
+          "with TransparentFog=1 a debug view, the sun marker, StockFog=0, a camera under water or an early "
+          "composite whose depth is not bound fall back to the single composite after the world with the M2 batch "
+          "fog unarmed and the glare drawn once at its own call, as with TransparentFog=0");
 }
 
 void CheckEarlyCompositeFailureLogged(Harness& h)

@@ -75,8 +75,12 @@ the client's M2 shaders fog by; samples clamped to zero by the shader are refitt
 in-scatter over the opacity, exposed, rolled off, gamma-encoded and glow-compensated as the composite shows it. God
 rays are traced from the scene copied just before the early composite, the unfogged image the single composite traces
 them from, and added over the finished world at the end of the world render, over a new scene copy. Under water,
-with `StockFog=0`, a debug view or the sun marker, or when the early composite fails, the fog is drawn after the
-world as before. The fit is linear in depth, so it cannot follow the medium's height and distance-curve shape: in
+with `StockFog=0`, a debug view or the sun marker, or when the early composite cannot run, the fog is drawn after the
+world as before and the glare at its own call. The composite's preconditions (device ready, valid frame inputs, the
+fog's depth bound with the target's size and sample count, the world viewport inside the target) are checked before
+the glare is drawn; a failure only the draw itself finds (the multisampled depth copy, a fog target allocation, a
+view matrix that cannot be inverted) falls back to the fog after the world with that frame's glare already drawn
+before M2 pass 1. The fit is linear in depth, so it cannot follow the medium's height and distance-curve shape: in
 the harness it stays within 0.03 of the volumetric transmittance along the view axis and within 0.06 at the side of
 the view for thin homogeneous fog, ground fog and the Classic harbour sunset; each vertex is fogged by its own
 planar depth, as in the stock client.

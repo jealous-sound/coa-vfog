@@ -34,6 +34,7 @@ constexpr size_t kDrawnWaterClassesTextSize = 64;
 constexpr unsigned kFlatWavesBit = 1u << 31;
 constexpr const char* kCameraUnderLiquid = "camera under liquid";
 constexpr const char* kWorldNotCaptured = "the world render inputs were not captured";
+constexpr const char* kInvalidFrameInputs = "invalid frame inputs";
 constexpr DWORD kTransparentFogStatsIntervalMs = 60000;
 constexpr size_t kGlarePassEntryTextSize = 64;
 constexpr double kPercent = 100.0;
@@ -433,6 +434,31 @@ struct FogAttempt
     const char* skip;
 };
 
+struct WorldFogInputs
+{
+    bool valid;
+    bool cameraUnderLiquid;
+    FrameInputs in;
+};
+
+WorldFogInputs ReadWorldFogInputs(const Config& cfg)
+{
+    WorldFogInputs world = {};
+    world.valid = g_fogClient->frameInputs(world.in, cfg.localLights);
+    if (g_stockFogPushed)
+        UseClientFogRangeInsteadOfPushed(world.in);
+    world.cameraUnderLiquid = world.valid && world.in.inLiquid && !cfg.underwater;
+    return world;
+}
+
+FogAttempt RenderWorldFogFrom(FogDevice* device, const WorldFogInputs& world, const Config& cfg, FogPass pass)
+{
+    const char* skip = kInvalidFrameInputs;
+    const bool rendered =
+        world.valid && !world.cameraUnderLiquid && RenderFog(device, world.in, cfg, pass, &skip);
+    return {true, rendered, world.cameraUnderLiquid, skip};
+}
+
 FogAttempt RenderWorldFog(FogDevice* device, FogPass pass)
 {
     if (!device || !g_fogClient->worldCaptured())
@@ -441,14 +467,7 @@ FogAttempt RenderWorldFog(FogDevice* device, FogPass pass)
     ReloadConfigAfterInterval();
 
     const Config& cfg = GlobalConfig().Get();
-    FrameInputs in = {};
-    bool valid = g_fogClient->frameInputs(in, cfg.localLights);
-    if (g_stockFogPushed)
-        UseClientFogRangeInsteadOfPushed(in);
-    const char* skip = "invalid frame inputs";
-    const bool cameraUnderLiquid = valid && in.inLiquid && !cfg.underwater;
-    const bool rendered = valid && !cameraUnderLiquid && RenderFog(device, in, cfg, pass, &skip);
-    return {true, rendered, cameraUnderLiquid, skip};
+    return RenderWorldFogFrom(device, ReadWorldFogInputs(cfg), cfg, pass);
 }
 
 void RecordFogAttempt(const FogAttempt& attempt)
@@ -514,6 +533,16 @@ void NoteEarlyCompositeSkipped(const char* reason)
                  reason);
 }
 
+const char* EarlyCompositeUnready(FogDevice* device, const WorldFogInputs& world)
+{
+    if (!world.valid)
+        return kInvalidFrameInputs;
+    if (world.cameraUnderLiquid)
+        return kCameraUnderLiquid;
+    const char* skip = "";
+    return FogReadyToRender(device, world.in.viewport, &skip) ? nullptr : skip;
+}
+
 void DrawGlareBeforeTheFog()
 {
     g_transparentFog.glareDrawn = true;
@@ -546,11 +575,22 @@ void OnTransparentsBegin()
         NoteEarlyCompositeBlocked(cfg, blocked);
         return;
     }
+    if (!g_fogClient->worldCaptured())
+    {
+        NoteEarlyCompositeSkipped(kWorldNotCaptured);
+        return;
+    }
+    const WorldFogInputs world = ReadWorldFogInputs(cfg);
+    if (const char* unready = EarlyCompositeUnready(device, world))
+    {
+        NoteEarlyCompositeSkipped(unready);
+        return;
+    }
     DrawGlareBeforeTheFog();
-    const FogAttempt attempt = RenderWorldFog(device, FogPass::BeforeTransparents);
+    const FogAttempt attempt = RenderWorldFogFrom(device, world, cfg, FogPass::BeforeTransparents);
     if (!attempt.rendered)
     {
-        NoteEarlyCompositeSkipped(attempt.tried ? attempt.skip : kWorldNotCaptured);
+        NoteEarlyCompositeSkipped(attempt.skip);
         return;
     }
     g_transparentFogLog.Drawn();

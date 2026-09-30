@@ -235,6 +235,7 @@ char DepthClassLetter(float depthClass)
 }
 
 constexpr int kLoggedGradingInputs[] = {8, 16, 24};
+constexpr UINT kMinViewportSize = 16;
 constexpr float kMinGodRayStrength = 0.005f;
 constexpr float kFullscreenTriangleLow = -1.5f;
 constexpr float kFullscreenTriangleHigh = 4.5f;
@@ -274,6 +275,31 @@ void LogAuthoredExtras(const AuthoredFog& fog, const FogParams& drawn, const Con
                     n.tileYards[0], n.tileYards[1], n.velocity[0][0], n.velocity[0][1], n.velocity[0][2],
                     n.velocity[1][0], n.velocity[1][1], n.velocity[1][2], n.fade[0], n.fade[1], n.fade[2]);
     }
+}
+
+const char* UnusableTargets(IDirect3DSurface9* target, IDirect3DSurface9* boundDepth, const SceneDepth& depth,
+                            D3DSURFACE_DESC& depthDesc)
+{
+    D3DSURFACE_DESC rtDesc = {};
+    if (!target)
+        return "no render target";
+    if (!depth.texture || boundDepth != depth.bound)
+        return "fog depth surface not bound";
+    if (FAILED(target->GetDesc(&rtDesc)) || FAILED(depth.bound->GetDesc(&depthDesc)))
+        return "surface description failed";
+    if (rtDesc.Width != depthDesc.Width || rtDesc.Height != depthDesc.Height)
+        return "render target and depth sizes differ";
+    if (!SameSampleCount(rtDesc, depthDesc))
+        return "render target and depth sample counts differ";
+    return nullptr;
+}
+
+const char* ViewportOutsideTarget(const D3DVIEWPORT9& vp, const D3DSURFACE_DESC& depthDesc)
+{
+    if (vp.Width < kMinViewportSize || vp.Height < kMinViewportSize || vp.X + vp.Width > depthDesc.Width ||
+        vp.Y + vp.Height > depthDesc.Height)
+        return "world viewport outside the render target";
+    return nullptr;
 }
 }
 
@@ -389,6 +415,12 @@ bool Renderer::Skip(const char* reason)
 {
     m_skip = reason;
     m_historyValid = false;
+    return false;
+}
+
+bool Renderer::NotReady(const char* reason)
+{
+    m_skip = reason;
     return false;
 }
 
@@ -937,6 +969,26 @@ void Renderer::LogFrameSummary(IDirect3DDevice9* dev, long long now, const Frame
         LogAuthoredExtras(authored, fog, cfg);
 }
 
+bool Renderer::ReadyToRender(IDirect3DDevice9* dev, const SceneDepth& depth, const D3DVIEWPORT9& vp)
+{
+    m_skip = "";
+    if (dev->TestCooperativeLevel() != D3D_OK)
+        return NotReady("device not ready");
+    if (!EnsureShaders(dev) || !EnsureStateBlock(dev))
+        return false;
+    IDirect3DSurface9* target = nullptr;
+    IDirect3DSurface9* boundDepth = nullptr;
+    dev->GetRenderTarget(0, &target);
+    dev->GetDepthStencilSurface(&boundDepth);
+    D3DSURFACE_DESC depthDesc = {};
+    const char* unusable = UnusableTargets(target, boundDepth, depth, depthDesc);
+    if (!unusable)
+        unusable = ViewportOutsideTarget(vp, depthDesc);
+    SafeRelease(target);
+    SafeRelease(boundDepth);
+    return unusable ? NotReady(unusable) : true;
+}
+
 template <typename Passes>
 bool Renderer::WithClientStateSaved(IDirect3DDevice9* dev, const SceneDepth& depth, Passes passes)
 {
@@ -947,18 +999,9 @@ bool Renderer::WithClientStateSaved(IDirect3DDevice9* dev, const SceneDepth& dep
     dev->GetDepthStencilSurface(&savedDepth);
 
     bool ok = false;
-    D3DSURFACE_DESC rtDesc = {};
     D3DSURFACE_DESC depthDesc = {};
-    if (!saved[0])
-        Skip("no render target");
-    else if (!depth.texture || savedDepth != depth.bound)
-        Skip("fog depth surface not bound");
-    else if (FAILED(saved[0]->GetDesc(&rtDesc)) || FAILED(depth.bound->GetDesc(&depthDesc)))
-        Skip("surface description failed");
-    else if (rtDesc.Width != depthDesc.Width || rtDesc.Height != depthDesc.Height)
-        Skip("render target and depth sizes differ");
-    else if (!SameSampleCount(rtDesc, depthDesc))
-        Skip("render target and depth sample counts differ");
+    if (const char* unusable = UnusableTargets(saved[0], savedDepth, depth, depthDesc))
+        Skip(unusable);
     else
     {
         IDirect3DVertexBuffer9* stream = nullptr;
@@ -1131,8 +1174,8 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDir
                             FogPass pass)
 {
     const D3DVIEWPORT9 vp = in.viewport;
-    if (vp.Width < 16 || vp.Height < 16 || vp.X + vp.Width > depthDesc.Width || vp.Y + vp.Height > depthDesc.Height)
-        return Skip("world viewport outside the render target");
+    if (const char* outside = ViewportOutsideTarget(vp, depthDesc))
+        return Skip(outside);
 
     const UINT scale = cfg.quality == 1 ? 4u : 2u;
     const UINT lowW = (vp.Width + scale - 1) / scale;

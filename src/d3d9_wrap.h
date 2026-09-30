@@ -26,6 +26,7 @@ void ForceDepthWrite(FogDevice* device, bool force);
 void SuppressDepthWrite(FogDevice* device, bool suppress);
 bool RenderFog(FogDevice* device, const FrameInputs& in, const Config& cfg, const char** skipReason);
 bool RenderFog(FogDevice* device, const FrameInputs& in, const Config& cfg, FogPass pass, const char** skipReason);
+bool FogReadyToRender(FogDevice* device, const D3DVIEWPORT9& vp, const char** skipReason);
 bool RenderGodRaysAfterWorld(FogDevice* device, const char** skipReason);
 StockFogFit LastStockFogFit(FogDevice* device);
 bool AdaptiveLightingHistory(FogDevice* device);

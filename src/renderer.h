@@ -23,6 +23,7 @@ public:
     bool Render(IDirect3DDevice9* dev, const SceneDepth& depth, const FrameInputs& in, const Config& cfg,
                 FogPass pass = FogPass::WholeFrame);
     bool RenderGodRaysAfterWorld(IDirect3DDevice9* dev, const SceneDepth& depth);
+    bool ReadyToRender(IDirect3DDevice9* dev, const SceneDepth& depth, const D3DVIEWPORT9& vp);
 
     const StockFogFit& LastStockFogFit() const { return m_stockFogFit; }
     const char* LastSkipReason() const { return m_skip; }
@@ -81,6 +82,7 @@ private:
     bool EnsureSceneCopy(IDirect3DDevice9* dev, IDirect3DSurface9* target, UINT w, UINT h);
     bool CopyWorldViewport(IDirect3DDevice9* dev, IDirect3DSurface9* target, const D3DVIEWPORT9& vp);
     bool Skip(const char* reason);
+    bool NotReady(const char* reason);
     void LogLightChange(const FrameInputs& in, const AuthoredFog& fog, bool authored);
     bool DepthProbeDue(long long now) const;
     bool EnsureDepthProbe(IDirect3DDevice9* dev);

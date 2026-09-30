@@ -127,6 +127,7 @@ public:
     bool ReadSceneDepth(const DepthTexel* texels, int count, float* values);
     bool Render(const FrameInputs& in, const Config& cfg, FogPass pass, const char** skip);
     bool RenderGodRaysAfterWorld(const char** skip);
+    bool ReadyToRender(const D3DVIEWPORT9& vp, const char** skip);
     const StockFogFit& LastStockFogFit() const { return m_renderer.LastStockFogFit(); }
     bool AdaptiveLightingHistory() const { return m_renderer.AdaptiveLightingHistory(); }
     IDirect3DPixelShader9* DrawnFogMarch() const { return m_renderer.DrawnMarch(); }
@@ -1115,6 +1116,14 @@ bool FogDevice::Render(const FrameInputs& in, const Config& cfg, FogPass pass, c
     return ok;
 }
 
+bool FogDevice::ReadyToRender(const D3DVIEWPORT9& vp, const char** skip)
+{
+    const bool ready = FogActive() && m_renderer.ReadyToRender(m_real, Depth(), vp);
+    if (skip)
+        *skip = FogActive() ? m_renderer.LastSkipReason() : "fog inactive";
+    return ready;
+}
+
 bool FogDevice::RenderGodRaysAfterWorld(const char** skip)
 {
     const bool ok = FogActive() && m_renderer.RenderGodRaysAfterWorld(m_real, Depth());
@@ -1224,6 +1233,15 @@ bool RenderFog(FogDevice* device, const FrameInputs& in, const Config& cfg, cons
 bool RenderFog(FogDevice* device, const FrameInputs& in, const Config& cfg, FogPass pass, const char** skipReason)
 {
     return device && device->Render(in, cfg, pass, skipReason);
+}
+
+bool FogReadyToRender(FogDevice* device, const D3DVIEWPORT9& vp, const char** skipReason)
+{
+    if (device)
+        return device->ReadyToRender(vp, skipReason);
+    if (skipReason)
+        *skipReason = "no fog device";
+    return false;
 }
 
 bool RenderGodRaysAfterWorld(FogDevice* device, const char** skipReason)
