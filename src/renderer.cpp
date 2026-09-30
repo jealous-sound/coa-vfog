@@ -282,6 +282,8 @@ void Renderer::ReleaseAll()
 {
     ReleaseDefaultPool();
     m_unsupportedShaderDevice = nullptr;
+    m_drawnMarch = nullptr;
+    m_drawnComposite = nullptr;
     SafeRelease(m_vs);
     for (auto*& ps : m_march)
         SafeRelease(ps);
@@ -981,7 +983,8 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
     const bool marchesLocalLights = pointLightCount > 0;
     IDirect3DPixelShader9* const* marches = marchesLocalLights ? (samplesNoise ? m_litNoisyMarch : m_litMarch)
                                                                : (samplesNoise ? m_noisyMarch : m_march);
-    dev->SetPixelShader(marches[std::clamp(cfg.quality, 1, 3) - 1]);
+    m_drawnMarch = marches[std::clamp(cfg.quality, 1, 3) - 1];
+    dev->SetPixelShader(m_drawnMarch);
     dev->SetPixelShaderConstantF(53, &localControl.x, 1);
     BindTexture(dev, 8, m_localLightData, false);
     if (cfg.noiseAmount > 0.0f && !m_densityNoise)
@@ -1067,7 +1070,8 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTextu
                         D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
     IDirect3DPixelShader9* const* composites =
         marchesLocalLights ? m_litComposite : (samplesNoise ? m_noisyComposite : m_composite);
-    dev->SetPixelShader(composites[cfg.quality - 1]);
+    m_drawnComposite = composites[cfg.quality - 1];
+    dev->SetPixelShader(m_drawnComposite);
     dev->SetPixelShaderConstantF(9, &celestialLight.x, 1);
     dev->SetPixelShaderConstantF(11, &march.x, 1);
     const FogParams compositeMarchFog = marchesLocalLights ? WithMeanNoise(fog) : fog;

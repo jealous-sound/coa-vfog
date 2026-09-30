@@ -27,6 +27,8 @@ extern "C" __declspec(dllimport) void __cdecl vf_test_set_config(const Config*);
 extern "C" __declspec(dllimport) void __cdecl vf_test_get_config(Config*);
 extern "C" __declspec(dllimport) int __cdecl vf_test_render(const FrameInputs*, const char**);
 extern "C" __declspec(dllimport) int __cdecl vf_test_adaptive_lighting_history();
+extern "C" __declspec(dllimport) void __cdecl vf_test_drawn_fog_shaders(IDirect3DPixelShader9**,
+                                                                        IDirect3DPixelShader9**);
 extern "C" __declspec(dllimport) void __cdecl vf_test_force_depth_write(int);
 extern "C" __declspec(dllimport) void __cdecl vf_test_suppress_depth_write(int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_overlay_visible();
@@ -1531,11 +1533,11 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "fog_integration_checks.h"
 #include "local_lights_checks.h"
 #include "noise_variation_checks.h"
-#include "authored_noise_checks.h"
 #include "classic_phase_checks.h"
 #include "march_layer_checks.h"
 #include "local_light_gpu_checks.h"
 #include "silhouette_quality_checks.h"
+#include "authored_noise_checks.h"
 #include "grazing_upsample_checks.h"
 #include "god_ray_quality_checks.h"
 #include "temporal_quality_checks.h"

@@ -111,6 +111,11 @@ extern "C" int __cdecl vf_test_adaptive_lighting_history()
     return AdaptiveLightingHistory(LatestFogDevice()) ? 1 : 0;
 }
 
+extern "C" void __cdecl vf_test_drawn_fog_shaders(IDirect3DPixelShader9** march, IDirect3DPixelShader9** composite)
+{
+    DrawnFogShaders(LatestFogDevice(), march, composite);
+}
+
 extern "C" int __cdecl vf_test_overlay_visible()
 {
     return OverlayVisible() ? 1 : 0;

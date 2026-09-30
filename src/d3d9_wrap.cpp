@@ -56,6 +56,8 @@ public:
     bool CreateDepth();
     bool Render(const FrameInputs& in, const Config& cfg, const char** skip);
     bool AdaptiveLightingHistory() const { return m_renderer.AdaptiveLightingHistory(); }
+    IDirect3DPixelShader9* DrawnFogMarch() const { return m_renderer.DrawnMarch(); }
+    IDirect3DPixelShader9* DrawnFogComposite() const { return m_renderer.DrawnComposite(); }
     void ForceDepthWrite(bool force) { OverrideDepthWrite(m_forceDepthWrite, force); }
     void SuppressDepthWrite(bool suppress) { OverrideDepthWrite(m_suppressDepthWrite, suppress); }
     bool BeginWater(const FrameInputs& in, const WaterInputs& water, const Config& cfg, const char** skip);
@@ -893,6 +895,12 @@ bool RenderFog(FogDevice* device, const FrameInputs& in, const Config& cfg, cons
 bool AdaptiveLightingHistory(FogDevice* device)
 {
     return device && device->AdaptiveLightingHistory();
+}
+
+void DrawnFogShaders(FogDevice* device, IDirect3DPixelShader9** march, IDirect3DPixelShader9** composite)
+{
+    *march = device ? device->DrawnFogMarch() : nullptr;
+    *composite = device ? device->DrawnFogComposite() : nullptr;
 }
 
 bool BeginWaterPass(FogDevice* device, const FrameInputs& in, const WaterInputs& water, const Config& cfg,

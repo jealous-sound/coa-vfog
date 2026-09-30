@@ -21,6 +21,8 @@ public:
 
     const char* LastSkipReason() const { return m_skip; }
     bool AdaptiveLightingHistory() const { return m_adaptiveLightingHistory; }
+    IDirect3DPixelShader9* DrawnMarch() const { return m_drawnMarch; }
+    IDirect3DPixelShader9* DrawnComposite() const { return m_drawnComposite; }
 
 private:
     struct PendingDepthProbe
@@ -70,6 +72,8 @@ private:
     IDirect3DPixelShader9* m_composite[3] = {};
     IDirect3DPixelShader9* m_noisyComposite[3] = {};
     IDirect3DPixelShader9* m_litComposite[3] = {};
+    IDirect3DPixelShader9* m_drawnMarch = nullptr;
+    IDirect3DPixelShader9* m_drawnComposite = nullptr;
     IDirect3DPixelShader9* m_rayMask = nullptr;
     IDirect3DPixelShader9* m_rayBlur = nullptr;
     IDirect3DPixelShader9* m_probe = nullptr;

@@ -26,6 +26,17 @@ constexpr float kLayerDensity = 0.01f;
 constexpr float kFullStorm = 1.0f;
 constexpr float kNoiselessTile = 300.0f;
 constexpr double kMaxVolumeBuildMilliseconds = 40.0;
+constexpr float kMarchLength = 1000.0f;
+constexpr double kProbedPixelRay = 0.125;
+const float kWorldOrigin[3] = {};
+const float kShiftedCamera[3] = {37.0f, -53.0f, 211.0f};
+constexpr float kCameraShiftSensitivity = 10.0f / 255.0f;
+constexpr UINT kRampSide = 4;
+constexpr UINT kRampDepth = 64;
+constexpr double kRampMean = 127.5;
+constexpr double kRampAmplitude = 89.25;
+constexpr double kTwoPi = 6.283185307179586;
+constexpr BYTE kThinningNoise = 102;
 const float kHyjalSummit[3] = {5458.0f, -2934.0f, 1481.0f};
 constexpr Vec3 kToMoonOverHyjal = {0.63f, 0.63f, 0.455f};
 
@@ -289,14 +300,24 @@ void CheckStormKeepsTheScrollAcrossTileBlends(const FogData& data)
           "grow with the time the noise has scrolled");
 }
 
-double TrilinearNoise(const double* tileCoordinate)
+using VolumeTexel = BYTE (*)(UINT, UINT, UINT);
+
+struct NoiseVolumeShape
 {
-    const double n = kAuthoredNoiseSize;
+    UINT size[3];
+    VolumeTexel texel;
+};
+
+const NoiseVolumeShape kAuthoredVolume = {{kAuthoredNoiseSize, kAuthoredNoiseSize, kAuthoredNoiseSize},
+                                          AuthoredNoiseTexel};
+
+double TrilinearSample(const NoiseVolumeShape& volume, const double* tileCoordinate)
+{
     int base[3];
     double fraction[3];
     for (int axis = 0; axis < 3; ++axis)
     {
-        const double texel = tileCoordinate[axis] * n - 0.5;
+        const double texel = tileCoordinate[axis] * volume.size[axis] - 0.5;
         const double floored = std::floor(texel);
         base[axis] = static_cast<int>(floored);
         fraction[axis] = texel - floored;
@@ -309,15 +330,17 @@ double TrilinearNoise(const double* tileCoordinate)
         for (int axis = 0; axis < 3; ++axis)
         {
             const int step = (corner >> axis) & 1;
+            const int size = static_cast<int>(volume.size[axis]);
             weight *= step ? fraction[axis] : 1.0 - fraction[axis];
-            texel[axis] = static_cast<UINT>((base[axis] + step + kAuthoredNoiseSize) % kAuthoredNoiseSize);
+            texel[axis] = static_cast<UINT>((base[axis] + step + size) % size);
         }
-        value += weight * AuthoredNoiseTexel(texel[0], texel[1], texel[2]) / 255.0;
+        value += weight * volume.texel(texel[0], texel[1], texel[2]) / 255.0;
     }
     return value;
 }
 
-double CpuNoiseSample(const float (&registers)[4][4], const double* position)
+double CpuNoiseSample(const float (&registers)[4][4], const double* position,
+                      const NoiseVolumeShape& volume = kAuthoredVolume)
 {
     double sample = 0.0;
     for (int octave = 0; octave < kAuthoredNoiseOctaves; ++octave)
@@ -325,7 +348,7 @@ double CpuNoiseSample(const float (&registers)[4][4], const double* position)
         double tileCoordinate[3];
         for (int axis = 0; axis < 3; ++axis)
             tileCoordinate[axis] = PositiveFraction((position[axis] - registers[octave][axis]) * registers[octave][3]);
-        sample += registers[3][octave] * TrilinearNoise(tileCoordinate);
+        sample += registers[3][octave] * TrilinearSample(volume, tileCoordinate);
     }
     return sample;
 }
@@ -508,7 +531,7 @@ MarchedPixel ReadMarchedPixel(IDirect3DDevice9* device, const FogIntegrationReso
 }
 
 MarchedPixel MarchNoisyLayer(IDirect3DDevice9* device, const FogIntegrationResources& resources, float alpha,
-                             const float* noiseRegisters)
+                             const float* noiseRegisters, const float* camera = kWorldOrigin)
 {
     float constants[99][4] = {};
     constants[0][2] = constants[0][3] = 8.0f;
@@ -517,14 +540,15 @@ MarchedPixel MarchNoisyLayer(IDirect3DDevice9* device, const FogIntegrationResou
     constants[2][0] = constants[2][1] = 1.0f;
     constants[3][0] = 1.0004f;
     constants[3][1] = -0.40016f;
-    constants[3][2] = 1000.0f;
+    constants[3][2] = kMarchLength;
     constants[3][3] = 0.94f;
     for (int row = 0; row < 4; ++row)
         constants[4 + row][row] = 1.0f;
+    std::memcpy(constants[7], camera, 3 * sizeof(float));
     constants[8][0] = constants[8][1] = 8.0f;
     constants[8][2] = constants[8][3] = 0.125f;
     constants[9][2] = constants[9][3] = 1.0f;
-    constants[11][1] = constants[11][3] = 1000.0f;
+    constants[11][1] = constants[11][3] = kMarchLength;
     constants[11][2] = 850.0f;
     constants[12][1] = kLayerDensity;
     constants[14][3] = 1.0f;
@@ -540,6 +564,50 @@ MarchedPixel MarchNoisyLayer(IDirect3DDevice9* device, const FogIntegrationResou
     return ReadMarchedPixel(device, resources);
 }
 
+void PrepareMarchFixture(IDirect3DDevice9* device, const FogIntegrationResources& resources,
+                         D3DTEXTUREFILTERTYPE noiseFilter)
+{
+    const D3DVIEWPORT9 viewport = {0, 0, 8, 8, 0.0f, 1.0f};
+    device->SetDepthStencilSurface(nullptr);
+    device->SetRenderTarget(0, resources.target);
+    device->SetViewport(&viewport);
+    device->SetVertexShader(nullptr);
+    device->SetFVF(D3DFVF_XYZRHW);
+    device->SetTexture(0, resources.depth);
+    for (DWORD stage : {0ul, 10ul})
+    {
+        const D3DTEXTUREFILTERTYPE filter = stage == 10ul ? noiseFilter : D3DTEXF_POINT;
+        device->SetSamplerState(stage, D3DSAMP_MINFILTER, filter);
+        device->SetSamplerState(stage, D3DSAMP_MAGFILTER, filter);
+        device->SetSamplerState(stage, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+        device->SetSamplerState(stage, D3DSAMP_SRGBTEXTURE, FALSE);
+    }
+    for (D3DSAMPLERSTATETYPE address : {D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV, D3DSAMP_ADDRESSW})
+        device->SetSamplerState(10, address, D3DTADDRESS_WRAP);
+    device->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
+    device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+    device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+    device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    device->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
+}
+
+void RestoreMarchFixture(IDirect3DDevice9* device, const FogIntegrationResources& resources)
+{
+    device->SetTexture(10, nullptr);
+    device->SetRenderTarget(0, resources.previousTarget);
+    device->SetDepthStencilSurface(resources.previousDepth);
+    if (resources.previousState)
+        resources.previousState->Apply();
+}
+
+const BYTE* const kNoisyMarches[6] = {g_ps_noisy_march_low,     g_ps_noisy_march_mid,     g_ps_noisy_march_high,
+                                      g_ps_lit_noisy_march_low, g_ps_lit_noisy_march_mid, g_ps_lit_noisy_march_high};
+const BYTE* const kPlainMarches[6] = {g_ps_march_low,     g_ps_march_mid,     g_ps_march_high,
+                                      g_ps_lit_march_low, g_ps_lit_march_mid, g_ps_lit_march_high};
+constexpr int kMarchSteps[6] = {16, 24, 32, 16, 24, 32};
+
 void CheckMarchAppliesNoise(IDirect3DDevice9* device)
 {
     FogIntegrationResources resources;
@@ -551,36 +619,11 @@ void CheckMarchAppliesNoise(IDirect3DDevice9* device)
     Check(ready, "constant noise volumes and march targets created");
     if (ready)
     {
-        const D3DVIEWPORT9 viewport = {0, 0, 8, 8, 0.0f, 1.0f};
-        device->SetDepthStencilSurface(nullptr);
-        device->SetRenderTarget(0, resources.target);
-        device->SetViewport(&viewport);
-        device->SetVertexShader(nullptr);
-        device->SetFVF(D3DFVF_XYZRHW);
-        device->SetTexture(0, resources.depth);
-        for (DWORD stage : {0ul, 10ul})
-        {
-            device->SetSamplerState(stage, D3DSAMP_MINFILTER, D3DTEXF_POINT);
-            device->SetSamplerState(stage, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
-            device->SetSamplerState(stage, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
-            device->SetSamplerState(stage, D3DSAMP_SRGBTEXTURE, FALSE);
-        }
-        device->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
-        device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
-        device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
-        device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
-        device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
-        device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-        device->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
+        PrepareMarchFixture(device, resources, D3DTEXF_POINT);
         const float noise[4][4] = {{12.0f, -3.0f, 7.0f, 1.0f / kNoiselessTile},
                                    {-40.0f, 9.0f, 0.0f, 1.0f / kNoiselessTile},
                                    {1.0f, 1.0f, 1.0f, 0.0f},
                                    {0.5f, 0.5f, 0.0f, 0.0f}};
-        const BYTE* noisyShaders[2][3] = {
-            {g_ps_noisy_march_low, g_ps_noisy_march_mid, g_ps_noisy_march_high},
-            {g_ps_lit_noisy_march_low, g_ps_lit_noisy_march_mid, g_ps_lit_noisy_march_high}};
-        const BYTE* plainShaders[2][3] = {{g_ps_march_low, g_ps_march_mid, g_ps_march_high},
-                                          {g_ps_lit_march_low, g_ps_lit_march_mid, g_ps_lit_march_high}};
         const float alphas[] = {1.0f, 0.5f};
         float worst = 0.0f;
         float worstSilent = 0.0f;
@@ -589,10 +632,10 @@ void CheckMarchAppliesNoise(IDirect3DDevice9* device)
         {
             IDirect3DPixelShader9* noisy = nullptr;
             IDirect3DPixelShader9* plain = nullptr;
-            created = SUCCEEDED(device->CreatePixelShader(
-                          reinterpret_cast<const DWORD*>(noisyShaders[variant / 3][variant % 3]), &noisy)) &&
-                      SUCCEEDED(device->CreatePixelShader(
-                          reinterpret_cast<const DWORD*>(plainShaders[variant / 3][variant % 3]), &plain)) &&
+            created = SUCCEEDED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(kNoisyMarches[variant]),
+                                                          &noisy)) &&
+                      SUCCEEDED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(kPlainMarches[variant]),
+                                                          &plain)) &&
                       created;
             for (int v = 0; noisy && plain && v < 2; ++v)
             {
@@ -626,15 +669,154 @@ void CheckMarchAppliesNoise(IDirect3DDevice9* device)
         Check(created && worstSilent <= kSilentNoiseTolerance,
               "a noisy march at alpha 0 matches the noise-free march the renderer uses without noise");
     }
-    device->SetTexture(10, nullptr);
-    device->SetRenderTarget(0, resources.previousTarget);
-    device->SetDepthStencilSurface(resources.previousDepth);
-    if (resources.previousState)
-        resources.previousState->Apply();
+    RestoreMarchFixture(device, resources);
     for (IDirect3DVolumeTexture9* volume : volumes)
         if (volume)
             volume->Release();
 }
+
+BYTE RampTexel(UINT, UINT, UINT z)
+{
+    return static_cast<BYTE>(std::lround(kRampMean + kRampAmplitude * std::sin(kTwoPi * (z + 0.5) / kRampDepth)));
+}
+
+const NoiseVolumeShape kRampVolume = {{kRampSide, kRampSide, kRampDepth}, RampTexel};
+
+bool CreateRampVolume(IDirect3DDevice9* device, IDirect3DVolumeTexture9** volume)
+{
+    if (FAILED(device->CreateVolumeTexture(kRampSide, kRampSide, kRampDepth, 1, 0, D3DFMT_L8, D3DPOOL_MANAGED, volume,
+                                           nullptr)))
+        return false;
+    D3DLOCKED_BOX locked = {};
+    if (FAILED((*volume)->LockBox(0, &locked, nullptr, 0)))
+        return false;
+    for (UINT z = 0; z < kRampDepth; ++z)
+        for (UINT y = 0; y < kRampSide; ++y)
+            std::memset(static_cast<BYTE*>(locked.pBits) + z * locked.SlicePitch + y * locked.RowPitch,
+                        RampTexel(0, y, z), kRampSide);
+    return SUCCEEDED((*volume)->UnlockBox(0));
+}
+
+MarchedPixel CpuNoisyMarch(int steps, const float* camera, const float (&registers)[4][4])
+{
+    const double rayLength = std::sqrt(2.0 * kProbedPixelRay * kProbedPixelRay + 1.0);
+    const double direction[3] = {kProbedPixelRay / rayLength, -kProbedPixelRay / rayLength, 1.0 / rayLength};
+    const double squaredSteps = static_cast<double>(steps) * steps;
+    double radiance = 0.0;
+    double transmittance = 1.0;
+    for (int step = 0; step < steps; ++step)
+    {
+        const double start = kMarchLength * step * step / squaredSteps;
+        const double end = kMarchLength * (step + 1) * (step + 1) / squaredSteps;
+        if (start >= kLayerLength)
+            break;
+        const double middle = start + (end - start) * 0.5;
+        const double position[3] = {camera[0] + direction[0] * middle, camera[1] + direction[1] * middle,
+                                    camera[2] + direction[2] * middle};
+        const double sample = std::clamp(CpuNoiseSample(registers, position, kRampVolume), 0.0, 1.0);
+        const double density = 1.0 + (NoiseDensityCurve(static_cast<float>(sample)) - 1.0) * registers[2][3];
+        const double inLayer = std::min(end, static_cast<double>(kLayerLength)) - start;
+        const double opticalDepth = kLayerDensity * inLayer * density;
+        if (opticalDepth <= 0.0)
+            continue;
+        const double opacity = 1.0 - std::exp(-opticalDepth);
+        radiance += transmittance * (1.0 - density) * opacity;
+        transmittance *= 1.0 - opacity;
+    }
+    return {static_cast<float>(radiance), static_cast<float>(1.0 - transmittance)};
+}
+
+void CheckMarchSamplesNoiseAlongTheWorldRay(IDirect3DDevice9* device)
+{
+    FogIntegrationResources resources;
+    IDirect3DVolumeTexture9* ramp = nullptr;
+    const bool ready = CreateFogIntegrationResources(device, resources) && CreateRampVolume(device, &ramp);
+    Check(ready, "ramp noise volume and march targets created");
+    if (ready)
+    {
+        PrepareMarchFixture(device, resources, D3DTEXF_LINEAR);
+        device->SetTexture(10, ramp);
+        const float registers[4][4] = {{13.0f, -7.0f, 55.0f, 1.0f / 400.0f},
+                                       {-20.0f, 31.0f, -20.0f, 1.0f / 250.0f},
+                                       {1.0f, 1.0f, 1.0f, 1.0f},
+                                       {0.5f, 0.5f, 0.0f, 0.0f}};
+        const float* cameras[2] = {kWorldOrigin, kShiftedCamera};
+        float worst = 0.0f;
+        float weakestShift = 1.0f;
+        bool created = true;
+        for (int variant = 0; variant < 6; ++variant)
+        {
+            IDirect3DPixelShader9* noisy = nullptr;
+            created = SUCCEEDED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(kNoisyMarches[variant]),
+                                                          &noisy)) &&
+                      created;
+            if (!noisy)
+                continue;
+            device->SetPixelShader(noisy);
+            MarchedPixel marched[2] = {};
+            for (int c = 0; c < 2; ++c)
+            {
+                marched[c] = MarchNoisyLayer(device, resources, registers[2][3], &registers[0][0], cameras[c]);
+                const MarchedPixel expected = CpuNoisyMarch(kMarchSteps[variant], cameras[c], registers);
+                worst = std::fmax(worst, std::fmax(std::fabs(marched[c].radiance - expected.radiance),
+                                                   std::fabs(marched[c].opacity - expected.opacity)));
+            }
+            weakestShift = std::fmin(weakestShift, std::fmax(std::fabs(marched[0].radiance - marched[1].radiance),
+                                                             std::fabs(marched[0].opacity - marched[1].opacity)));
+            noisy->Release();
+        }
+        std::printf("     noisy march through a ramp volume: largest error from the CPU march at the world sample "
+                    "points %.2f/255; moving the camera changes every variant by at least %.1f/255\n",
+                    worst * 255.0f, weakestShift * 255.0f);
+        Check(created && worst <= kMarchTolerance && weakestShift >= kCameraShiftSensitivity,
+              "every noisy march variant samples the noise at camera + direction x distance of each step's sample "
+              "point, in world space, for both octaves");
+    }
+    RestoreMarchFixture(device, resources);
+    if (ramp)
+        ramp->Release();
+}
+
+void CheckNoisyCompositeThinsSilhouettes(IDirect3DDevice9* device)
+{
+    silhouette_quality::Fixture fixture(device);
+    IDirect3DVolumeTexture9* volume = nullptr;
+    const bool ready = fixture.Create(silhouette_quality::kNoisyComposites) &&
+                       CreateConstantVolume(device, kThinningNoise, &volume);
+    fixture.layerNoiseVolume = volume;
+    Check(ready, "noisy composite silhouette fixture created");
+    if (!ready)
+        return;
+    const float layerNoise[4][4] = {{0.0f, 0.0f, 0.0f, 1.0f / kNoiselessTile},
+                                    {0.0f, 0.0f, 0.0f, 1.0f / kNoiselessTile},
+                                    {1.0f, 1.0f, 1.0f, 1.0f},
+                                    {0.5f, 0.5f, 0.0f, 0.0f}};
+    std::memcpy(fixture.layerNoise, layerNoise, sizeof(layerNoise));
+    fixture.densityScale = NoiseDensityCurve(kThinningNoise / 255.0f);
+    float worst = 0.0f;
+    const bool drawn = silhouette_quality::WorstStripError(fixture, worst);
+    std::printf("     noisy composite at thin silhouettes with noise %.2f (density x%.3f): largest transmittance "
+                "error %.2f/255\n",
+                kThinningNoise / 255.0f, fixture.densityScale, worst * 255.0f);
+    Check(drawn && worst <= kMarchTolerance,
+          "every noisy composite marches thin silhouettes at full resolution through the authored noise");
+}
+
+template <size_t Size>
+bool ShaderRuns(IDirect3DPixelShader9* shader, const BYTE (&bytecode)[Size])
+{
+    UINT size = 0;
+    if (!shader || FAILED(shader->GetFunction(nullptr, &size)) || size != Size)
+        return false;
+    std::vector<BYTE> function(size);
+    return SUCCEEDED(shader->GetFunction(function.data(), &size)) && std::memcmp(function.data(), bytecode, Size) == 0;
+}
+
+struct DrawnShaders
+{
+    IDirect3DPixelShader9* march = nullptr;
+    IDirect3DPixelShader9* composite = nullptr;
+};
 
 void CheckRendererDrawsStormNoise(Harness& harness)
 {
@@ -659,6 +841,7 @@ void CheckRendererDrawsStormNoise(Harness& harness)
     input.lightParams = Storm(kFullStorm);
     Image frames[2];
     bool adaptive[2] = {};
+    DrawnShaders drawn[2];
     bool rendered = true;
     bool statesKept = true;
     for (int noisy = 0; noisy < 2; ++noisy)
@@ -677,6 +860,7 @@ void CheckRendererDrawsStormNoise(Harness& harness)
         ReleaseSentinel(before);
         ReleaseSentinel(after);
         adaptive[noisy] = vf_test_adaptive_lighting_history() != 0;
+        vf_test_drawn_fog_shaders(&drawn[noisy].march, &drawn[noisy].composite);
         frames[noisy] = Capture(harness.dev);
         harness.dev->EndScene();
         harness.dev->Present(nullptr, nullptr, nullptr, nullptr);
@@ -687,6 +871,11 @@ void CheckRendererDrawsStormNoise(Harness& harness)
     Check(rendered && adaptive[1] && !adaptive[0],
           "authored noise makes the temporal filter treat the fog as animated");
     Check(rendered && statesKept, "drawing authored noise restores every state, the noise sampler included");
+    Check(rendered && ShaderRuns(drawn[1].march, g_ps_noisy_march_mid) &&
+              ShaderRuns(drawn[1].composite, g_ps_noisy_composite_mid) &&
+              ShaderRuns(drawn[0].march, g_ps_march_mid) && ShaderRuns(drawn[0].composite, g_ps_composite_mid),
+          "a storm with authored noise draws the noisy march and the noisy composite, whose silhouettes sample the "
+          "noise; without noise the renderer keeps the noise-free shaders");
     vf_test_set_config(&saved);
 }
 
@@ -703,5 +892,7 @@ void CheckAuthoredNoiseOnTheGpu(IDirect3DDevice9* device)
 {
     CheckProbeMatchesCpuNoise(device);
     CheckMarchAppliesNoise(device);
+    CheckMarchSamplesNoiseAlongTheWorldRay(device);
+    CheckNoisyCompositeThinsSilhouettes(device);
 }
 }

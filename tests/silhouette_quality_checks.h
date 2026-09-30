@@ -3,6 +3,9 @@
 #include "ps_composite_low.h"
 #include "ps_composite_mid.h"
 #include "ps_composite_high.h"
+#include "ps_noisy_composite_low.h"
+#include "ps_noisy_composite_mid.h"
+#include "ps_noisy_composite_high.h"
 
 namespace silhouette_quality
 {
@@ -11,6 +14,11 @@ constexpr UINT kHeight = 31;
 constexpr float kDensity = 0.004f;
 constexpr float kDepthInfinity = 0.94f;
 constexpr float kDepthInverse = -0.4f;
+constexpr UINT kLayerNoiseRegister = 36;
+constexpr DWORD kAuthoredNoiseStage = 10;
+const BYTE* const kComposites[3] = {g_ps_composite_low, g_ps_composite_mid, g_ps_composite_high};
+const BYTE* const kNoisyComposites[3] = {g_ps_noisy_composite_low, g_ps_noisy_composite_mid,
+                                         g_ps_noisy_composite_high};
 
 struct Fixture
 {
@@ -27,6 +35,9 @@ struct Fixture
     IDirect3DTexture9* fog = nullptr;
     IDirect3DTexture9* scene = nullptr;
     IDirect3DPixelShader9* shaders[3] = {};
+    IDirect3DBaseTexture9* layerNoiseVolume = nullptr;
+    float layerNoise[4][4] = {};
+    float densityScale = 1.0f;
 
     explicit Fixture(IDirect3DDevice9* value) : device(value) {}
 
@@ -34,6 +45,7 @@ struct Fixture
     {
         device->SetTexture(0, nullptr);
         device->SetTexture(1, nullptr);
+        device->SetTexture(kAuthoredNoiseStage, nullptr);
         device->SetDepthStencilSurface(nullptr);
         if (savedTarget)
             device->SetRenderTarget(0, savedTarget);
@@ -42,13 +54,13 @@ struct Fixture
             state->Apply();
         device->SetStreamSource(0, savedStream, savedOffset, savedStride);
         IUnknown* resources[] = {state, savedTarget, savedDepth, savedStream, target, readback, depth, fog, scene,
-                                 shaders[0], shaders[1], shaders[2]};
+                                 shaders[0], shaders[1], shaders[2], layerNoiseVolume};
         for (IUnknown* resource : resources)
             if (resource)
                 resource->Release();
     }
 
-    bool Create()
+    bool Create(const BYTE* const* composites = kComposites)
     {
         if (FAILED(device->CreateStateBlock(D3DSBT_ALL, &state)) ||
             FAILED(device->GetRenderTarget(0, &savedTarget)) ||
@@ -67,9 +79,8 @@ struct Fixture
         *static_cast<DWORD*>(locked.pBits) = 0xFF808080;
         if (FAILED(scene->UnlockRect(0)))
             return false;
-        const BYTE* bytecode[] = {g_ps_composite_low, g_ps_composite_mid, g_ps_composite_high};
         for (int i = 0; i < 3; ++i)
-            if (FAILED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(bytecode[i]), &shaders[i])))
+            if (FAILED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(composites[i]), &shaders[i])))
                 return false;
         return true;
     }
@@ -94,12 +105,12 @@ float RayLength(UINT x, UINT y, const D3DVIEWPORT9& viewport)
     return std::sqrt(rayX * rayX + rayY * rayY + 1.0f);
 }
 
-float Transmission(float depth, float rayLength)
+float Transmission(float depth, float rayLength, float densityScale = 1.0f)
 {
     const bool sky = depth >= 0.99903f;
     const float viewZ = depth > kDepthInfinity ? 1000.0f : kDepthInverse / (depth - kDepthInfinity);
     const float skyDensity = sky ? std::exp(-2.0f / rayLength) : 1.0f;
-    return std::exp(-kDensity * std::fmin(viewZ * rayLength, 1000.0f) * skyDensity);
+    return std::exp(-kDensity * densityScale * std::fmin(viewZ * rayLength, 1000.0f) * skyDensity);
 }
 
 bool FillFixture(Fixture& fixture, const D3DVIEWPORT9& viewport, UINT scale, bool horizontal, UINT strip,
@@ -128,7 +139,8 @@ bool FillFixture(Fixture& fixture, const D3DVIEWPORT9& viewport, UINT scale, boo
             const UINT pixelX = viewport.X + (std::min<UINT>)(x * scale + scale / 2, viewport.Width - 1);
             const float rawDepth = (horizontal ? pixelY == viewport.Y + strip : pixelX == viewport.X + strip)
                                        ? stripDepth : backgroundDepth;
-            const float opacity = 1.0f - Transmission(rawDepth, RayLength(pixelX, pixelY, viewport));
+            const float opacity =
+                1.0f - Transmission(rawDepth, RayLength(pixelX, pixelY, viewport), fixture.densityScale);
             const DWORD channel = static_cast<DWORD>(std::lround(opacity * 255.0f));
             row[x] = channel * 0x01010101u;
         }
@@ -148,7 +160,8 @@ bool Draw(Fixture& fixture, const D3DVIEWPORT9& viewport, UINT scale, int qualit
     device->SetTexture(0, fixture.depth);
     device->SetTexture(1, fixture.fog);
     device->SetTexture(3, fixture.scene);
-    for (DWORD stage : {0u, 1u, 3u})
+    device->SetTexture(kAuthoredNoiseStage, fixture.layerNoiseVolume);
+    for (DWORD stage : {0ul, 1ul, 3ul, kAuthoredNoiseStage})
     {
         device->SetSamplerState(stage, D3DSAMP_MINFILTER, D3DTEXF_POINT);
         device->SetSamplerState(stage, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
@@ -201,6 +214,7 @@ bool Draw(Fixture& fixture, const D3DVIEWPORT9& viewport, UINT scale, int qualit
     constants[96][2] = glow >= 0 ? 0.0f : 2.0f;
     constants[96][3] = glow >= 0 ? 1.0f : 0.0f;
     constants[98][3] = (std::max)(glow, 0.0f);
+    std::memcpy(constants[kLayerNoiseRegister], fixture.layerNoise, sizeof(fixture.layerNoise));
     device->SetPixelShaderConstantF(0, &constants[0][0], 99);
     const float left = viewport.X - 0.5f;
     const float right = viewport.X + viewport.Width - 0.5f;
@@ -216,6 +230,66 @@ bool Draw(Fixture& fixture, const D3DVIEWPORT9& viewport, UINT scale, int qualit
     return SUCCEEDED(draw) && SUCCEEDED(device->GetRenderTargetData(fixture.target, fixture.readback));
 }
 
+struct Scene
+{
+    const char* name;
+    bool horizontal;
+    float background;
+    float strip;
+};
+
+constexpr float kNearDepth = kDepthInfinity + kDepthInverse / 20.0f;
+constexpr float kFarDepth = kDepthInfinity + kDepthInverse / 400.0f;
+constexpr Scene kScenes[] = {{"one-pixel foreground column", false, kFarDepth, kNearDepth},
+                             {"one-pixel foreground row", true, kFarDepth, kNearDepth},
+                             {"one-pixel background gap", false, kNearDepth, kFarDepth},
+                             {"sky beside distant terrain", false, 0.9985f, 1.0f},
+                             {"distant terrain beside sky", true, 1.0f, 0.9985f}};
+constexpr D3DVIEWPORT9 kViewports[] = {{0, 0, 32, 24, 0, 1}, {3, 2, 29, 23, 0, 1}};
+constexpr UINT kScales[] = {2, 4};
+
+bool StripError(Fixture& fixture, const D3DVIEWPORT9& viewport, UINT scale, const Scene& scene, float& worst)
+{
+    UINT strip = (scene.horizontal ? viewport.Height : viewport.Width) / 2;
+    if (strip % scale == scale / 2)
+        --strip;
+    const UINT x = viewport.X + (scene.horizontal ? viewport.Width / 2 : strip);
+    const UINT y = viewport.Y + (scene.horizontal ? strip : viewport.Height / 2);
+    const float expected = Transmission(scene.strip, RayLength(x, y, viewport), fixture.densityScale);
+    bool passed = FillFixture(fixture, viewport, scale, scene.horizontal, strip, scene.background, scene.strip);
+    worst = 0;
+    for (int quality = 0; quality < 3 && passed; ++quality)
+    {
+        D3DLOCKED_RECT locked = {};
+        passed = Draw(fixture, viewport, scale, quality) &&
+                 SUCCEEDED(fixture.readback->LockRect(&locked, nullptr, D3DLOCK_READONLY));
+        if (!passed)
+            break;
+        const BYTE* pixel = static_cast<const BYTE*>(locked.pBits) + y * locked.Pitch + x * 4;
+        worst = std::fmax(worst, std::fabs(pixel[2] / 255.0f - expected));
+        fixture.readback->UnlockRect();
+    }
+    return passed;
+}
+
+bool WorstStripError(Fixture& fixture, float& worst)
+{
+    bool passed = true;
+    worst = 0;
+    for (const D3DVIEWPORT9& viewport : kViewports)
+        for (UINT scale : kScales)
+        {
+            passed = fixture.SetScale(viewport, scale) && passed;
+            for (const Scene& scene : kScenes)
+            {
+                float error = 0;
+                passed = StripError(fixture, viewport, scale, scene, error) && passed;
+                worst = std::fmax(worst, error);
+            }
+        }
+    return passed;
+}
+
 void CheckSilhouettes(IDirect3DDevice9* device)
 {
     Fixture fixture(device);
@@ -223,50 +297,17 @@ void CheckSilhouettes(IDirect3DDevice9* device)
     Check(ready, "thin silhouette composite fixtures created");
     if (!ready)
         return;
-    const D3DVIEWPORT9 viewports[] = {{0, 0, 32, 24, 0, 1}, {3, 2, 29, 23, 0, 1}};
-    struct Scene
-    {
-        const char* name;
-        bool horizontal;
-        float background;
-        float strip;
-    };
-    const float nearDepth = kDepthInfinity + kDepthInverse / 20.0f;
-    const float farDepth = kDepthInfinity + kDepthInverse / 400.0f;
-    const Scene scenes[] = {{"one-pixel foreground column", false, farDepth, nearDepth},
-                            {"one-pixel foreground row", true, farDepth, nearDepth},
-                            {"one-pixel background gap", false, nearDepth, farDepth},
-                            {"sky beside distant terrain", false, 0.9985f, 1.0f},
-                            {"distant terrain beside sky", true, 1.0f, 0.9985f}};
-    for (const D3DVIEWPORT9& viewport : viewports)
-        for (UINT scale : {2u, 4u})
+    for (const D3DVIEWPORT9& viewport : kViewports)
+        for (UINT scale : kScales)
         {
             const bool scaleReady = fixture.SetScale(viewport, scale);
             Check(scaleReady, "thin silhouette low-resolution fog texture created");
             if (!scaleReady)
                 continue;
-            for (const Scene& scene : scenes)
+            for (const Scene& scene : kScenes)
             {
-                UINT strip = (scene.horizontal ? viewport.Height : viewport.Width) / 2;
-                if (strip % scale == scale / 2)
-                    --strip;
-                const UINT x = viewport.X + (scene.horizontal ? viewport.Width / 2 : strip);
-                const UINT y = viewport.Y + (scene.horizontal ? strip : viewport.Height / 2);
-                const float expected = Transmission(scene.strip, RayLength(x, y, viewport));
-                bool passed = FillFixture(fixture, viewport, scale, scene.horizontal, strip,
-                                          scene.background, scene.strip);
                 float worst = 0;
-                for (int quality = 0; quality < 3 && passed; ++quality)
-                {
-                    D3DLOCKED_RECT locked = {};
-                    passed = Draw(fixture, viewport, scale, quality) &&
-                             SUCCEEDED(fixture.readback->LockRect(&locked, nullptr, D3DLOCK_READONLY));
-                    if (!passed)
-                        break;
-                    const BYTE* pixel = static_cast<const BYTE*>(locked.pBits) + y * locked.Pitch + x * 4;
-                    worst = std::fmax(worst, std::fabs(pixel[2] / 255.0f - expected));
-                    fixture.readback->UnlockRect();
-                }
+                const bool passed = StripError(fixture, viewport, scale, scene, worst);
                 char label[192];
                 std::snprintf(label, sizeof(label), "all qualities %s, scale %u, viewport %ux%u+%u+%u",
                               scene.name, scale, viewport.Width, viewport.Height, viewport.X, viewport.Y);
@@ -275,7 +316,7 @@ void CheckSilhouettes(IDirect3DDevice9* device)
         }
     const D3DVIEWPORT9 viewport = {0, 0, 32, 24, 0, 1};
     bool glowReady = fixture.SetScale(viewport, 2) &&
-                     FillFixture(fixture, viewport, 2, false, 0, farDepth, farDepth);
+                     FillFixture(fixture, viewport, 2, false, 0, kFarDepth, kFarDepth);
     Check(glowReady, "small glow continuity fixture created");
     for (int quality = 0; quality < 3 && glowReady; ++quality)
     {
