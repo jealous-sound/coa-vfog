@@ -97,6 +97,8 @@ constexpr UINT kOverlayProbeRight = 400;
 constexpr UINT kOverlayProbeBottom = 300;
 constexpr int kOverlayTitleBarX = 200;
 constexpr int kOverlayTitleBarY = 40;
+constexpr UINT kSkyRowsFraction = 4;
+constexpr int kMaxAdjacentSkyColumnDifference = 2;
 constexpr int kBesideOverlayX = 1100;
 constexpr int kBesideOverlayY = 600;
 constexpr int kOverlayBodyX = 480;
@@ -1638,6 +1640,20 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "water_checks.h"
 #include "multisampling_checks.h"
 
+void CheckFirstColumnIsFogged(const Image& transmittance, const D3DVIEWPORT9& world)
+{
+    int largest = 0;
+    for (UINT y = world.Y; y < world.Y + world.Height / kSkyRowsFraction; ++y)
+        for (int c = 0; c < 3; ++c)
+            largest = std::max(largest, std::abs(static_cast<int>(transmittance.At(world.X, y)[c]) -
+                                                 transmittance.At(world.X + 1, y)[c]));
+    std::printf("     transmittance view over the sky: largest difference between the viewport's first two columns "
+                "%d/255\n",
+                largest);
+    Check(largest <= kMaxAdjacentSkyColumnDifference,
+          "the full-screen fog passes cover the viewport's first column (their triangle's left edge lies outside it)");
+}
+
 void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3 at,
                                    const float* proj, const D3DVIEWPORT9& world)
 {
@@ -1898,6 +1914,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     SavePng(outDir + L"\\debug-radiance.png", radiance.w, radiance.h, radiance.bgra);
     Image transmittance = renderDebug(2, 5000.0f);
     SavePng(outDir + L"\\debug-transmittance.png", transmittance.w, transmittance.h, transmittance.bgra);
+    CheckFirstColumnIsFogged(transmittance, world);
 
     {
         Config c = cfg;

@@ -234,6 +234,8 @@ char DepthClassLetter(float depthClass)
 }
 
 constexpr int kLoggedGradingInputs[] = {8, 16, 24};
+constexpr float kFullscreenTriangleLow = -1.5f;
+constexpr float kFullscreenTriangleHigh = 4.5f;
 
 const char* DrawnNoiseState(const LayerNoise& drawn, const Config& cfg)
 {
@@ -782,8 +784,9 @@ void Renderer::LogFinishedDepthProbe()
 
 void Renderer::DrawFullscreen(IDirect3DDevice9* dev)
 {
-    static const float kTriangle[3][4] = {
-        {-1.0f, -1.0f, 0.0f, 1.0f}, {-1.0f, 3.0f, 0.0f, 1.0f}, {3.0f, -1.0f, 0.0f, 1.0f}};
+    static const float kTriangle[3][4] = {{kFullscreenTriangleLow, kFullscreenTriangleLow, 0.0f, 1.0f},
+                                          {kFullscreenTriangleLow, kFullscreenTriangleHigh, 0.0f, 1.0f},
+                                          {kFullscreenTriangleHigh, kFullscreenTriangleLow, 0.0f, 1.0f}};
     dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 1, kTriangle, sizeof(kTriangle[0]));
 }
 
