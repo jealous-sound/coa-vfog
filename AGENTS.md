@@ -38,9 +38,10 @@ are compiled with `fxc`. `README.md` holds the design and the reverse-engineerin
   data), `fog_model` (layer parameters), `renderer` (passes), `overlay` (ImGui settings window: input chaining,
   drawing at `Present`), `settings_panel` (its widgets), `config`, `log`, `status_log`; water: `water_data`
   (Forever presets, FFT tiles, foam masks), `water_classify` (liquid classes), `water_spectrum` and `water_fft`
-  (GPU FFT waves), `water_renderer` (copies, stencil tagging, shading).
+  (GPU FFT waves), `water_renderer` (copies, stencil tagging, shading); look: `forever_look` (Forever glow byte and
+  grading decisions at world done and frame end), `grading_renderer` (colour grading pass).
 - `shaders/` — the ps_3_0 passes: `vf_*` fog (march, temporal, composite and its multisampled silhouette split, god
-  rays, depth probe and depth-copy check) and `vw_*` water (FFT, depth copy, shading).
+  rays, depth probe and depth-copy check), `vw_*` water (FFT, depth copy, shading) and `vp_grade` (colour grading).
 - `tests/harness.cpp` — the offline D3D9 harness; `--scene harbour` renders a logged in-game frame.
 - `tools/` — the Classic fog and Forever water data converters and the comment check.
 

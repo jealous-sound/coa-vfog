@@ -34,6 +34,9 @@ wave spectra and foam textures.
   (`WaterZoneColors`). Players, creatures, pets and mounts that wade, swim or jump in leave trains of expanding
   rings (`WaterRipples`) in place of the client's flat splash and wake sprites (`WaterClientSplashes`). Magma,
   slime, custom non-water liquids and water seen from below keep the client's look.
+- **Forever glow and colour grading** (both off by default): the client's full-screen glow can take WoW Forever's
+  per-light glow amount (`ForeverGlow`), and the 3D view can be graded with Forever's per-light colour curve
+  (`ColorGrading`), wherever Classic lights cover the camera.
 
 ## How it renders
 
@@ -57,8 +60,30 @@ Fog renders once after the world, including its late geometry and the native sun
 effects and the UI. While it draws, the stock fog is pushed out of range for the world render and restored
 afterwards; frames without volumetric fog keep the stock fog, and an unexpected draw failure restores it on the
 next frame. The client's glow (`screen + g·blur²`, with `g` from the day/night light) runs afterwards and would
-bleach bright fog to white, so fogged pixels are pre-compensated with the live glow amount. God rays use the
-remaining display highlight range after the glow and need a scene copy; without one they are omitted.
+bleach bright fog to white, so fogged pixels are pre-compensated with the glow amount the glow composite receives
+this frame. God rays use the remaining display highlight range after the glow and need a scene copy; without one
+they are omitted.
+
+**Glow and colour grading.** Both use the existing hooks and are off by default. The client converts its day/night
+glow to a byte and stores it as the alpha of the glow composite's pass colour, which the composite draws as its
+vertex colour (see Engine inputs). With `ForeverGlow=1` the DLL rewrites that byte in both of the glow effect's pass
+lists just before the frame effects run, to `lerp(client byte/255, Forever glow, t)` clamped to 0..1, with
+`t = saturate((coverage − 0.5)/0.5)` from the Classic lights' share of the blend, so the glow fades back to the
+client's where Classic coverage ends and Forever's data takes over only under full coverage. It never touches the
+day/night glow itself, so the ghost view (which reads it) and Ascension's Extensions.dll keep theirs, and it writes
+nothing while the ghost effect is current or the effect graph differs from the client's (vtables, pass counts). At
+the frame end each byte that still holds the DLL's value gets the client's back, so the client's second FFX path
+and a byte someone else wrote are untouched. `GlowCompensation` always uses the byte the composite receives,
+which also fixes a mismatch without `ForeverGlow`: Extensions.dll's `ambientGlow` can raise the glow above 1, where
+the client's byte wraps (1.1 gives 24) while the compensation clamped it to 1.
+
+`ColorGrading` grades the 3D view at the end of the world render, after the glow and before names, icons and the
+interface: the saved world viewport is copied (a resolve when the back buffer is multisampled), then one ps_3_0 pass
+maps each channel through the blended 32-entry grading curve, interpolating linearly between entries as a 32³ LUT
+does per channel, and writes `lerp(scene, curve(scene), ColorGrading·t)` back without depth. The curve is a 32×1
+float texture that is updated only when the curve changes. The ghost view and the view from under water are not
+graded, and neither is a frame whose world did not finish its frame effects. The copy is released while
+`ColorGrading=0`; while grading it costs one world-sized render target of the back buffer's format.
 
 **Water.** The client draws every water and ocean surface, and nothing else, inside one call of its liquid
 renderer. Before that call the DLL copies the scene colour and its linear depth, clears the stencil and turns on
@@ -292,12 +317,12 @@ layers (the columns above plus the authored noise columns: fade colour c4, scrol
 pairs c27 and c28, and c24 carried raw); the zone lights and their outlines; and the grading curves. The loader
 rejects any other format and logs which one it found.
 
-Each light params also carries glow and colour grading, which the DLL resolves but does not render yet. They are
-blended from the Classic lights around the camera like the fog, but on every map with a placed light, not only where
-Classic fog applies: 219 light params without fog but with glow are placed on 3.3.5 maps, 167 of them only on the 17
-maps without Classic fog, such as Blackwing Lair (469) and Stratholme (329). `AuthoredFog::coverage` is the Classic
-lights' share of the blend, for the renderer to fade toward the client's own values; where no Classic light reaches
-there is no glow and the curve is the identity.
+Each light params also carries glow and colour grading, which `ForeverGlow` and `ColorGrading` apply (both off by
+default; see Glow and colour grading). They are blended from the Classic lights around the camera like the fog, but
+on every map with a placed light, not only where Classic fog applies: 219 light params without fog but with glow are
+placed on 3.3.5 maps, 167 of them only on the 17 maps without Classic fog, such as Blackwing Lair (469) and
+Stratholme (329). `AuthoredFog::coverage` is the Classic lights' share of the blend, from which both fade toward the
+client's own look; where no Classic light reaches there is no glow and the curve is the identity.
 
 - **Glow.** `LightParams.Glow`, blended like the fog by light weight, weather and screen-effect slot. Forever sets it
   to 0 on 130 of 131 Kalimdor and 59 of 80 Eastern Kingdoms clear-weather lights, where CoA's own 3.3.5 data holds
@@ -366,8 +391,15 @@ rates from fields 4–9. The water is tuned by eye against this mapping, not mat
   `VirtualProtect`). The call site, both slots and the layout bytes the classification reads are checked first; on
   any mismatch none are patched and the fog is unaffected. `waterdata.bin` is loaded only once they are installed. A
   water exception restores the device state, turns water off for the session and leaves the fog running.
+- **Glow and grading.** No further patch: the glow override runs in the world-done hook before the fog, and the
+  grading last in the world render's frame-end hook. Once the fog hooks are installed, each is enabled only if its
+  client bytes still match (see Engine inputs); a mismatch leaves it unavailable and is logged. Neither depends on
+  the fog: the world viewport is captured after the opaque pass even after a fog exception, and an exception in the
+  glow override or the grading turns only that one off for the session.
 - **State.** Every state the passes touch is captured with a recorded state block and restored, plus render
-  targets, depth and stream 0 (whose offset state blocks drop). The client's shader-constant cache stays valid.
+  targets, depth and stream 0 (whose offset state blocks drop). The client's shader-constant cache stays valid:
+  the pixel constants a pass sets, the grading's c0 and c1 included, are recorded in its state block, because the
+  client's Gx constant setter (`0x6833E0`) uploads only values that differ from its own copy.
 - **Overlay.** When a fog device is created, the device window's procedure is chained so the settings window
   sees input first, and the wrapper's `Present` draws the window over the finished frame.
 
@@ -391,6 +423,8 @@ Gx is the graphics device `[0xC5DF88]`.
 | Storm weight (0..1) blending the clear and storm light params | `0xD38B88` |
 | Light params slot forced by the current screen effect (−1 = none) | `0xD38B58` |
 | Glow: `ffx` CVar, current effect, glow effect, glow amount | `0xD45774`, `0xD45780`, `0xB74364`, `0xD38C2C` |
+| Ghost (death) screen effect | `0xB74368` |
+| Glow byte: pass list count and array, pass [2], its colour's alpha | `+0x0C`/`+0x10`, `+0x20`/`+0x24`; `+8`; `+0x33` |
 | Far clip | From the projection; `[[0xB7436C] + 0xB14]` as a fallback |
 | World M2 scene (point lights) | `[0xCD754C]` |
 | Camera WMO instance, group ids, group count, interior fog blend | `0xCD87A4`, `0xCDB0DC`, `0xCDB0D8`, `0xD38B9C` |
@@ -479,9 +513,47 @@ Engine notes behind the code:
   jumps to it). Drawing the fog once at `0x4F9281` sees the completed depth and keeps the glare and its query
   order unchanged.
 - Screen effects. FFX end runs the current effect `[0xD45780]` when the `ffx` CVar (`[0xD45774]`, int at `+0x30`)
-  and the effect's own CVar (`+4`) are on. The glow effect `[0xB74364]` keeps `ffxGlow` there (`0x8BFEDB`);
-  `0x4F8770` feeds it the DayNight glow (`0xD38C2C`) as the additive weight of `lerp(screen, blur, other) +
-  g·blur²`, where `other` is the screen effect's own blend amount, which the fog leaves as is.
+  and the effect's own CVar (`+4`) are on. The glow effect `[0xB74364]` keeps `ffxGlow` there (`0x8BFEDB`); the
+  ghost effect is `[0xB74368]` (`FFXDeath`).
+- Glow feed. The world frame callback `0x4FAF90` updates the world (`0x4FB031`: `0x4FA5F0` → `0x7831A0` →
+  `0x7816F0` → `0x7F3920` → `0x7F3230`) before it calls the world render (`0x4FB03D`), so the day/night glow
+  `0xD38C2C` (`0x7ECEF0()` + `0x12C`) is rewritten every world frame: from the blended light record (`0x7F34AF`), or
+  0.5 on the path without lights (`0x7F35A6` loads `[0x9E2EC4]` = 0.5, which stays on the x87 stack for the `fst` at
+  `0x7F3600`). In the world render, `0x4F8F3D`, the only call of `0x4F8770`, feeds the glow effect only while it is
+  current (`0x4F8773`–`0x4F8781`): it turns the glow into a byte with the +512.0 trick (`0x4F878E`–`0x4F87AC`,
+  floor(255·g) mod 256, so 1.1 gives 24) and passes {underwater, glow byte, blur byte} with id 3 to the effect's
+  SetParam (`0x4F883C`; vtable `0xA941C8` from `0x8BFE98`, slot `0xA941D8` = `0x8BFDE0`). SetParam stores the
+  underwater flag at `+0x2C` and the D3DCOLOR {B = G = R = blur, A = glow} at `+0x30` of pass [2] in both pass
+  lists, clear view at `+0x08` (`0x8BFE14`, `0x8BFE21`) and underwater at `+0x1C` (`0x8BFDF2`, `0x8BFE08`), and
+  returns with `ret 8` (`0x8BFE26`). A list is {capacity, count, array} (`0x7EA1C0`). Pass [2] is the composite
+  (vtable `0xA94294`, `0x8C2206`), whose render `0x8C27B0` hands that colour to the draw `0x682400` (`0x8C28A1`).
+- FFXGlow. The 12340 shader loader `0x684970` accepts only BLS version `0x10003` (`0x6849FE`). Ascension's patch
+  ships ps_3_0 `FFXGlow` and `FFXDeath` as version `0x10004`, so the loader falls back through `0x684AA4` to the
+  ps_2_0 profile (`0x684A71`), whose FFXGlow is `lerp(screen, blur, v0.z) + blur²·v0.w` with the pass colour as
+  `v0`: the alpha byte is the glow weight. FFX end `0x8C1010` copies the default colour surface (`0x6A30D0`,
+  StretchRect from Gx `+0x3B3C`) and runs the passes; every pass end rebinds the default target (`0x8C15A7`), and
+  the composite's target descriptor `0xD45784` is only ever cleared (`0x8C056D`, `0x8C14E6`), so the composite draws
+  into the back buffer.
+- Other glow readers and writers. The ghost effect's composite `0x7E87B0` reads `0xD38C2C` while FFX end draws
+  (`0x7E8898`, rounded, not floored) for `screen + g·blur²` before it desaturates; `0x4E442E` (in `0x4E3CD0`) also
+  writes it, and the client's second FFX path (begin `0x4E61ED`, end `0x4E621E`) calls SetParam itself
+  (`0x4E61EB`). The image holds no other access. Ascension's Extensions.dll (TimeDateStamp `0x6ABAD5C2`, read
+  statically) detours the LightParams getter `0x7EB180` and multiplies the glow (LightParams `+0x10`, which becomes
+  the light record's `+0x58` and then `0xD38C2C`) by its `ambientGlow` CVar, so the glow can exceed 1; it also
+  detours the light blend `0x7F3230` (it copies the moon position `0xD38E48` to `0xD38E68` afterwards) and
+  `0x681F60` (only for calls from `0x95EF4A`), and adds day/night lights through `0x7ED150`. It references none of
+  `0xD38C2C`, `0x4F8770`, `0xB74364`, `0xD45780` or the FFX code.
+- After the frame effects. FFX end is the world render's last draw: it only runs `0x747AE0`, which clears flag
+  `0x1000` along the list `[0xCA1368]`, and returns (`0x4F9286`–`0x4F9290`); `0x4FAF90` then draws names and icons
+  (`0x4FB042` → `0x7E5140` → `0x7E7490`) and the interface follows. The world render returns early at `0x4F8EDC`,
+  `0x4F8EEF`, `0x4F8F0D` and `0x4F8F1E`, and `0x4F90F4` skips FFX end (and the world-done hook) when there is no
+  world M2 scene; the grading runs only in frames that reached the world-done hook.
+- Glow and grading guards. The glow override requires `0x4F883C`, `0x8BFDE0`, `0x8BFDF2`, `0x8BFE08`, `0x8BFE14`,
+  `0x8BFE21`, `0x8BFE26`, `0x8BFE98`, `0x8C2206`, `0x8C28A1`, the world render's tail `0x4F9286` after the patched
+  FFX end call, and the slot `0xA941D8`; the grading requires `0x4F9286`, `0x747AE0`, `0x4FB042` and `0x8C15A7`. Both
+  also require the world render and world done calls to still reach the DLL, and none of these bytes is one the
+  hooks patch. Each frame the glow override also checks the effect graph: the current effect is the glow effect,
+  its vtable is `0xA941C8`, both lists hold at least three passes and pass [2]'s vtable is `0xA94294`.
 - Light params slots. `0x7EB180` returns a light's `LightParams` for a slot (`Light` record `+0x1C + 4·slot`).
   For each light, `0x7EE510` takes slot 0 and, while the storm weight `[0xD38B88]` is above zero, blends in
   slot 2 by it (`0x7EC220`). The DayNight update sets that weight to `min(1, 4·[0xD38B4C])` (`0x7F3995`); the
@@ -675,17 +747,26 @@ copy of the client's ripple clock, the ripple simulation against a CPU reference
 normals are compared with the 7552035 slope evaluated on the CPU (within the depth-copy precision, but for at most
 0.5% of the pixels, up to 6/255 off where the GPU's bilinear weights meet fresh impulses), the rings' visibility in
 shaded water with the real data, and the hold on the client's sprite value, driven through the hooks on a synthetic
-value and code image, with the unit walk refused and the ripple map unsupported or failing. The multisampling suite
-creates a 4x device through the wrapper with the client's D24X8 depth (and D16) and its target-and-depth clear: the
-sample counts offered to the game, the kept back buffer and the D24S8 depth that replaces the stencil-less one, the
-fog and water on the copied depth against the drawn depth and a single-sampled frame, a wading unit's ripples in the
-4x water (the normals against the same slope at the surface depth the copy holds, one sample per pixel and up to 1%
-off the pixel centre's, the shading changed only around the path, and the tagged edges still blended by coverage),
-the fog blended by coverage at a silhouette in both blend modes and with a Classic layer's authored noise, `Reset`
-4x→1x→4x, the cost of the game's multisample list, and the fallbacks (`Multisampling=0`, no copy method, a failing
-self-test). It expects the copy method the DLL's own probe finds; without one it prints a `SKIP` line with the
-probe's reason instead of the 4x device checks. They do not establish in-game appearance or performance. It writes
-`before.png`, `after.png`, `overlay.png` and the debug views to `build/harness-out`.
+value and code image, with the unit walk refused and the ripple map unsupported or failing.
+The glow suite drives the world-done and frame-end entries against a fake glow effect graph whose vtables are plain
+integers the DLL only compares: the write to both pass lists and its restore, a foreign byte that survives, no write
+for the ghost effect or a graph that differs, the fade with Classic coverage, the clamp above 1, the compensation
+taking the delivered byte (24 for a wrapped 1.1), and guards that avoid every patched byte. The grading suite fills
+the back buffer with every 8-bit code per channel and checks the identity curve bit-exact, the Stormwind noon curve
+and half strength within D3D's float-to-8-bit tolerance of a CPU reference, the grading of what the glow drew after
+the world was done, a sub-rectangle world viewport, state restoration with c0/c1, the skips (off, no world done,
+ghost, under water, half coverage), curve uploads only on change and after `Reset`, and the INI keys.
+The multisampling suite creates a 4x device through the wrapper with the client's D24X8 depth (and D16) and its
+target-and-depth clear: the sample counts offered to the game, the kept back buffer and the D24S8 depth that replaces
+the stencil-less one, the fog and water on the copied depth against the drawn depth and a single-sampled frame, a wading
+unit's ripples in the 4x water (the normals against the same slope at the surface depth the copy holds, one sample per
+pixel and up to 1% off the pixel centre's, the shading changed only around the path, and the tagged edges still blended
+by coverage), the fog blended by coverage at a silhouette in both blend modes and with a Classic layer's authored noise,
+`Reset` 4x→1x→4x, the colour grading of a 4x back buffer against the single-sampled one, the cost of the game's
+multisample list, and the fallbacks (`Multisampling=0`, no copy method, a failing self-test). It expects the copy method
+the DLL's own probe finds; without one it prints a `SKIP` line with the probe's reason instead of the 4x device checks.
+They do not establish in-game appearance or performance. It writes `before.png`, `after.png`, `overlay.png` and the
+debug views to `build/harness-out`.
 
 `vfog_harness --scene harbour <dir> --data data/fogdata.bin` renders the logged in-game frame at the
 Stormwind harbour (sunset, far clip 791.6 yd) with ideal depth and with the client's depth range, and
@@ -703,10 +784,12 @@ negligible ripple gain (`-calm`) at 0.5 s, 1.5 s and 3 s.
 `vfog_harness --scene performance` times the fog passes at 1920×1080 at each quality on one street: derived
 layers with no point lights, eight flood lights or eight street lamps, Classic layers at the harbour with and
 without the lamps, the same in a full storm, whose near layer carries authored noise (both skipped if `fogdata.bin`
-beside `CoAVolFog.dll` does not resolve the harbour), and the shipped `LogLevel=1`. It prints
-`quality,case,point_lights,median_ms,p95_ms` of GPU time; this is a controlled renderer cost, not a game frame-rate
-test. `--samples 4` creates the device with 4x multisampling, as the game's option would, so the times include the
-depth copies and the silhouette split; the first lines say whether multisampling was kept.
+beside `CoAVolFog.dll` does not resolve the harbour), and the shipped `LogLevel=1`, then the colour grading pass
+alone (`colour-grading`, quality 0). It prints `quality,case,point_lights,median_ms,p95_ms` of GPU time; this is a
+controlled renderer cost, not a game frame-rate test. `--samples 4` creates the device with 4x multisampling, as the
+game's option would, so the times include the depth copies, the silhouette split and the grading's resolve; the
+first lines say whether multisampling was kept. On the RTX 2060 Max-Q the grading took 0.25 ms single-sampled and
+0.15 ms at 4x (medians of one run each).
 
 ## Install
 
@@ -725,8 +808,16 @@ The time covers the fog passes alone, god rays included, without the client's ow
 compare it with the frame time to see the fog's share of a GPU-bound frame. `skipped` counts frames whose timing
 was lost, and `fog gpu no samples` means none finished in the interval. Without timestamp queries the log says
 so once and the summaries omit the time; at `LogLevel=0` no queries are issued. With Classic data the summary
-adds the resolved glow and grading curve, for example `Classic glow 0.00, grading curve at inputs 8/31 16/31 24/31:
-0.267 0.565 0.890 (not rendered)`, and a line for each layer with authored noise.
+adds the resolved glow and grading curve with the two settings that apply them, for example `Classic glow 0.00,
+grading curve at inputs 8/31 16/31 24/31: 0.267 0.565 0.890 (ForeverGlow 0, ColorGrading 0.00)`, and a line for
+each layer with authored noise.
+
+At start-up the log says whether `Forever glow` and `colour grading` are available, or which guarded client bytes
+differ. `Forever glow: the glow composite gets 0 where the client set 102 (Classic weight 1.00)` is logged when the
+override starts and `the client's own glow applies` when it stops. Grading logs `colour grading skipped: <reason>`
+once per reason and its idle states (ghost effect, camera under water, no Classic light covers the camera) like the
+water's. `LogLevel=2` adds every 600 frames `Forever look: glow byte 0 (client 102, Classic weight 1.00), colour
+grading 0.60`, with the grading's reason instead of its strength when it did not draw.
 
 Every 60 s the water adds `water gpu 1.24 ms (median of 3500 frames, 0 skipped), classes lake+ocean, waves 256
 (7 tiles), ripples 512 at 0.125 yd, 30 Hz, up to 3 contacts, 0 steps dropped`: its GPU time without the client's
@@ -777,6 +868,8 @@ describe every key. In the game, `Ctrl+F7` opens the same settings in a window (
 | `InteriorAware`, `InteriorDensity` | 1, 0.15 | Fade outdoor layers indoors, keeping this fraction of their density |
 | `GodRays` | 0 | Radial sky rays, 0 = off |
 | `GlowCompensation` | 1 | Pre-compensate the fog for the client's glow |
+| `ForeverGlow` | 0 | 1 gives the client's glow Forever's per-light amount where Classic lights cover the camera |
+| `ColorGrading` | 0 | Strength 0..1 of Forever's per-light colour curve over the 3D view; 0 = off |
 | `FarClipMax` | 1583 | Continent view distance up to 1583 yd, within `farclip`; 0 keeps Ascension's 791 cap |
 | `MaxDistance` | 5000 | Fog range: sky integration length and the Classic distance-curve scale |
 | `Temporal` | 0.85 | History weight, 0 = off |
@@ -811,9 +904,9 @@ This is an atmospheric approximation, not a reproduction of WoW Forever's comple
 [Blizzard's official overview](
 https://news.blizzard.com/en-gb/article/24303862/world-of-warcraft-forever-whats-next-panel-recap)
 describes mist over water and moonlight through trees; matching those scenes needs matched camera, time, weather
-and exposure captures. Surface lighting, bloom and colour grading remain the client's own: the modern client's glow
-amounts and LUT grading are resolved from the Classic data but not applied yet, so colours still differ from
-Classic.
+and exposure captures. Surface lighting and bloom remain the client's own; the modern client's glow amounts and
+colour grading can be applied with `ForeverGlow` and `ColorGrading`, which stay off until they are compared with
+Forever in the game, so by default colours still differ from Classic.
 
 - The fog has been tested in the client with native D3D9 on an RTX 2060 laptop. A first modern-water build ran
   there on Elwynn lakes and the Darkshore coast; the review fixes since (direct-light shading, narrower shore
@@ -882,6 +975,14 @@ Classic.
   make no ripples, one map serves every water level inside the window, the window follows the camera target (which
   can leave the player in free-look or vehicle views), and FP16 render-target writes on the test GPU truncate, which
   damps ripples slightly more than the recurrence (about 6% of the amplitude over 2 s).
+- `ForeverGlow` and `ColorGrading` are harness-checked only. The client's glow is `lerp(screen, blur, blur byte) +
+  g·blur²`, while Forever's final composite adds or blends a linear blur term whose amounts are set on its CPU, so
+  only a glow of 0 means the same in both, and on continents Forever may still bloom from values the kit does not
+  hold. The grading curves brighten midtones and clip the brightest 10–19% of the range; whether Forever feeds them
+  its tonemapped image and whether a curve set only on the noon key holds all day are inferred. Text drawn during
+  the world render is graded with the 3D view, as the client's glow already applies to it; names, icons and the
+  interface are not. The grading keeps its own world-sized copy (about 8 MB at 1920×1080), released while
+  `ColorGrading=0`. Both need an owner comparison with Forever captures before either default changes.
 - The zone lights' edge fade distance is chosen here: their `TransitionType` is 0 in every row and the modern
   client's transition rule is not known.
 
