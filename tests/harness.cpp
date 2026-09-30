@@ -1777,6 +1777,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     grazing_upsample::CheckGrazingGroundUpsample(h.dev);
     god_ray_quality::CheckGodRays(h.dev);
     CheckTemporalQuality(h.dev);
+    CheckTemporalFallbackNoise(h.dev);
     CheckLightDisappearanceHistory(h);
     CheckSunOccluderLeavesFogLit(h);
     classic_phase::CheckSunsetHaloKeepsItsHue(h, FullPath(iniPath));

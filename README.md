@@ -44,8 +44,12 @@ sampling only while a Classic layer carries authored noise.
 With `Temporal` above 0, samples vary between frames and a temporal filter accumulates them. It rejects history
 from a different surface depth or depth class (world, distant terrain, sky) and lowers its weight where animated
 lighting changes the radiance; settings, map, screen-effect slot, projection and large camera changes discard
-it. With `Temporal=0`, samples stay at fixed midpoints so a stationary frame does not shimmer, and the temporal
-passes are skipped.
+it. Where no history applies (a newly exposed surface, the screen edge while turning, a point that reprojects behind
+the camera, the frame after history is discarded), it returns the average of the current samples in the 3×3
+low-resolution neighbourhood that lie on the pixel's own surface (same depth class, within 2% or 0.5 yd) instead of
+the pixel's single jittered sample, which cuts that frame's noise to about a third; fog detail there is slightly
+softer for the few frames the history takes to rebuild. With `Temporal=0`, samples stay at fixed midpoints so a
+stationary frame does not shimmer, and the temporal passes are skipped.
 
 The full-resolution composite upsamples the march through depth-validated taps. Ground seen at a grazing angle
 is interpolated from the current frame's march where the taps lie on the pixel's plane, the march is linear

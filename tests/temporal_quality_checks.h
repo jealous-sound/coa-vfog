@@ -11,6 +11,7 @@ constexpr float kFogDistance = 100.0f;
 constexpr float kCurrentFog = 0.2f;
 constexpr float kHistoryFog = 0.8f;
 constexpr float kWeight = 0.75f;
+constexpr float kSameSurfaceAverage = (7.0f * kCurrentFog + 1.0f) / 9.0f;
 
 DWORD Grey(float value)
 {
@@ -59,8 +60,9 @@ struct Fixture
     IDirect3DVertexDeclaration9* declaration = nullptr;
     float reproject[16] = {};
     DWORD encodedResult = 0;
+    UINT size;
 
-    explicit Fixture(IDirect3DDevice9* device) : dev(device) {}
+    explicit Fixture(IDirect3DDevice9* device, UINT textureSize = kSize) : dev(device), size(textureSize) {}
 
     ~Fixture()
     {
@@ -85,15 +87,14 @@ struct Fixture
         dev->GetDepthStencilSurface(&savedDepth);
         dev->GetStreamSource(0, &savedStream, &savedOffset, &savedStride);
         for (auto*& texture : inputs)
-            if (FAILED(dev->CreateTexture(kSize, kSize, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED,
-                                          &texture, nullptr)))
+            if (FAILED(dev->CreateTexture(size, size, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &texture, nullptr)))
                 return false;
         static const D3DVERTEXELEMENT9 elements[] = {
             {0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0}, D3DDECL_END()};
-        if (FAILED(dev->CreateTexture(kSize, kSize, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8,
+        if (FAILED(dev->CreateTexture(size, size, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8,
                                       D3DPOOL_DEFAULT, &output, nullptr)) ||
             FAILED(output->GetSurfaceLevel(0, &target)) ||
-            FAILED(dev->CreateOffscreenPlainSurface(kSize, kSize, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM,
+            FAILED(dev->CreateOffscreenPlainSurface(size, size, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM,
                                                     &readback, nullptr)) ||
             FAILED(dev->CreateVertexShader(reinterpret_cast<const DWORD*>(g_vs_fullscreen), &vs)) ||
             FAILED(dev->CreatePixelShader(reinterpret_cast<const DWORD*>(g_ps_temporal), &ps)) ||
@@ -124,13 +125,14 @@ struct Fixture
 
     float Draw(bool historyValid = true, float captureDepth = 0.0f, bool adaptiveLighting = false)
     {
+        const float extent = static_cast<float>(size);
         float constants[14][4] = {
-            {0, 0, kSize, kSize},
-            {1, 0, 1.0f / kSize, 1.0f / kSize},
+            {0, 0, extent, extent},
+            {1, 0, 1.0f / extent, 1.0f / extent},
             {1, 1, 0, 0},
             {1, 128.0f / 255.0f - 1.0f, kFogDistance, 0.94f},
             {1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1},
-            {kSize, kSize, 1.0f / kSize, 1.0f / kSize},
+            {extent, extent, 1.0f / extent, 1.0f / extent},
             {}, {}, {}, {},
             {kWeight, historyValid ? 1.0f : 0.0f, adaptiveLighting ? 1.0f : 0.0f, 0},
         };
@@ -142,7 +144,7 @@ struct Fixture
         }
         dev->SetDepthStencilSurface(nullptr);
         dev->SetRenderTarget(0, target);
-        D3DVIEWPORT9 viewport = {0, 0, kSize, kSize, 0.0f, 1.0f};
+        D3DVIEWPORT9 viewport = {0, 0, size, size, 0.0f, 1.0f};
         dev->SetViewport(&viewport);
         dev->SetVertexShader(vs);
         dev->SetPixelShader(captureDepth > 0.0f ? depthPs : ps);
@@ -191,6 +193,21 @@ struct Fixture
         const float result = static_cast<float>((encodedResult >> 16) & 255u) / 255.0f;
         readback->UnlockRect();
         return result;
+    }
+
+    bool ReadRed(std::vector<float>& red)
+    {
+        D3DLOCKED_RECT locked = {};
+        if (FAILED(readback->LockRect(&locked, nullptr, D3DLOCK_READONLY)))
+            return false;
+        red.resize(size * size);
+        for (UINT y = 0; y < size; ++y)
+        {
+            const auto* row = reinterpret_cast<const DWORD*>(static_cast<const BYTE*>(locked.pBits) + y * locked.Pitch);
+            for (UINT x = 0; x < size; ++x)
+                red[y * size + x] = static_cast<float>((row[x] >> 16) & 255u) / 255.0f;
+        }
+        return SUCCEEDED(readback->UnlockRect());
     }
 
     float DrawRayMask(bool skyAtSample)
@@ -247,6 +264,204 @@ bool CapturesDepth(Fixture& fixture, float viewDepth, DWORD rawDepth, DWORD expe
                     restoredDepth, depthClass, viewDepth, expectedClass);
     return matches;
 }
+
+constexpr UINT kNoiseSize = 16;
+constexpr UINT kForegroundColumns = 8;
+constexpr float kNoiseMean = 0.5f;
+constexpr float kNoiseAmplitude = 0.25f;
+constexpr float kHistoryNoiseAmplitude = 0.35f;
+constexpr float kForegroundFog = 0.9f;
+constexpr float kBackgroundMean = 0.3f;
+constexpr float kBackgroundAmplitude = 0.1f;
+constexpr float kBackgroundRawDepth = 0.9f;
+constexpr float kMaxFallbackNoiseRatio = 0.5f;
+
+float Jitter(UINT x, UINT y, uint32_t seed)
+{
+    uint32_t hash = (x * 73856093u) ^ (y * 19349663u) ^ (seed * 83492791u);
+    hash ^= hash >> 13;
+    hash *= 0x5BD1E995u;
+    hash ^= hash >> 15;
+    return static_cast<float>(hash & 0xFFFFu) / 65535.0f * 2.0f - 1.0f;
+}
+
+template <typename Texel>
+bool FillTexels(IDirect3DTexture9* texture, UINT size, Texel texel)
+{
+    D3DLOCKED_RECT locked = {};
+    if (FAILED(texture->LockRect(0, &locked, nullptr, 0)))
+        return false;
+    for (UINT y = 0; y < size; ++y)
+    {
+        auto* row = reinterpret_cast<DWORD*>(static_cast<BYTE*>(locked.pBits) + y * locked.Pitch);
+        for (UINT x = 0; x < size; ++x)
+            row[x] = texel(x, y);
+    }
+    return SUCCEEDED(texture->UnlockRect(0));
+}
+
+float Decoded(DWORD grey)
+{
+    return static_cast<float>(grey & 255u) / 255.0f;
+}
+
+DWORD NoisyCurrent(UINT x, UINT y)
+{
+    return Grey(kNoiseMean + kNoiseAmplitude * Jitter(x, y, 1));
+}
+
+DWORD NoisyHistory(UINT x, UINT y)
+{
+    return Grey(kNoiseMean + kHistoryNoiseAmplitude * Jitter(x, y, 2));
+}
+
+struct Spread
+{
+    double mean = 0;
+    double deviation = 0;
+};
+
+Spread SpreadOf(const std::vector<float>& values)
+{
+    Spread spread;
+    for (float value : values)
+        spread.mean += value;
+    spread.mean /= values.size();
+    for (float value : values)
+        spread.deviation += (value - spread.mean) * (value - spread.mean);
+    spread.deviation = std::sqrt(spread.deviation / values.size());
+    return spread;
+}
+
+std::vector<float> NoisyCurrentValues()
+{
+    std::vector<float> values;
+    for (UINT y = 0; y < kNoiseSize; ++y)
+        for (UINT x = 0; x < kNoiseSize; ++x)
+            values.push_back(Decoded(NoisyCurrent(x, y)));
+    return values;
+}
+
+bool ResetNoisy(Fixture& fixture)
+{
+    std::memset(fixture.reproject, 0, sizeof(fixture.reproject));
+    fixture.reproject[0] = fixture.reproject[5] = fixture.reproject[11] = 1.0f;
+    return FillTexels(fixture.inputs[0], kNoiseSize, NoisyCurrent) &&
+           FillTexels(fixture.inputs[1], kNoiseSize, NoisyHistory) &&
+           FillTexels(fixture.inputs[2], kNoiseSize, [](UINT, UINT) { return Grey(128.0f / 255.0f); }) &&
+           FillTexels(fixture.inputs[3], kNoiseSize, [](UINT, UINT) { return PackedDepth(1.0f, 0); });
+}
+
+UINT ClampedTexel(UINT coordinate, int offset)
+{
+    return static_cast<UINT>(std::clamp(static_cast<int>(coordinate) + offset, 0, static_cast<int>(kNoiseSize) - 1));
+}
+
+float ClampAndBlendHistory(UINT x, UINT y)
+{
+    const float current = Decoded(NoisyCurrent(x, y));
+    float lowest = current;
+    float highest = current;
+    for (int dy = -1; dy <= 1; ++dy)
+        for (int dx = -1; dx <= 1; ++dx)
+        {
+            const float neighbour = Decoded(NoisyCurrent(ClampedTexel(x, dx), ClampedTexel(y, dy)));
+            lowest = std::min(lowest, neighbour);
+            highest = std::max(highest, neighbour);
+        }
+    const float history = std::clamp(Decoded(NoisyHistory(x, y)), lowest, highest);
+    return current + (history - current) * kWeight;
+}
+
+bool FallbackCutsNoise(Fixture& fixture, bool historyValid, const char* path)
+{
+    std::vector<float> output;
+    if (fixture.Draw(historyValid) < 0.0f || !fixture.ReadRed(output))
+        return false;
+    const Spread input = SpreadOf(NoisyCurrentValues());
+    const Spread filtered = SpreadOf(output);
+    const double ratio = filtered.deviation / input.deviation;
+    std::printf("     %s: fog noise %.4f -> %.4f (ratio %.2f), mean %.4f -> %.4f\n", path, input.deviation,
+                filtered.deviation, ratio, input.mean, filtered.mean);
+    return ratio < kMaxFallbackNoiseRatio && std::fabs(filtered.mean - input.mean) <= 2.0 / 255.0;
+}
+
+DWORD SplitCurrent(UINT x, UINT y)
+{
+    return x < kForegroundColumns ? Grey(kForegroundFog)
+                                  : Grey(kBackgroundMean + kBackgroundAmplitude * Jitter(x, y, 3));
+}
+
+DWORD SplitDepth(UINT x, UINT)
+{
+    return Grey(x < kForegroundColumns ? 128.0f / 255.0f : kBackgroundRawDepth);
+}
+
+DWORD RejectedHistoryDepth(UINT, UINT)
+{
+    return PackedDepth(10.0f, 0);
+}
+
+bool AveragesOwnSurface(Fixture& fixture)
+{
+    std::vector<float> output;
+    if (!ResetNoisy(fixture) || !FillTexels(fixture.inputs[0], kNoiseSize, SplitCurrent) ||
+        !FillTexels(fixture.inputs[2], kNoiseSize, SplitDepth) ||
+        !FillTexels(fixture.inputs[3], kNoiseSize, RejectedHistoryDepth) || fixture.Draw() < 0.0f ||
+        !fixture.ReadRed(output))
+        return false;
+    const float brightestBackground = kBackgroundMean + kBackgroundAmplitude + 1.0f / 255.0f;
+    bool separated = true;
+    for (UINT y = 0; y < kNoiseSize; ++y)
+        separated = separated &&
+                    std::fabs(output[y * kNoiseSize + kForegroundColumns - 1] - kForegroundFog) <= 1.0f / 255.0f &&
+                    output[y * kNoiseSize + kForegroundColumns] <= brightestBackground;
+    return separated;
+}
+
+bool HistoryPathUnchanged(Fixture& fixture)
+{
+    std::vector<float> output;
+    if (!ResetNoisy(fixture) || fixture.Draw() < 0.0f || !fixture.ReadRed(output))
+        return false;
+    bool unchanged = true;
+    uint32_t checksum = 0;
+    for (UINT y = 0; y < kNoiseSize; ++y)
+        for (UINT x = 0; x < kNoiseSize; ++x)
+        {
+            const float value = output[y * kNoiseSize + x];
+            checksum = checksum * 31u + static_cast<uint32_t>(std::lround(value * 255.0f));
+            unchanged = unchanged && std::fabs(value - ClampAndBlendHistory(x, y)) <= 1.0f / 255.0f + 1.0e-4f;
+        }
+    std::printf("     history path output checksum %08X\n", checksum);
+    return unchanged;
+}
+}
+
+void CheckTemporalFallbackNoise(IDirect3DDevice9* dev)
+{
+    using namespace temporal_quality;
+    Fixture fixture(dev, kNoiseSize);
+    const bool ready = fixture.Create() && ResetNoisy(fixture);
+    Check(ready, "temporal fallback regression resources created");
+    if (!ready)
+        return;
+    Check(HistoryPathUnchanged(fixture),
+          "temporal history on a matching surface still blends the history clamped to the current 3x3 range");
+    Check(ResetNoisy(fixture) && FillTexels(fixture.inputs[3], kNoiseSize, RejectedHistoryDepth) &&
+              FallbackCutsNoise(fixture, true, "disocclusion"),
+          "temporal disocclusion averages the current jitter over the surface instead of showing one frame's noise");
+    Check(ResetNoisy(fixture) && FallbackCutsNoise(fixture, false, "invalid history"),
+          "temporal invalid history (camera cut, settings change) averages the current jitter");
+    Check(ResetNoisy(fixture), "temporal fallback fixture resets");
+    fixture.reproject[8] = 10.0f;
+    Check(FallbackCutsNoise(fixture, true, "off-screen"), "temporal screen-edge reveal averages the current jitter");
+    Check(ResetNoisy(fixture), "temporal fallback fixture resets behind the camera");
+    fixture.reproject[11] = -1.0f;
+    Check(FallbackCutsNoise(fixture, true, "behind the camera"),
+          "temporal reprojection behind the camera averages the current jitter");
+    Check(AveragesOwnSurface(fixture),
+          "the temporal fallback averages only current samples on the pixel's own surface");
 }
 
 void CheckTemporalQuality(IDirect3DDevice9* dev)
@@ -277,9 +492,9 @@ void CheckTemporalQuality(IDirect3DDevice9* dev)
     Check(Fill(fixture.inputs[3], PackedDepth(2.0f, 0)) && NearTemporal(fixture.Draw(), accumulated),
           "temporal camera translation validates distance in the previous view");
     fixture.Reset();
-    Check(Fill(fixture.inputs[3], PackedDepth(10.0f, 0)) && NearTemporal(fixture.Draw(), kCurrentFog),
+    Check(Fill(fixture.inputs[3], PackedDepth(10.0f, 0)) && NearTemporal(fixture.Draw(), kSameSurfaceAverage),
           "temporal newly exposed geometry rejects history at another depth");
-    Check(Fill(fixture.inputs[3], PackedDepth(1.0f, 255)) && NearTemporal(fixture.Draw(), kCurrentFog),
+    Check(Fill(fixture.inputs[3], PackedDepth(1.0f, 255)) && NearTemporal(fixture.Draw(), kSameSurfaceAverage),
           "temporal geometry rejects sky history even at matching depth");
     fixture.Reset();
     fixture.reproject[8] = 0.25f;
@@ -291,16 +506,19 @@ void CheckTemporalQuality(IDirect3DDevice9* dev)
     Check(Fill(fixture.inputs[2], Grey(1.0f)) && Fill(fixture.inputs[3], PackedDepth(50.0f, 255)) &&
               NearTemporal(fixture.Draw(), accumulated),
           "temporal sky history remains usable without a finite surface distance");
-    Check(Fill(fixture.inputs[3], PackedDepth(kFogDistance, 128)) && NearTemporal(fixture.Draw(), kCurrentFog),
+    Check(Fill(fixture.inputs[3], PackedDepth(kFogDistance, 128)) &&
+              NearTemporal(fixture.Draw(), kSameSurfaceAverage),
           "temporal sky rejects distant terrain history");
     fixture.Reset();
-    Check(NearTemporal(fixture.Draw(false), kCurrentFog), "temporal invalid history returns the current sample");
+    Check(NearTemporal(fixture.Draw(false), kSameSurfaceAverage),
+          "temporal invalid history returns the same-surface average of the current samples");
     fixture.reproject[8] = 10.0f;
-    Check(NearTemporal(fixture.Draw(), kCurrentFog), "temporal off-screen reprojection returns the current sample");
+    Check(NearTemporal(fixture.Draw(), kSameSurfaceAverage),
+          "temporal off-screen reprojection returns the same-surface average of the current samples");
     fixture.Reset();
     fixture.reproject[11] = -1.0f;
-    Check(NearTemporal(fixture.Draw(), kCurrentFog),
-          "temporal reprojection behind the camera returns the current sample");
+    Check(NearTemporal(fixture.Draw(), kSameSurfaceAverage),
+          "temporal reprojection behind the camera returns the same-surface average of the current samples");
     fixture.Reset();
     for (float viewDepth : {0.4f, 1.0f, 100.0f, 4999.0f})
     {
