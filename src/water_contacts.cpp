@@ -8,39 +8,51 @@ namespace
 constexpr float kClientSplashDepthPerHeight = 0.4f;
 constexpr float kClientFullStrength = 1.0f;
 constexpr float kClientDeepestStrength = 0.5f;
-constexpr float kFootprintRadiusPerCollisionRadius = 2.0f;
-constexpr float kMinFootprintRadius = 0.5f;
-constexpr float kMaxFootprintRadius = 6.0f;
-constexpr float kFootprintDisplacement = -0.04f;
-constexpr float kFullFootprintSpeed = 7.0f;
-constexpr float kFullImmersionPerHeight = 0.5f;
-constexpr float kEntryDisplacement = -0.5f;
-constexpr float kTeleportSlackYards = 2.0f;
-constexpr float kTeleportSpeedFactor = 3.0f;
-constexpr double kMaxTrackGapSeconds = 0.5;
+constexpr uint32_t kClientMoveFlags = 0xF;
+constexpr uint32_t kClientTurnFlags = 0x30;
+constexpr float kClientRippleSizePerScale = 1.0f / 3.0f;
+constexpr float kMinClientRippleSize = 1.0f / 3.0f;
+constexpr float kMaxClientRippleSize = 5.0f / 3.0f;
+constexpr float kIdleClientRippleSize = 0.6f;
+constexpr float kIdleClientRippleAlpha = 0.8f;
+constexpr float kMinClientRippleJitter = 0.9f;
+constexpr float kClientRippleJitterRange = 0.2f;
+constexpr float kRingStampRadiusPerClientSize = 1.0f;
+constexpr float kMinRingStampRadius = 0.25f;
+constexpr float kRingImpulsePerClientAlpha = -3.0f;
+constexpr float kSplashRadiusPerCollisionRadius = 2.0f;
+constexpr float kMinSplashRadius = 0.5f;
+constexpr float kMaxSplashRadius = 6.0f;
 constexpr double kStaleTrackSeconds = 0.5;
 constexpr double kDepartedDepthSeconds = 30.0;
-
-float Saturate(float x)
-{
-    return std::clamp(x, 0.0f, 1.0f);
-}
-
-float GroundLength(float x, float y)
-{
-    return std::sqrt(x * x + y * y);
-}
-
-bool Teleported(const float moved[2], float speed, double seconds)
-{
-    const double allowed = kTeleportSlackYards + kTeleportSpeedFactor * static_cast<double>(speed) * seconds;
-    return GroundLength(moved[0], moved[1]) > allowed;
-}
+constexpr uint64_t kJitterHashIncrement = 0x9E3779B97F4A7C15ull;
+constexpr uint64_t kJitterHashMultiplier1 = 0xBF58476D1CE4E5B9ull;
+constexpr uint64_t kJitterHashMultiplier2 = 0x94D049BB133111EBull;
+constexpr int kJitterHashBits = 53;
+constexpr double kJitterHashScale = 1.0 / static_cast<double>(1ull << kJitterHashBits);
 
 bool CrossesSplashDepth(float depth, float previousDepth, float height)
 {
     const float splashDepth = kClientSplashDepthPerHeight * height;
     return (depth > splashDepth) != (previousDepth > splashDepth);
+}
+
+uint64_t MixBits(uint64_t x)
+{
+    x += kJitterHashIncrement;
+    x = (x ^ (x >> 30)) * kJitterHashMultiplier1;
+    x = (x ^ (x >> 27)) * kJitterHashMultiplier2;
+    return x ^ (x >> 31);
+}
+
+WaterRippleDisturbance SplashOf(const WaterContactTrack& track)
+{
+    WaterRippleDisturbance splash;
+    for (int axis = 0; axis < 2; ++axis)
+        splash.from[axis] = splash.to[axis] = track.position[axis];
+    splash.radius = track.splashRadius;
+    splash.amplitude = track.pendingSplash;
+    return splash;
 }
 }
 
@@ -52,27 +64,59 @@ float ClientRippleStrength(float depth, float height)
     return std::max(kClientDeepestStrength, kClientDeepestStrength + (limit - depth) / limit);
 }
 
-float WaterFootprintRadius(float collisionRadius)
+ClientRippleKind ClientRippleKindOf(uint32_t movementFlags)
 {
-    return std::clamp(kFootprintRadiusPerCollisionRadius * collisionRadius, kMinFootprintRadius, kMaxFootprintRadius);
+    if (movementFlags & kClientMoveFlags)
+        return ClientRippleKind::Moving;
+    if (movementFlags & kClientTurnFlags)
+        return ClientRippleKind::Turning;
+    return ClientRippleKind::Idle;
 }
 
-float WaterFootprintAmplitude(float depth, float height, float speed)
+float ClientRippleSizeJitter(uint64_t guid, uint32_t nextRippleMs)
 {
-    const float immersion = Saturate(depth / (kFullImmersionPerHeight * height));
-    return kFootprintDisplacement * immersion * ClientRippleStrength(depth, height) *
-           Saturate(speed / kFullFootprintSpeed);
+    const uint64_t bits = MixBits(guid ^ MixBits(nextRippleMs)) >> (64 - kJitterHashBits);
+    return kMinClientRippleJitter + kClientRippleJitterRange * static_cast<float>(bits * kJitterHashScale);
+}
+
+ClientRipple ClientRippleOf(ClientRippleKind kind, float scale, float strength, float jitter)
+{
+    const float size =
+        std::clamp(scale * kClientRippleSizePerScale * jitter, kMinClientRippleSize, kMaxClientRippleSize) * strength;
+    const bool idle = kind == ClientRippleKind::Idle;
+    return {kind, idle ? kIdleClientRippleSize * size : size, idle ? kIdleClientRippleAlpha * strength : strength};
+}
+
+bool ClientRippleEmitted(uint32_t previousMs, uint32_t nextRippleMs)
+{
+    return nextRippleMs != 0 && nextRippleMs != previousMs;
+}
+
+WaterRippleDisturbance WaterRingImpulse(const float position[2], const ClientRipple& ripple)
+{
+    WaterRippleDisturbance ring;
+    for (int axis = 0; axis < 2; ++axis)
+        ring.from[axis] = ring.to[axis] = position[axis];
+    ring.radius = std::max(kRingStampRadiusPerClientSize * ripple.size, kMinRingStampRadius);
+    ring.amplitude = kRingImpulsePerClientAlpha * ripple.alpha;
+    return ring;
+}
+
+float WaterSplashRadius(float collisionRadius)
+{
+    return std::clamp(kSplashRadiusPerCollisionRadius * collisionRadius, kMinSplashRadius, kMaxSplashRadius);
 }
 
 float WaterEntryImpulse(float depth, float height)
 {
-    return kEntryDisplacement * ClientRippleStrength(depth, height);
+    return kRingImpulsePerClientAlpha * ClientRippleStrength(depth, height);
 }
 
 void WaterContactTracker::Reset()
 {
     m_tracks.clear();
     m_departed.clear();
+    m_rings.clear();
     m_seconds = -1.0;
     m_contacts = 0;
 }
@@ -115,33 +159,36 @@ float WaterContactTracker::FirstPreviousDepth(const WaterContact& contact, bool 
     return contact.swimming ? depth : 0.0f;
 }
 
+void WaterContactTracker::QueueRing(WaterContactTrack& track, const WaterContact& contact)
+{
+    const float strength = ClientRippleStrength(WaterContactDepth(contact), contact.height);
+    const ClientRipple ripple = ClientRippleOf(ClientRippleKindOf(contact.movementFlags), contact.scale, strength,
+                                               ClientRippleSizeJitter(contact.guid, contact.nextRippleMs));
+    if (m_rings.size() == kMaxPendingWaterRings)
+        m_rings.erase(m_rings.begin());
+    m_rings.push_back(WaterRingImpulse(contact.position, ripple));
+    ++track.rings;
+}
+
 void WaterContactTracker::Follow(WaterContactTrack& track, const WaterContact& contact, double seconds, bool created,
                                  bool seeding)
 {
     const float depth = WaterContactDepth(contact);
+    const bool emitted = !created && ClientRippleEmitted(track.nextRippleMs, contact.nextRippleMs);
     if (created)
         track.previousDepth = FirstPreviousDepth(contact, seeding);
-    else
-    {
-        const double elapsed = seconds - track.seenAt;
-        const float moved[2] = {contact.position[0] - track.position[0], contact.position[1] - track.position[1]};
-        const bool restarted = elapsed > kMaxTrackGapSeconds || Teleported(moved, contact.speed, elapsed);
-        for (int axis = 0; axis < 2; ++axis)
-            if (restarted)
-                track.velocity[axis] = 0.0f;
-            else if (elapsed > 0.0)
-                track.velocity[axis] = static_cast<float>(moved[axis] / elapsed);
-    }
     std::copy(contact.position, contact.position + 3, track.position);
     track.seenAt = seconds;
-    track.radius = WaterFootprintRadius(contact.radius);
-    track.footprint =
-        WaterFootprintAmplitude(depth, contact.height, GroundLength(track.velocity[0], track.velocity[1]));
-    if (contact.swimming)
-        return;
-    if (!seeding && CrossesSplashDepth(depth, track.previousDepth, contact.height))
-        track.pendingImpulse += WaterEntryImpulse(depth, contact.height);
-    track.previousDepth = depth;
+    track.nextRippleMs = contact.nextRippleMs;
+    track.splashRadius = WaterSplashRadius(contact.radius);
+    const bool splashed =
+        !contact.swimming && !seeding && CrossesSplashDepth(depth, track.previousDepth, contact.height);
+    if (splashed)
+        track.pendingSplash += WaterEntryImpulse(depth, contact.height);
+    else if (emitted)
+        QueueRing(track, contact);
+    if (!contact.swimming)
+        track.previousDepth = depth;
 }
 
 void WaterContactTracker::RememberDepth(const WaterContactTrack& track)
@@ -195,37 +242,35 @@ void WaterContactTracker::Update(const WaterContactFrame& frame, double seconds)
     DropStaleTracks(seconds);
 }
 
-uint32_t WaterContactTracker::DisturbancesAt(double stepSeconds, double stepLength, WaterRippleDisturbance* out,
-                                            uint32_t capacity)
+uint32_t WaterContactTracker::TakeRings(WaterRippleDisturbance* out, uint32_t capacity)
+{
+    const uint32_t taken = std::min(capacity, static_cast<uint32_t>(m_rings.size()));
+    std::copy(m_rings.begin(), m_rings.begin() + taken, out);
+    m_rings.erase(m_rings.begin(), m_rings.begin() + taken);
+    return taken;
+}
+
+uint32_t WaterContactTracker::TakeDisturbances(WaterRippleDisturbance* out, uint32_t capacity)
 {
     uint32_t count = 0;
     for (WaterContactTrack& track : m_tracks)
     {
-        const bool moving = SeenNow(track);
-        const float amplitude = (moving ? track.footprint : 0.0f) + track.pendingImpulse;
-        if (amplitude == 0.0f)
+        if (track.pendingSplash == 0.0f)
             continue;
         if (count == capacity)
-            break;
-        const double sinceSeen = moving ? std::min(stepSeconds - track.seenAt, 0.0) : 0.0;
-        WaterRippleDisturbance& d = out[count++];
-        for (int axis = 0; axis < 2; ++axis)
-        {
-            const double velocity = moving ? track.velocity[axis] : 0.0;
-            d.to[axis] = static_cast<float>(track.position[axis] + velocity * sinceSeen);
-            d.from[axis] = static_cast<float>(track.position[axis] + velocity * (sinceSeen - stepLength));
-        }
-        d.radius = track.radius;
-        d.amplitude = amplitude;
-        track.pendingImpulse = 0.0f;
+            return count;
+        out[count++] = SplashOf(track);
+        track.pendingSplash = 0.0f;
     }
-    return count;
+    return count + TakeRings(out + count, capacity - count);
 }
 
 bool WaterContactTracker::Emitting() const
 {
+    if (!m_rings.empty())
+        return true;
     for (const WaterContactTrack& track : m_tracks)
-        if (track.pendingImpulse != 0.0f || (SeenNow(track) && track.footprint != 0.0f))
+        if (track.pendingSplash != 0.0f)
             return true;
     return false;
 }

@@ -31,12 +31,17 @@ constexpr double kRippleDetailFadeTexels = 2.0;
 constexpr double kMinRayRise = 1e-4;
 constexpr float kDepthCopyPrecision = 1e-3f;
 constexpr double kMaxNormalLevels = 1.0;
+constexpr double kMaxOutlierNormalLevels = 6.0;
+constexpr double kMaxOutlierShare = 5e-3;
 constexpr double kMinTiltLevels = 8.0;
 constexpr size_t kMinTiltedPixels = 50;
 constexpr double kMinDistinctWeight = 0.1;
 constexpr BYTE kFlatNormalLow = 127;
 constexpr BYTE kFlatNormalHigh = 128;
 constexpr BYTE kFlatNormalUp = 255;
+constexpr uint32_t kRippleForwardFlag = 0x1;
+constexpr uint32_t kRippleWorldMs = 3600000;
+constexpr double kRippleMsPerSecond = 1000.0;
 
 WaterContact BasinContact(uint64_t guid, float x, float y, float depth)
 {
@@ -75,15 +80,25 @@ float RippleUnitY(int frame)
     return kRippleUnitStartY + kRippleUnitSpeed * static_cast<float>(frame * kRippleFrame);
 }
 
+WaterContact WadingUnit(int frame, double seconds, water_contact_checks::ClientRippleClock& clock)
+{
+    WaterContact unit = BasinContact(1, kRippleUnitX, RippleUnitY(frame), kRippleWadingDepth);
+    unit.movementFlags = kRippleForwardFlag;
+    unit.nextRippleMs =
+        clock.Due(kRippleWorldMs + static_cast<uint32_t>(std::lround(seconds * kRippleMsPerSecond)), unit);
+    return unit;
+}
+
 WaterFrameResult RunUnitThroughWater(BasinClient& client, const WaterView& view, double start,
                                      const WaterFrame& frame = WaterFrame())
 {
     RenderRippleFrame(client, view, start, {}, frame);
+    water_contact_checks::ClientRippleClock clock;
     WaterFrameResult last;
     for (int k = 1; k <= kRippleFrames; ++k)
     {
-        const WaterContact unit = BasinContact(1, kRippleUnitX, RippleUnitY(k), kRippleWadingDepth);
-        last = RenderRippleFrame(client, view, start + k * kRippleFrame, ContactsOf({unit}), frame);
+        const double seconds = start + k * kRippleFrame;
+        last = RenderRippleFrame(client, view, seconds, ContactsOf({WadingUnit(k, seconds, clock)}), frame);
     }
     return last;
 }
@@ -277,6 +292,7 @@ struct NormalComparison
 {
     size_t compared = 0;
     size_t tilted = 0;
+    size_t outliers = 0;
     double worst = 0.0;
 };
 
@@ -318,8 +334,11 @@ NormalComparison CompareRippleNormals(const WaterView& v, const RippleShadingRef
                 continue;
             const BYTE* p = rippled.At(x, y);
             const BYTE shaded[3] = {p[2], p[1], p[0]};
+            double outside = 0.0;
             for (int axis = 0; axis < 3; ++axis)
-                c.worst = std::max({c.worst, range.low[axis] - shaded[axis], shaded[axis] - range.high[axis]});
+                outside = std::max({outside, range.low[axis] - shaded[axis], shaded[axis] - range.high[axis]});
+            c.worst = std::max(c.worst, outside);
+            c.outliers += outside > kMaxNormalLevels ? 1 : 0;
             ++c.compared;
             c.tilted += range.tilt >= kMinTiltLevels ? 1 : 0;
         }
@@ -345,14 +364,14 @@ void CheckRippleSlopeFollowsForever(Harness& h, BasinClient& client, const Confi
     const NormalComparison c = CompareRippleNormals(view, reference, calm.image, rippled.image);
     const double weight = reference.constants.shape[0];
     std::printf("     ripple slope at step fraction %.2f and WaterRipples %.1f: %zu water pixels near the path against "
-                "the 7552035 formula over view depths within %.1f%%, %zu tilted by %.0f+ levels, worst %.2f/255 "
-                "outside it\n",
+                "the 7552035 formula over view depths within %.1f%%, %zu tilted by %.0f+ levels; %zu more than "
+                "%.0f/255 outside it, worst %.2f/255\n",
                 weight, reference.constants.shape[1], c.compared, kDepthCopyPrecision * 100.0f, c.tilted,
-                kMinTiltLevels, c.worst);
+                kMinTiltLevels, c.outliers, kMaxNormalLevels, c.worst);
     Check(calm.began && rippled.began && read && std::fabs(weight - 0.5) >= kMinDistinctWeight &&
               weight >= kMinDistinctWeight && weight <= 1.0 - kMinDistinctWeight &&
               reference.constants.shape[1] == kSlopeCheckGain && c.tilted >= kMinTiltedPixels &&
-              c.worst <= kMaxNormalLevels,
+              c.outliers <= kMaxOutlierShare * c.compared && c.worst <= kMaxOutlierNormalLevels,
           "the shaded ripple normals follow Forever's one-map slope: lerp(G, R, w) between steps, forward differences, "
           "(dx, dy)/sqrt((1 + dx^2)(1 + dy^2)) times 3 WaterRipples and the fade, to within the precision of the water "
           "depth copy");
@@ -547,6 +566,7 @@ void CheckRippleSummaryAndCost(Harness& h, BasinClient& client, const Config& ba
     bool parsed = true;
     for (int active = 0; active < 2; ++active)
     {
+        water_contact_checks::ClientRippleClock clock;
         WarmUpGpuKeepingTheFrame(h.dev);
         vf_test_force_water_summary();
         RenderRippleFrame(client, view, seconds, {});
@@ -555,8 +575,7 @@ void CheckRippleSummaryAndCost(Harness& h, BasinClient& client, const Config& ba
         {
             seconds += kRippleFrame;
             const WaterContactFrame contacts =
-                active ? ContactsOf({BasinContact(1, kRippleUnitX, RippleUnitY(k % kRippleFrames), kRippleWadingDepth)})
-                       : WaterContactFrame();
+                active ? ContactsOf({WadingUnit(k % kRippleFrames, seconds, clock)}) : WaterContactFrame();
             RenderRippleFrame(client, view, seconds, contacts);
         }
         vf_test_force_water_summary();

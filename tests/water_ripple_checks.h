@@ -2,17 +2,13 @@
 
 namespace water_ripple_checks
 {
-using water_contact_checks::ContactAt;
-using water_contact_checks::DisturbancesNow;
-using water_contact_checks::FrameOf;
 using water_contact_checks::kRunSpeed;
 using water_contact_checks::kStartSeconds;
-using water_contact_checks::kWadingDepth;
 
-constexpr int kTrackerFrameRates[] = {30, 60, 144};
 constexpr int kReferenceFrameRates[] = {144, 37};
 constexpr double kTrackedSeconds = 2.0;
-constexpr float kTrackTolerance = 1e-3f;
+constexpr double kRingStart = -6.0;
+constexpr int kStepsPerRing = 3;
 constexpr int kTexels = kWaterRippleTexelsLow;
 constexpr int kLongRunSteps = 3000;
 constexpr int kLongRunImpulsePeriod = 10;
@@ -39,56 +35,6 @@ constexpr int kRecentreSteps = 40;
 constexpr int kRecentreShiftPerStep = 3;
 constexpr int kTimedSteps = 32;
 constexpr int kTimedDisturbances[] = {0, 4, 32};
-
-struct StepRecord
-{
-    double seconds;
-    WaterRippleDisturbance disturbance;
-};
-
-std::vector<StepRecord> TrackAtFrameRate(int framesPerSecond)
-{
-    WaterContactTracker tracker;
-    WaterRipples clock;
-    std::vector<StepRecord> steps;
-    const double end = kStartSeconds + kTrackedSeconds;
-    for (int frame = 0;; ++frame)
-    {
-        const double t = std::min(kStartSeconds + static_cast<double>(frame) / framesPerSecond, end);
-        const float x = static_cast<float>(kRunSpeed * (t - kStartSeconds));
-        tracker.Update(FrameOf({ContactAt(1, x, 0.0f, kWadingDepth)}), t);
-        const WaterRippleSchedule schedule = clock.Schedule(t);
-        for (int step = 0; step < schedule.steps; ++step)
-        {
-            WaterRippleDisturbance d[kMaxWaterRippleDisturbances];
-            if (DisturbancesNow(tracker, schedule.stepSeconds[step], d))
-                steps.push_back({schedule.stepSeconds[step], d[0]});
-        }
-        if (t >= end)
-            return steps;
-    }
-}
-
-void CheckTrackerFrameRateIndependence()
-{
-    const std::vector<StepRecord> reference = TrackAtFrameRate(kTrackerFrameRates[0]);
-    bool same = !reference.empty();
-    for (int framesPerSecond : kTrackerFrameRates)
-    {
-        const std::vector<StepRecord> steps = TrackAtFrameRate(framesPerSecond);
-        std::printf("     %3d fps: %zu footprint steps\n", framesPerSecond, steps.size());
-        same = same && steps.size() == reference.size();
-        for (size_t i = 0; same && i < steps.size(); ++i)
-        {
-            const WaterRippleDisturbance& a = steps[i].disturbance;
-            const WaterRippleDisturbance& b = reference[i].disturbance;
-            same = steps[i].seconds == reference[i].seconds && std::fabs(a.to[0] - b.to[0]) < kTrackTolerance &&
-                   std::fabs(a.from[0] - b.from[0]) < kTrackTolerance &&
-                   std::fabs(a.amplitude - b.amplitude) < kTrackTolerance;
-        }
-    }
-    Check(same, "a unit running at 7 yd/s leaves the same footprint at every 30 Hz step at 30, 60 and 144 fps");
-}
 
 enum class HalfRounding
 {
@@ -729,9 +675,19 @@ void CheckUnusableCentreKeepsTheWindow(IDirect3DDevice9* dev)
           "a non-finite or out-of-range window centre keeps the ripple window where it was and the ripples running");
 }
 
+uint32_t RingsOfStep(double stepSeconds, WaterRippleDisturbance* out)
+{
+    const double elapsed = stepSeconds - kStartSeconds;
+    const long step = std::lround(elapsed * kWaterRippleStepsPerSecond);
+    if (step % kStepsPerRing != 0)
+        return 0;
+    const float at[2] = {static_cast<float>(kRingStart + kRunSpeed * elapsed), 0.0f};
+    out[0] = WaterRingImpulse(at, ClientRippleOf(ClientRippleKind::Moving, 1.0f, 1.0f, 1.0f));
+    return 1;
+}
+
 RippleState RunAtFrameRate(IDirect3DDevice9* dev, int framesPerSecond, uint64_t& steps)
 {
-    WaterContactTracker tracker;
     RippleState state;
     WaterRipples ripples;
     const bool prepared = ripples.Prepare(dev, kTexels);
@@ -740,14 +696,11 @@ RippleState RunAtFrameRate(IDirect3DDevice9* dev, int framesPerSecond, uint64_t&
     for (int frame = 0; prepared; ++frame)
     {
         const double t = std::min(kStartSeconds + static_cast<double>(frame) / framesPerSecond, end);
-        const float x = static_cast<float>(-6.0 + kRunSpeed * (t - kStartSeconds));
-        tracker.Update(FrameOf({ContactAt(1, x, 0.0f, kWadingDepth)}), t);
         const WaterRippleSchedule schedule = ripples.Schedule(t);
         for (int step = 0; step < schedule.steps; ++step)
         {
             WaterRippleDisturbance d[kMaxWaterRippleDisturbances];
-            const uint32_t count = DisturbancesNow(tracker, schedule.stepSeconds[step], d);
-            ripples.Step(dev, centre, d, count);
+            ripples.Step(dev, centre, d, RingsOfStep(schedule.stepSeconds[step], d));
         }
         if (t >= end)
             break;
@@ -764,8 +717,8 @@ void CheckSimulationFrameRateIndependence(IDirect3DDevice9* dev)
     const RippleState slow = RunAtFrameRate(dev, kReferenceFrameRates[1], steps[1]);
     const float difference = MaxDifference(fast, slow);
     const float peak = Peak(fast);
-    std::printf("     running unit for %.2f s at %d and %d fps: %llu and %llu steps, peak %.4f, largest difference "
-                "%.2e\n",
+    std::printf("     rings along a 7 yd/s path for %.2f s at %d and %d fps: %llu and %llu steps, peak %.4f, largest "
+                "difference %.2e\n",
                 kTrackedSeconds + 0.01, kReferenceFrameRates[0], kReferenceFrameRates[1],
                 static_cast<unsigned long long>(steps[0]), static_cast<unsigned long long>(steps[1]), peak,
                 difference);
@@ -825,8 +778,6 @@ void ReportStepCost(IDirect3DDevice9* dev)
 
 void CheckWaterRipples(IDirect3DDevice9* dev)
 {
-    CheckTrackerFrameRateIndependence();
-
     IDirect3DStateBlock9* state = nullptr;
     IDirect3DSurface9* target = nullptr;
     IDirect3DSurface9* depth = nullptr;

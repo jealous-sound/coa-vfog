@@ -1120,8 +1120,7 @@ bool WaterRenderer::SimulateRipples(IDirect3DDevice9* dev, double seconds)
     WaterRippleDisturbance disturbances[kMaxWaterRippleDisturbances];
     for (int step = 0; step < schedule.steps; ++step)
     {
-        const uint32_t count = m_contacts.DisturbancesAt(schedule.stepSeconds[step], kWaterRippleStepSeconds,
-                                                         disturbances, kMaxWaterRippleDisturbances);
+        const uint32_t count = m_contacts.TakeDisturbances(disturbances, kMaxWaterRippleDisturbances);
         m_ripples.Step(dev, centre, disturbances, count);
     }
     m_summaryRippleTexels = std::max(m_summaryRippleTexels, texels);
