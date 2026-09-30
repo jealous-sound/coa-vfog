@@ -29,6 +29,18 @@ constexpr float kBeyondViewport = 1.0f;
 constexpr float kNearSilhouetteYards = 5.0f;
 constexpr float kFarBackgroundYards = 400.0f;
 constexpr DWORD kSilhouetteSceneColour = 0xFF202020;
+constexpr DWORD kCoverageInside = 0xFFFFFFFF;
+constexpr DWORD kCoverageOutside = 0xFF000000;
+constexpr int kSilhouetteSearchFrom = 630;
+constexpr int kSilhouetteSearchTo = 650;
+constexpr int kReferenceOffset = 4;
+constexpr int kSilhouetteRowStep = 40;
+constexpr int kMinPartialCoverage = 50;
+constexpr int kMaxPartialCoverage = 235;
+constexpr int kMinFogContrast = 30;
+constexpr float kMinCoverageBlend = 0.1f;
+constexpr float kMaxCoverageBlend = 0.9f;
+constexpr int kMinSilhouetteRows = 8;
 constexpr int kSilhouetteMargin = 3;
 constexpr int kMaxSingleSampledDifference = 2;
 constexpr float kMinShadedWaterFraction = 0.9f;
@@ -197,11 +209,31 @@ struct WorldCamera
     }
 };
 
+const water_checks::ClientRenderState kClientStencil[] = {
+    {D3DRS_STENCILFUNC, D3DCMP_LESS},       {D3DRS_STENCILREF, 7},
+    {D3DRS_STENCILMASK, 0x3C},              {D3DRS_STENCILWRITEMASK, 0x5A},
+    {D3DRS_STENCILPASS, D3DSTENCILOP_INCR}, {D3DRS_STENCILFAIL, D3DSTENCILOP_DECR},
+    {D3DRS_STENCILZFAIL, D3DSTENCILOP_INVERT},
+};
+
+bool ClientStencilKept(IDirect3DDevice9* dev)
+{
+    bool kept = true;
+    for (const water_checks::ClientRenderState& state : kClientStencil)
+    {
+        DWORD value = 0;
+        dev->GetRenderState(state.state, &value);
+        kept = kept && value == state.value;
+    }
+    return kept;
+}
+
 struct FogFrame
 {
     bool rendered = false;
     const char* skip = "";
     bool statesKept = false;
+    bool stencilKept = false;
     DWORD depthFunction = 0;
     bool depthRead = false;
     float copied[2] = {};
@@ -219,6 +251,8 @@ FogFrame RenderFogOverDepthQuads(Harness& m)
     const Image before = Capture(m.dev);
     m.SetEngineState(camera.world);
     m.dev->SetRenderState(D3DRS_ZFUNC, kClientDepthFunction);
+    for (const water_checks::ClientRenderState& state : kClientStencil)
+        m.dev->SetRenderState(state.state, state.value);
     Sentinel s0;
     ReadSentinel(m.dev, s0);
     const FrameInputs in = camera.Inputs();
@@ -231,6 +265,7 @@ FogFrame RenderFogOverDepthQuads(Harness& m)
     ReleaseSentinel(s0);
     ReleaseSentinel(s1);
     m.dev->GetRenderState(D3DRS_ZFUNC, &f.depthFunction);
+    f.stencilKept = ClientStencilKept(m.dev);
     const DepthTexel texels[2] = {kNearQuadTexel, kFarQuadTexel};
     f.depthRead = vf_test_read_scene_depth(texels, 2, f.copied) != 0;
     const Image after = Capture(m.dev);
@@ -507,29 +542,106 @@ Image RenderSilhouette(Harness& m, const WorldCamera& camera, DWORD nearColour, 
 
 struct SilhouetteFrames
 {
-    Image fogged;
+    Image coverage;
+    Image overSceneCopy;
+    Image fixedFunctionBlend;
 };
 
 SilhouetteFrames RenderSilhouetteFrames(Harness& m)
 {
-    Config fog = MultisamplingConfig(true);
-    vf_test_set_config(&fog);
     const WorldCamera camera;
     SilhouetteFrames frames;
-    frames.fogged = RenderSilhouette(m, camera, kSilhouetteSceneColour, kSilhouetteSceneColour, true);
+    Config linear = MultisamplingConfig(true);
+    vf_test_set_config(&linear);
+    frames.coverage = RenderSilhouette(m, camera, kCoverageInside, kCoverageOutside, false);
+    frames.overSceneCopy = RenderSilhouette(m, camera, kSilhouetteSceneColour, kSilhouetteSceneColour, true);
+    Config gamma = linear;
+    gamma.colorSpace = 0;
+    vf_test_set_config(&gamma);
+    frames.fixedFunctionBlend = RenderSilhouette(m, camera, kSilhouetteSceneColour, kSilhouetteSceneColour, true);
+    vf_test_set_config(&linear);
     return frames;
 }
 
-void CheckSilhouetteMatchesSingleSampled(const SilhouetteFrames& multisampled, const SilhouetteFrames& single)
+int PartlyCoveredColumn(const Image& coverage, UINT y)
+{
+    for (int x = kSilhouetteSearchFrom; x <= kSilhouetteSearchTo; ++x)
+    {
+        const int value = coverage.At(static_cast<UINT>(x), y)[1];
+        if (value >= kMinPartialCoverage && value <= kMaxPartialCoverage)
+            return x;
+    }
+    return -1;
+}
+
+void CheckSilhouetteFogBlendsByCoverage(const Image& coverage, const Image& fogged, const char* blend)
+{
+    int rows = 0;
+    int blended = 0;
+    float lowest = 1.0f;
+    float highest = 0.0f;
+    for (UINT y = kSilhouetteRowStep; y < kWorldHeight - kSilhouetteRowStep; y += kSilhouetteRowStep)
+    {
+        const int x = PartlyCoveredColumn(coverage, y);
+        if (x < 0)
+            continue;
+        int channel = 0;
+        int contrast = 0;
+        const UINT nearX = static_cast<UINT>(x - kReferenceOffset);
+        const UINT farX = static_cast<UINT>(x + kReferenceOffset);
+        for (int ch = 0; ch < 3; ++ch)
+        {
+            const int span = fogged.At(nearX, y)[ch] - fogged.At(farX, y)[ch];
+            if (std::abs(span) > std::abs(contrast))
+            {
+                contrast = span;
+                channel = ch;
+            }
+        }
+        if (std::abs(contrast) < kMinFogContrast)
+            continue;
+        ++rows;
+        const float farValue = fogged.At(farX, y)[channel];
+        const float share = (fogged.At(static_cast<UINT>(x), y)[channel] - farValue) / contrast;
+        lowest = std::min(lowest, share);
+        highest = std::max(highest, share);
+        blended += share >= kMinCoverageBlend && share <= kMaxCoverageBlend ? 1 : 0;
+    }
+    std::printf("     %s: silhouette rows with partial coverage and fog contrast %d, blended by coverage %d "
+                "(near-fog share %.2f..%.2f)\n",
+                blend, rows, blended, lowest, highest);
+    Check(rows >= kMinSilhouetteRows && blended == rows,
+          (std::string("at a 4x silhouette the pixel blends the near and the far fog by sample coverage (") + blend +
+           ")")
+              .c_str());
+}
+
+void CheckSilhouetteFogBlendsByCoverage(const SilhouetteFrames& frames, const std::wstring& outDir)
+{
+    water_checks::SaveImage(outDir, L"msaa-silhouette", frames.overSceneCopy);
+    CheckSilhouetteFogBlendsByCoverage(frames.coverage, frames.overSceneCopy, "linear light over the scene copy");
+    CheckSilhouetteFogBlendsByCoverage(frames.coverage, frames.fixedFunctionBlend, "gamma, fixed-function blend");
+}
+
+int LargestDifferenceAwayFromSilhouette(const Image& multisampled, const Image& single)
 {
     int largest = 0;
     for (UINT y = 0; y < kWorldHeight; ++y)
         for (UINT x = 0; x < kWidth; ++x)
             if (std::abs(static_cast<int>(x) - static_cast<int>(kSilhouetteX)) > kSilhouetteMargin)
-                largest = std::max(largest, LargestChannelDifference(multisampled.fogged, single.fogged, x, y));
-    std::printf("     fogged frame away from the silhouette: largest 4x vs 1x difference %d/255\n", largest);
-    Check(largest <= kMaxSingleSampledDifference,
-          "away from silhouettes the 4x fog equals the single-sampled fog");
+                largest = std::max(largest, LargestChannelDifference(multisampled, single, x, y));
+    return largest;
+}
+
+void CheckSilhouetteMatchesSingleSampled(const SilhouetteFrames& multisampled, const SilhouetteFrames& single)
+{
+    const int linear = LargestDifferenceAwayFromSilhouette(multisampled.overSceneCopy, single.overSceneCopy);
+    const int gamma = LargestDifferenceAwayFromSilhouette(multisampled.fixedFunctionBlend, single.fixedFunctionBlend);
+    std::printf("     fogged frame away from the silhouette: largest 4x vs 1x difference %d/255 over the scene copy, "
+                "%d/255 with fixed-function blending\n",
+                linear, gamma);
+    Check(linear <= kMaxSingleSampledDifference && gamma <= kMaxSingleSampledDifference,
+          "away from silhouettes the 4x fog equals the single-sampled fog in both blend modes");
 }
 
 void CheckMultisampledDevice(Harness& m, const std::wstring& outDir)
@@ -552,14 +664,15 @@ void CheckMultisampledDevice(Harness& m, const std::wstring& outDir)
     const FogFrame fog = RenderFogOverDepthQuads(m);
     PrintFogFrame("4x fog", fog);
     Check(FogFrameDrawn(fog), "fog draws on a 4x device and its INTZ copy equals the depth the scene drew");
-    Check(fog.statesKept && fog.depthFunction == kClientDepthFunction,
-          "on a 4x device the fog restores render, sampler, shader, constant, target and depth-test state");
+    Check(fog.statesKept && fog.depthFunction == kClientDepthFunction && fog.stencilKept,
+          "on a 4x device the fog restores render, sampler, shader, constant, target, depth-test and stencil state");
 
     water_checks::AssignWaterData(water_checks::MakeSyntheticWaterData());
     vf_test_set_water_seconds(water_checks::kFrameSeconds);
     const WaterFrames multisampledWater = RenderWaterFrames(m);
     CheckWaterOnMultisampledTargets(multisampledWater, outDir);
     const SilhouetteFrames multisampledSilhouette = RenderSilhouetteFrames(m);
+    CheckSilhouetteFogBlendsByCoverage(multisampledSilhouette, outDir);
 
     const bool single = ResetTo(m, D3DMULTISAMPLE_NONE);
     const Targets reset1x = DescribeTargets(m.dev);

@@ -256,12 +256,11 @@ float StepJitter(float2 lowResTexel)
     return JitterEnabled() ? frac(InterleavedGradientNoise(lowResTexel) + FrameIndex() * kGoldenRatioFraction) : 0.5;
 }
 
-float4 IntegrateFogAtPixel(float2 pixel, float jitter)
+float4 IntegrateFogAtDepth(float2 pixel, float depth, float jitter)
 {
     float3 viewRay = ViewRayAtUnitDepth(pixel);
     float distancePerViewZ = length(viewRay);
     float3 viewDirection = viewRay / distancePerViewZ;
-    float depth = SampleDepth(sDepth, pixel);
     float skyMask = IsSky(depth) ? 1 : 0;
     float viewZ = LinearDepth(depth);
     float horizonBlend = max(BeyondFarClip(depth) ? 1 : 0, smoothstep(HorizonBlendStart(), FarClip(), viewZ));
@@ -306,4 +305,9 @@ float4 IntegrateFogAtPixel(float2 pixel, float jitter)
         }
     }
     return float4(clamp(inScatteredRadiance, 0, 65504), 1 - transmittance);
+}
+
+float4 IntegrateFogAtPixel(float2 pixel, float jitter)
+{
+    return IntegrateFogAtDepth(pixel, SampleDepth(sDepth, pixel), jitter);
 }

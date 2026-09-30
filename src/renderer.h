@@ -35,6 +35,13 @@ private:
     };
 
     bool EnsureShaders(IDirect3DDevice9* dev);
+    bool EnsureSplitComposites(IDirect3DDevice9* dev);
+    void ReleaseSplitComposites();
+    IDirect3DPixelShader9* CompositeShader(bool lit, bool splitSamples, int quality) const;
+    void MarkSilhouetteSamples(IDirect3DDevice9* dev, IDirect3DSurface9* sampleDepth, const D3DVIEWPORT9& vp);
+    void DrawSamplesMarked(IDirect3DDevice9* dev, DWORD marker, IDirect3DPixelShader9* shader, const float* side);
+    void DrawCompositeBySampleDepth(IDirect3DDevice9* dev, IDirect3DSurface9* sampleDepth, const D3DVIEWPORT9& vp,
+                                    bool lit, int quality, bool overwrites);
     bool EnsureStateBlock(IDirect3DDevice9* dev);
     bool EnsureTargets(IDirect3DDevice9* dev, UINT lowW, UINT lowH, UINT rayW, UINT rayH);
     bool EnsureSceneCopy(IDirect3DDevice9* dev, IDirect3DSurface9* target, UINT w, UINT h);
@@ -65,6 +72,10 @@ private:
     IDirect3DPixelShader9* m_historyDepthShader = nullptr;
     IDirect3DPixelShader9* m_composite[3] = {};
     IDirect3DPixelShader9* m_litComposite[3] = {};
+    IDirect3DPixelShader9* m_silhouetteMask = nullptr;
+    IDirect3DPixelShader9* m_splitComposite[3] = {};
+    IDirect3DPixelShader9* m_litSplitComposite[3] = {};
+    bool m_splitCompositesUnavailable = false;
     IDirect3DPixelShader9* m_rayMask = nullptr;
     IDirect3DPixelShader9* m_rayBlur = nullptr;
     IDirect3DPixelShader9* m_probe = nullptr;

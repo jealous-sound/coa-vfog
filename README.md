@@ -79,6 +79,17 @@ before the water pass arms, after the water surfaces and before the fog; the cop
 scene-colour copies become resolves of the multisampled back buffer, and the water's stencil tags and shading are
 tested per sample, so water edges are antialiased too.
 
+At silhouettes the fog composite splits each pixel's samples by depth, so a pixel that is half tree and half sky
+resolves to the tree's and the sky's fog weighted by coverage instead of taking one of them. A small pass finds the
+pixels whose 3×3 copied depths hold a discontinuity: another depth class, or a separation beyond the same-surface
+tolerance that is not planar (raw depth is affine across a plane, so grazing ground is not split). It writes an
+`oDepth` halfway between the nearest and farthest depth, tests it against the multisampled depth and marks the near
+and far samples in the stencil, which the client does not use, after clearing it over the world viewport. The
+composite then draws the unmarked pixels as before, and one pass per marked side draws its samples with the fog at
+that side's depth; when the composite overwrites the scene copy the first pass draws every pixel without depth and
+the side passes redraw only the pixel's other side. `oDepth` is clamped to the viewport's depth range, so the split
+uses MinZ 0 and MaxZ 1 instead of the world viewport's 0.94.
+
 **View distance.** Ascension's Extensions.dll detours the far-clip clamp (`0x780770`) and caps maps 0, 1, 530
 and 571 at 791.66 yd; the engine allows 1583.33 and instances use it. With `FarClipMax` set, the DLL's calls
 to the clamp lift that cap. Terrain loading, the chunk pool, the WDL horizon and the fog follow the far clip;
@@ -228,7 +239,10 @@ Engine notes behind the code:
   registered. The functions come from `nvapi_QueryInterface` with the IDs of NVIDIA's public NVAPI headers:
   `0x0150E828` Initialize, `0xA064BDFC` RegisterResource, `0xBB2B17AA` UnregisterResource, `0x22DE03AA`
   StretchRectEx. `StretchRect` from the multisampled back buffer (whole, a sub-rectangle, a quarter-size linear
-  copy) resolves it, and a stencil-EQUAL full-screen pass on multisampled colour and depth tests each sample.
+  copy) resolves it, and a stencil-EQUAL full-screen pass on multisampled colour and depth tests each sample. A
+  pixel shader's `oDepth` against the multisampled depth with `ZFUNC` LESS or GREATEREQUAL divides a pixel's
+  samples by depth, and the resolve weighs the two results by coverage; `oDepth` is clamped to the viewport's
+  MinZ..MaxZ (an `oDepth` of 1.0 fails against a stored 1.0 when MaxZ is 0.94).
 - Liquid depth. While writes are forced on, the wrapper records the client's own `D3DRS_ZWRITEENABLE` requests
   and re-applies the last one afterwards, so the client's render-state cache stays accurate.
 - World-name text. `0x7E5818` (`E8 23 76 ED FF`) calls `0x6BCE40`, a cdecl wrapper that takes the font batch
@@ -367,8 +381,9 @@ depth overrides, fog-data validation, the GPU timer and depth probe, the setting
 liquid classification, the water pass driven through the hook entry points (state restoration, stencil tagging,
 optics against a CPU reference, fault recovery) and the water settings. The multisampling suite creates a 4x
 device through the wrapper: the sample counts offered to the game, the kept back buffer and depth, the fog and
-water on the copied depth against the drawn depth and a single-sampled frame, `Reset` 4x→1x→4x, and the fallbacks
-(`Multisampling=0`, no copy method, a failing self-test). They do not establish in-game appearance or
+water on the copied depth against the drawn depth and a single-sampled frame, the fog blended by coverage at a
+silhouette in both blend modes, `Reset` 4x→1x→4x, and the fallbacks (`Multisampling=0`, no copy method, a failing
+self-test). They do not establish in-game appearance or
 performance. It writes `before.png`, `after.png`,
 `overlay.png` and the debug views to `build/harness-out`.
 
@@ -499,6 +514,11 @@ client's LUT grading is not reproduced, so colours still differ from Classic.
   partly covered edge pixel with that sample's depth. Multisampling does not smooth alpha-tested leaves and grass
   (alpha-to-coverage is a follow-up), and without a copy method no post-process antialiasing replaces it (SMAA is
   a follow-up).
+- The silhouette split sees only the one-sample copy of the 3×3 neighbourhood: geometry thinner than a pixel that
+  no copied sample hits takes the far fog, a pixel with three depth layers is split in two, and over the scene
+  copy both sides blend with the resolved scene colour. On the RTX 2060 Max-Q at 1920×1080 (performance scene,
+  `--samples 4`) the depth copy adds up to 0.3 ms to the fog passes and the split 0.2 to 0.8 ms, the most with
+  eight large point lights.
 - The distance fog (`FarFog`, maps without Classic data) has no modern counterpart: it stands in for the stock
   fog up to the 3.3.5 far clip, which is far shorter than the modern client's.
 - `FarClipMax` raises memory use (about four times the loaded terrain in a 32-bit process); Ascension's reason
