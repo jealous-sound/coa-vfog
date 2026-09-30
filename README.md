@@ -207,14 +207,17 @@ there is no glow and the curve is the identity.
 - **Colour grading.** `LightData.ColorGradingFileDataID` names a 32³ BGRA LUT stored as a 1024×32 strip (R across each
   32-texel tile, G down the rows, B by tile). Every LUT that lights on 3.3.5 maps reach (1140733, an identity, and
   8248426, 8248427, 8286665–8286669) applies one curve alike to R, G and B, so the file keeps 32 codes per LUT; the
-  converter checks this exactly and fails otherwise. `DarkerColorGradingFileDataID` is left out: its LUT 1308655 is a
-  real colour grade that no single curve reproduces, and only params 6563, on the Classic-only map 2835, uses it. A
-  key sets a curve or none. The curve at a time of day is interpolated between the nearest earlier and later keys that
-  set one, wrapping past midnight, so the params that grade only at 12:00 (135 of the 147 graded) hold their curve all
-  day, and param 7605's explicit identity keys fade into its 18:00 grade. This rule is inferred (confidence about
-  0.6): 7605 would not need identity keys if a key without a LUT meant identity. Lights and weather blend curves by
-  their weights, and params without a graded key count as identity. The Eastern Kingdoms clear-weather light (params
-  7748) grades with 8286666 and Kalimdor's (7636) with the milder 8286665.
+  converter checks this exactly (every channel code equal) and fails otherwise. `DarkerColorGradingFileDataID` is left
+  out. Its real colour grade, LUT 1308655, which no single curve reproduces, belongs to params 6829, 6832, 6842 and
+  6934, which no placed light references. The only placed light params with a darker LUT is 6563, on the Classic-only
+  map 2835, and its darker LUT is the identity 1140733 on a key without fog, which the file does not keep either; the
+  converter lists the darker LUTs of placed params that it leaves out. A key sets a curve or none. The curve at a time
+  of day is interpolated between the nearest earlier and later keys that set one, wrapping past midnight, so the params
+  that grade only at 12:00 (135 of the 147 graded) hold their curve all day, and param 7605's explicit identity keys
+  fade into its 18:00 grade. This rule is inferred (confidence about 0.6): 7605 would not need identity keys if a key
+  without a LUT meant identity. Lights and weather blend curves by their weights, and params without a graded key count
+  as identity. The Eastern Kingdoms clear-weather light (params 7748) grades with 8286666 and Kalimdor's (7636) with the
+  milder 8286665.
 
 The frame summary logs the resolved glow, the Classic coverage and three points of the grading curve wherever Classic
 lights reach the camera.

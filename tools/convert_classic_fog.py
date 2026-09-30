@@ -57,7 +57,6 @@ BGRA_BYTES = 4
 BLUE, GREEN, RED = range(3)
 LUT_SIDE = 32
 LUT_STRIP_WIDTH = LUT_SIDE * LUT_SIDE
-GRADING_CURVE_TOLERANCE = 1
 
 DIFFUSE_COLUMN = 1
 EMISSIVE_COLUMN = 2
@@ -339,12 +338,9 @@ def lut_outputs_by_input(strip):
 
 def grading_curve(kit, file_data_id):
     outputs = lut_outputs_by_input(blp_strip(file_data_id, kit.read(GRADING_ASSET % file_data_id)))
-    curve = [round(sum(values) / len(values)) for values in outputs]
-    deviation = max(abs(value - entry) for values, entry in zip(outputs, curve) for value in values)
-    if deviation > GRADING_CURVE_TOLERANCE:
-        raise SystemExit("grading LUT %d is not one curve shared by R, G and B (deviation %d)"
-                         % (file_data_id, deviation))
-    return struct.pack(GRADING_CURVE_FORMAT, file_data_id, *curve), deviation
+    if any(len(set(values)) != 1 for values in outputs):
+        raise SystemExit("grading LUT %d is not one curve shared exactly by R, G and B" % file_data_id)
+    return struct.pack(GRADING_CURVE_FORMAT, file_data_id, *[values[0] for values in outputs])
 
 
 def kit_outlines(kit):
@@ -358,7 +354,7 @@ def kit_outlines(kit):
     return outlines
 
 
-def fog_keys_by_params(kit):
+def fog_keys_by_params(kit, light_data):
     fog = kit.table(FOG_TABLE)
     if fog["layout_hash"] != FOG_TABLE_LAYOUT:
         raise SystemExit("LightDataGlobalVolumeFog has layout %s, not %s; the column numbers may have moved"
@@ -367,13 +363,20 @@ def fog_keys_by_params(kit):
     for row in fog["rows"]:
         fog_by_data.setdefault(row["LightDataID"], []).append(row)
     keys_by_params = {}
-    for row in kit.table(LIGHT_DATA_TABLE)["rows"]:
+    for row in light_data:
         layers = layers_by_index(fog_by_data.get(row["ID"], []))
         if layers:
-            key = (row["Time"] & U16_MASK, layers, rgb(row["DirectColor"]), row["ColorGradingFileDataID"],
-                   row["DarkerColorGradingFileDataID"])
+            key = (row["Time"] & U16_MASK, layers, rgb(row["DirectColor"]), row["ColorGradingFileDataID"])
             keys_by_params.setdefault(row["LightParamID"], []).append(key)
     return keys_by_params
+
+
+def darker_grading_left_out(light_data, placed_params):
+    params_by_lut = {}
+    for row in light_data:
+        if row["DarkerColorGradingFileDataID"] and row["LightParamID"] in placed_params:
+            params_by_lut.setdefault(row["DarkerColorGradingFileDataID"], set()).add(row["LightParamID"])
+    return {lut: sorted(params) for lut, params in sorted(params_by_lut.items())}
 
 
 def glow_by_params(kit):
@@ -381,23 +384,23 @@ def glow_by_params(kit):
 
 
 def convert(kit, placements):
-    keys_by_params = fog_keys_by_params(kit)
+    light_data = kit.table(LIGHT_DATA_TABLE)["rows"]
+    keys_by_params = fog_keys_by_params(kit, light_data)
     glows = glow_by_params(kit)
     placed_params = sorted(placements.params_ids() & set(glows))
     grading_ids = sorted({key[3] for p in placed_params for key in keys_by_params.get(p, []) if key[3]})
     curves = [grading_curve(kit, file_data_id) for file_data_id in grading_ids]
     params_blob, keys_blob, layers_blob = [], [], []
-    key_count = layer_count = darker_keys = 0
+    key_count = layer_count = 0
     for params_id in placed_params:
         keys = sorted(keys_by_params.get(params_id, []), key=lambda k: k[0])
         params_blob.append(pack_params(params_id, key_count, len(keys), glows[params_id]))
-        for half_minute_of_day, layers, direct_rgb, grading_id, darker_grading_id in keys:
+        for half_minute_of_day, layers, direct_rgb, grading_id in keys:
             curve = grading_ids.index(grading_id) + 1 if grading_id else NO_GRADING_CURVE
             keys_blob.append(pack_key(half_minute_of_day, len(layers), layer_count, direct_rgb, curve))
             layers_blob.extend(pack_layer(r) for r in layers)
             layer_count += len(layers)
             key_count += 1
-            darker_keys += 1 if darker_grading_id else 0
 
     outlines = kit_outlines(kit)
     light_ids = placements.light_ids()
@@ -418,11 +421,11 @@ def convert(kit, placements):
     header = pack_header(len(placements.lights), len(params_blob), key_count, layer_count, len(zones_blob),
                          zone_point_count, len(curves))
     blob = header + b"".join(placements.lights + params_blob + keys_blob + layers_blob + zones_blob + points_blob +
-                             [curve for curve, _ in curves])
+                             curves)
     changed_outlines = [z for z in kept_zones if z in placements.outlines and placements.outlines[z] != outlines[z]]
     summary = {"keys": key_count, "layers": layer_count, "zones": kept_zones, "changed_outlines": changed_outlines,
                "unplaced_params": len(placements.params_ids()) - len(placed_params), "grading_ids": grading_ids,
-               "curve_deviation": max((deviation for _, deviation in curves), default=0), "darker_keys": darker_keys}
+               "darker_grading": darker_grading_left_out(light_data, set(placed_params))}
     return blob, summary
 
 
@@ -450,12 +453,14 @@ def main():
     with open(args.output, "wb") as handle:
         handle.write(blob)
     params = struct.unpack_from(HEADER_FORMAT, blob)[3]
+    darker = ", ".join("%d on params %s" % (lut, "/".join(str(p) for p in params))
+                       for lut, params in summary["darker_grading"].items()) or "none"
     print("%s: %d lights and %d zone lights placed from %s (%d zone outlines changed by the kit), %d light params "
-          "(%d referenced params missing from LightParams), %d keys, %d layers, grading curves %s (largest deviation "
-          "from one shared curve %d/255; %d keys with a darker grading LUT left out), %d bytes"
+          "(%d referenced params missing from LightParams), %d keys, %d layers, grading curves %s, darker grading "
+          "LUTs of placed params left out: %s; %d bytes"
           % (args.output, len(placements.lights), len(summary["zones"]), placements.origin,
              len(summary["changed_outlines"]), params, summary["unplaced_params"], summary["keys"], summary["layers"],
-             summary["grading_ids"], summary["curve_deviation"], summary["darker_keys"], len(blob)))
+             summary["grading_ids"], darker, len(blob)))
     return 0
 
 
