@@ -610,6 +610,15 @@ void LogAdapter(IDirect3D9* d3d, UINT adapter)
                 id.VendorId, id.DeviceId, id.Driver, HIWORD(high), LOWORD(high), HIWORD(low), LOWORD(low));
 }
 
+void LogReset(IDirect3DDevice9* dev, const D3DPRESENT_PARAMETERS& requested, const D3DPRESENT_PARAMETERS& used,
+              bool fog)
+{
+    VF_LOG_INFO("Reset: %lux%lu ms requested %d (quality %lu) used %d depth requested %s used %s fog=%d",
+                used.BackBufferWidth, used.BackBufferHeight, requested.MultiSampleType, requested.MultiSampleQuality,
+                used.MultiSampleType, DepthFormatName(RequestedDepthFormat(requested)),
+                DepthFormatName(BoundDepthFormat(dev)), fog ? 1 : 0);
+}
+
 void LogMultisampling(const MultisamplingStatus& status)
 {
     if (status.method[0])
@@ -1056,6 +1065,7 @@ HRESULT FogDevice::Reset(D3DPRESENT_PARAMETERS* pp)
 
     m_renderer.ReleaseDefaultPool();
     ReleaseDepth();
+    LogAdapter(m_parent->Real(), m_adapter);
     const D3DPRESENT_PARAMETERS requested = *pp;
     D3DPRESENT_PARAMETERS used = requested;
     MultisampleDecision decision = m_parent->PrepareMultisampling(m_adapter, m_deviceType, used);
@@ -1065,9 +1075,7 @@ HRESULT FogDevice::Reset(D3DPRESENT_PARAMETERS* pp)
         if (SUCCEEDED(multisampled) && CopyMultisampledDepth(decision.method, used))
         {
             CopyBackParameters(pp, used);
-            VF_LOG_INFO("Reset: %lux%lu ms requested %d used %d depth requested %s used %s fog=1",
-                        used.BackBufferWidth, used.BackBufferHeight, requested.MultiSampleType, used.MultiSampleType,
-                        DepthFormatName(RequestedDepthFormat(requested)), DepthFormatName(BoundDepthFormat(m_real)));
+            LogReset(m_real, requested, used, true);
             LogMultisampling(m_multisampling);
             return multisampled;
         }
@@ -1088,10 +1096,7 @@ HRESULT FogDevice::Reset(D3DPRESENT_PARAMETERS* pp)
     if (!CreateDepth())
         VF_LOG_ERROR("fog depth could not be recreated after Reset; fog disabled");
     KeepSingleSampled(decision.off);
-    VF_LOG_INFO("Reset: %lux%lu ms requested %d used %d depth requested %s used %s fog=%d", used.BackBufferWidth,
-                used.BackBufferHeight, requested.MultiSampleType, used.MultiSampleType,
-                DepthFormatName(RequestedDepthFormat(requested)), DepthFormatName(BoundDepthFormat(m_real)),
-                FogActive() ? 1 : 0);
+    LogReset(m_real, requested, used, FogActive());
     if (FogActive())
         LogMultisampling(m_multisampling);
     return hr;

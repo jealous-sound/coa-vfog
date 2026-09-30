@@ -441,12 +441,13 @@ time it is classified; idle states (no water in view, camera under water) are lo
 `LogLevel=2`. Each settled change from the settings window, an INI reload or Revert is logged as one line, for
 example `settings: WaterFoam 1 -> 1.5, WaterWind 2 -> 4`.
 
-Each device creation logs the adapter (description, vendor and device IDs, driver version), the sample count
-the game requested and the one used, the depth format it requested and the one bound (`INTZ` single-sampled,
-D24S8 in place of the game's D24X8 multisampled), and either the depth copy method with its self-test result or why
-multisampling is off (`Multisampling=0`, the game's option at 1x, no copy method on this driver, a failed
-self-test); `Reset` logs the same. The first time the game's Video options ask for a sample count, the log says
-whether multisampling is offered or hidden and why.
+Each device creation and each `Reset` of a fog device logs the adapter (description, vendor and device IDs,
+driver version), the sample count and quality the game requested and the count used, the depth format it
+requested and the one bound (`INTZ` single-sampled, D24S8 in place of the game's D24X8 multisampled), and either
+the depth copy method with its self-test result or why multisampling is off (`Multisampling=0`, the game's option
+at 1x, no copy method on this driver, a stencil-less depth without D24S8, a failed self-test). When the game's
+Video options ask for a sample count, the log says whether multisampling is offered or hidden and why; the line
+is repeated only when that answer changes.
 
 The depth probe logs raw depth, distance and fog opacity at 25 points on frame 60, then every 60 s up to five
 times (every 30 s without limit at `LogLevel=2`); its rows are read back on a later frame. The first reason a

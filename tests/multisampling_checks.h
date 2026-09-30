@@ -764,6 +764,9 @@ void CheckMultisampledDevice(Harness& m, const std::wstring& outDir)
     Check(m.pp.AutoDepthStencilFormat == kClientDepthFormat &&
               runtime_cost::HasLine(resetLog, "depth requested D24X8 used D24S8"),
           "Reset to 4x also creates the game's D24X8 depth as D24S8, logs it and hands the game its own format");
+    Check(runtime_cost::HasLine(resetLog, "adapter 0: ") &&
+              runtime_cost::HasLine(resetLog, "Reset: 1280x720 ms requested 4 (quality 0) used 4 "),
+          "Reset logs the adapter and the requested sample count and quality, as CreateDevice does");
     vf_test_set_water_seconds(water_checks::kRealTime);
     CloseDevice(m);
 }
