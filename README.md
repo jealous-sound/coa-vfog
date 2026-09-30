@@ -61,6 +61,14 @@ is interpolated from the current frame's march where the taps lie on the pixel's
 across them and no light's sphere meets the ray; thin silhouettes that every tap misses are marched at full
 resolution.
 
+Every full-screen pass (march, temporal, composite, god rays, grading, the water depth copies and shading, the FFT
+and ripple steps, the depth-copy self-test) draws one triangle whose edges lie outside the viewport (NDC -1.5 and
+4.5). Direct3D 9 maps NDC -1 onto the centres of the viewport's first column, so a triangle with its edge there
+covers that column only through the top-left fill rule: on a 4x target the two samples left of the centre stay
+uncovered, so the water's first column kept the client's colour in half its samples, and on the harness's RTX 2060
+the fog drawn into the single-sampled back buffer without a depth surface kept about 40% of the colour beneath in
+that column.
+
 **Local lights.** The captured diffuse colour is the M2 light's colour times its animated intensity and the model's
 factor (see World lights), so a light brighter than 1 carries its intensity in the colour: 36 of the 138 lights in the
 3.3.5 models exceed 1, a held torch 3 times, a statue 255 times. In linear light (`ColorSpace=1`) a colour whose
@@ -908,7 +916,8 @@ composites' full-resolution march at thin silhouettes, split sample sides includ
 point lights and interiors, the text and liquid depth overrides, fog-data validation, the GPU timer and depth probe, the
 settings window and INI saving, and `Reset`. The water suites check the water data and its loader, the FFT against a
 double-precision reference, the liquid classification, the water pass driven through the hook entry points (state
-restoration, stencil tagging, optics against a CPU reference, fault recovery), the water settings, the packed foam
+restoration, stencil tagging, optics against a CPU reference, fault recovery, the viewport's first column reshaded
+like the second on the single-sampled and the 4x device), the water settings, the packed foam
 masks, the unit walk on synthetic object-manager images, the contact tracker's rings against a harness copy of the
 client's ripple clock, the ripple simulation against a CPU reference, the ripples in the water pass, whose normals are
 compared with the 7552035 slope evaluated on the CPU (within the depth-copy precision, but for at most 0.5% of the

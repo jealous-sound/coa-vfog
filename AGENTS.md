@@ -36,6 +36,7 @@ are compiled with `fxc`. `README.md` holds the design and the reverse-engineerin
 - `src/` — `d3d9_wrap` (device wrapper, INTZ depth), `msaa_depth` (multisampled depth copy into INTZ: NVAPI, RESZ,
   self-test), `hooks` (call-site thunks), `engine` (client addresses and frame inputs), `engine_actors` (unit walk
   for water contacts), `fog_data` (Classic fog data), `fog_model` (layer parameters), `renderer` (passes),
+  `fullscreen_triangle` (the triangle every full-screen pass draws, its edges outside the viewport),
   `transparent_fog` (linear stock fog fitted to the volumetric fog for see-through models after the early composite),
   `overlay` (ImGui settings window: input chaining, drawing at `Present`), `settings_panel` (its widgets), `config`,
   `log`, `status_log`; water: `water_data` (Forever presets, FFT tiles, foam masks), `water_classify` (liquid

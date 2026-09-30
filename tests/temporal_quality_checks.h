@@ -178,10 +178,9 @@ struct Fixture
 
     float DrawConfigured()
     {
-        const float triangle[3][4] = {{-1, -1, 0, 1}, {-1, 3, 0, 1}, {3, -1, 0, 1}};
         if (FAILED(dev->BeginScene()))
             return -1.0f;
-        const HRESULT drawn = dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 1, triangle, sizeof(triangle[0]));
+        const HRESULT drawn = DrawFullscreenTriangle(dev);
         const HRESULT ended = dev->EndScene();
         if (FAILED(drawn) || FAILED(ended) || FAILED(dev->GetRenderTargetData(target, readback)))
             return -1.0f;

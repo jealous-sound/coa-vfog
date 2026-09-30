@@ -119,6 +119,7 @@ constexpr int kFogRadianceDebugView = 1;
 constexpr float kSkyFogElevationsDegrees[] = {1.0f, 2.0f, 4.0f, 8.0f, 16.0f};
 constexpr float kMaxSkyReflectionFogMismatch = 0.05f;
 constexpr float kMinComparedFogRadiance = 1e-4f;
+constexpr int kMaxFirstColumnDifference = 2;
 
 const D3DRENDERSTATETYPE kSentinelRenderStates[] = {
     D3DRS_ZENABLE,           D3DRS_ZWRITEENABLE,     D3DRS_ZFUNC,
@@ -976,6 +977,59 @@ MaskComparison CompareByMask(const Image& mask, const Image& a, const Image& b)
 void SaveImage(const std::wstring& outDir, const wchar_t* name, const Image& image)
 {
     SavePng(outDir + L"\\" + name + L".png", image.w, image.h, image.bgra);
+}
+
+bool FullWaterRow(const Image& mask, const D3DVIEWPORT9& world, UINT y)
+{
+    for (UINT x = world.X; x < world.X + world.Width; ++x)
+        if (!IsMaskPixel(mask, x, y))
+            return false;
+    return true;
+}
+
+int ChannelDifference(const unsigned char* a, const unsigned char* b)
+{
+    int largest = 0;
+    for (int c = 0; c < 3; ++c)
+        largest = std::max(largest, std::abs(a[c] - b[c]));
+    return largest;
+}
+
+struct FirstColumnShading
+{
+    size_t rows = 0;
+    size_t reshaded = 0;
+    int largestFromSecond = 0;
+};
+
+FirstColumnShading CompareFirstColumn(const Image& mask, const Image& stock, const Image& shaded,
+                                      const D3DVIEWPORT9& world)
+{
+    FirstColumnShading s;
+    const UINT first = world.X;
+    for (UINT y = world.Y; y < world.Y + world.Height; ++y)
+    {
+        if (!FullWaterRow(mask, world, y))
+            continue;
+        ++s.rows;
+        s.reshaded += std::memcmp(shaded.At(first, y), stock.At(first, y), 3) != 0 ? 1 : 0;
+        s.largestFromSecond =
+            std::max(s.largestFromSecond, ChannelDifference(shaded.At(first, y), shaded.At(first + 1, y)));
+    }
+    return s;
+}
+
+void CheckFirstColumnReshaded(const char* device, const Image& mask, const Image& stock, const Image& shaded,
+                              const D3DVIEWPORT9& world)
+{
+    const FirstColumnShading s = CompareFirstColumn(mask, stock, shaded, world);
+    std::printf("     %s: %zu fully water-covered rows, the viewport's first column reshaded in %zu, at most %d/255 "
+                "from the second column\n",
+                device, s.rows, s.reshaded, s.largestFromSecond);
+    const std::string check = std::string("on the ") + device +
+                              " the water shading pass reshades the viewport's first column of every fully "
+                              "water-covered row like the second instead of keeping the client's water colour";
+    Check(s.rows > 0 && s.reshaded == s.rows && s.largestFromSecond <= kMaxFirstColumnDifference, check.c_str());
 }
 
 float Decode(unsigned char encoded)
@@ -2380,6 +2434,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     Check(changes.waterPixels > 0 && changes.changedElsewhere == 0,
           "only tagged water pixels change; the other pass and all non-water pixels are bit-identical");
     Check(changes.changedWater >= kMinShadedFraction * changes.waterPixels, "the tagged water pixels are reshaded");
+    CheckFirstColumnReshaded("single-sampled device", waterMask.image, stock.image, shaded.image, client.View().world);
 
     for (int view = 1; view <= 5; ++view)
     {

@@ -98,7 +98,6 @@ private:
     void LogFrameSummary(IDirect3DDevice9* dev, long long now, const FrameInputs& in, const Config& cfg,
                          const FogParams& fog, const AuthoredFog& authored, const D3DSURFACE_DESC& depthDesc,
                          const float* viewToWorld, const float* toLightInView, const float* sunPx, float rayStrength);
-    void DrawFullscreen(IDirect3DDevice9* dev);
     void BindTexture(IDirect3DDevice9* dev, DWORD stage, IDirect3DBaseTexture9* tex, bool linear);
     void BindWrappedVolume(IDirect3DDevice9* dev, DWORD stage, IDirect3DVolumeTexture9* volume);
     FogParams DrawableFog(IDirect3DDevice9* dev, const FogParams& fog);

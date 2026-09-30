@@ -1,6 +1,7 @@
 #include "water_renderer.h"
 
 #include "fog_model.h"
+#include "fullscreen_triangle.h"
 #include "log.h"
 #include "water_classify.h"
 #include "water_data.h"
@@ -880,13 +881,6 @@ void WaterRenderer::SetPassState(IDirect3DDevice9* dev)
     dev->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
 }
 
-void WaterRenderer::DrawFullscreen(IDirect3DDevice9* dev)
-{
-    static const float kTriangle[3][4] = {
-        {-1.0f, -1.0f, 0.0f, 1.0f}, {-1.0f, 3.0f, 0.0f, 1.0f}, {3.0f, -1.0f, 0.0f, 1.0f}};
-    dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 1, kTriangle, sizeof(kTriangle[0]));
-}
-
 bool WaterRenderer::CopySceneColour(IDirect3DDevice9* dev, IDirect3DSurface9* target, const D3DVIEWPORT9& vp)
 {
     const RECT world = ViewportRect(vp);
@@ -903,7 +897,7 @@ void WaterRenderer::CopyLinearDepth(IDirect3DDevice9* dev, IDirect3DTexture9* de
     dev->SetPixelShader(m_packedDepth ? m_packedDepthCopy : m_depthCopy);
     dev->SetPixelShaderConstantF(0, &m_common[0][0], kCommonConstants);
     BindPointSampler(dev, 0, depthTexture, D3DTADDRESS_CLAMP);
-    DrawFullscreen(dev);
+    DrawFullscreenTriangle(dev);
 }
 
 void WaterRenderer::ClearWaterStencil(IDirect3DDevice9* dev, IDirect3DSurface9* target,
@@ -1390,7 +1384,7 @@ void WaterRenderer::ShadeClasses(IDirect3DDevice9* dev, IDirect3DSurface9* targe
                                      sizeof(constants) / sizeof(Float4));
         BindClassTextures(dev, *preset);
         dev->SetRenderState(D3DRS_STENCILREF, static_cast<DWORD>(index));
-        DrawFullscreen(dev);
+        DrawFullscreenTriangle(dev);
         ++m_shadedClasses;
         m_shadedClassMask |= 1u << index;
     }

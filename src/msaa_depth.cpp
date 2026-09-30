@@ -1,5 +1,6 @@
 #include "msaa_depth.h"
 
+#include "fullscreen_triangle.h"
 #include "log.h"
 
 #include "ps_depth_check.h"
@@ -341,15 +342,13 @@ void SetReadbackState(IDirect3DDevice9* dev, const DepthReadback& r, IDirect3DTe
 
 void DrawDepthTexels(IDirect3DDevice9* dev, const D3DSURFACE_DESC& desc, const DepthTexel* texels, int count)
 {
-    static const float kTriangle[3][4] = {
-        {-1.0f, -1.0f, 0.0f, 1.0f}, {-1.0f, 3.0f, 0.0f, 1.0f}, {3.0f, -1.0f, 0.0f, 1.0f}};
     for (int i = 0; i < count; ++i)
     {
         const D3DVIEWPORT9 texel = {static_cast<DWORD>(i), 0, 1, 1, 0.0f, 1.0f};
         const float uv[4] = {(texels[i].x + 0.5f) / desc.Width, (texels[i].y + 0.5f) / desc.Height, 0.0f, 0.0f};
         dev->SetViewport(&texel);
         dev->SetPixelShaderConstantF(0, uv, 1);
-        dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 1, kTriangle, sizeof(kTriangle[0]));
+        DrawFullscreenTriangle(dev);
     }
 }
 

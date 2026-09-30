@@ -2,6 +2,7 @@
 
 #include "fog_data.h"
 #include "fog_model.h"
+#include "fullscreen_triangle.h"
 #include "noise_volume.h"
 #include "log.h"
 
@@ -241,8 +242,6 @@ char DepthClassLetter(float depthClass)
 constexpr int kLoggedGradingInputs[] = {8, 16, 24};
 constexpr UINT kMinViewportSize = 16;
 constexpr float kMinGodRayStrength = 0.005f;
-constexpr float kFullscreenTriangleLow = -1.5f;
-constexpr float kFullscreenTriangleHigh = 4.5f;
 
 bool g_fogParamsForced = false;
 FogParams g_forcedFogParams = {};
@@ -677,7 +676,7 @@ void Renderer::MarkSilhouetteSamples(IDirect3DDevice9* dev, IDirect3DSurface9* s
     dev->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_INVERT);
     dev->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_REPLACE);
     dev->SetRenderState(D3DRS_STENCILFAIL, D3DSTENCILOP_KEEP);
-    DrawFullscreen(dev);
+    DrawFullscreenTriangle(dev);
     dev->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
     dev->SetRenderState(D3DRS_COLORWRITEENABLE, colourWrites);
     dev->SetRenderState(D3DRS_STENCILFUNC, D3DCMP_EQUAL);
@@ -693,7 +692,7 @@ void Renderer::DrawSamplesMarked(IDirect3DDevice9* dev, DWORD marker, IDirect3DP
     dev->SetPixelShader(shader);
     if (side)
         dev->SetPixelShaderConstantF(kSampleSideRegister, side, 1);
-    DrawFullscreen(dev);
+    DrawFullscreenTriangle(dev);
 }
 
 void Renderer::DrawCompositeBySampleDepth(IDirect3DDevice9* dev, IDirect3DSurface9* sampleDepth,
@@ -708,7 +707,7 @@ void Renderer::DrawCompositeBySampleDepth(IDirect3DDevice9* dev, IDirect3DSurfac
         dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
         dev->SetDepthStencilSurface(nullptr);
         dev->SetPixelShader(CompositeShader(choice, false));
-        DrawFullscreen(dev);
+        DrawFullscreenTriangle(dev);
         dev->SetDepthStencilSurface(sampleDepth);
         dev->SetRenderState(D3DRS_STENCILENABLE, TRUE);
     }
@@ -877,7 +876,7 @@ void Renderer::IssueDepthProbe(IDirect3DDevice9* dev, IDirect3DTexture9* depthTe
     dev->SetPixelShader(m_probe);
     BindTexture(dev, 0, depthTexture, false);
     BindTexture(dev, 1, fog, false);
-    DrawFullscreen(dev);
+    DrawFullscreenTriangle(dev);
 
     IDirect3DSurface9* surface = nullptr;
     const bool copying = SUCCEEDED(m_probeTarget->GetSurfaceLevel(0, &surface)) &&
@@ -931,14 +930,6 @@ void Renderer::LogFinishedDepthProbe()
         VF_LOG_INFO("  row %d:%s", row, line);
     }
     m_probeReadback->UnlockRect();
-}
-
-void Renderer::DrawFullscreen(IDirect3DDevice9* dev)
-{
-    static const float kTriangle[3][4] = {{kFullscreenTriangleLow, kFullscreenTriangleLow, 0.0f, 1.0f},
-                                          {kFullscreenTriangleLow, kFullscreenTriangleHigh, 0.0f, 1.0f},
-                                          {kFullscreenTriangleHigh, kFullscreenTriangleLow, 0.0f, 1.0f}};
-    dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 1, kTriangle, sizeof(kTriangle[0]));
 }
 
 void Renderer::BindTexture(IDirect3DDevice9* dev, DWORD stage, IDirect3DBaseTexture9* tex, bool linear)
@@ -1001,13 +992,13 @@ IDirect3DTexture9* Renderer::FilterWithHistory(IDirect3DDevice9* dev, IDirect3DT
     BindTexture(dev, 1, m_history[m_historyIndex], false);
     BindTexture(dev, 2, depthTexture, false);
     BindTexture(dev, 3, m_historyDepth, false);
-    DrawFullscreen(dev);
+    DrawFullscreenTriangle(dev);
 
     BindTexture(dev, 3, nullptr, false);
     SetTarget(dev, m_historyDepth);
     dev->SetPixelShader(m_historyDepthShader);
     BindTexture(dev, 0, depthTexture, false);
-    DrawFullscreen(dev);
+    DrawFullscreenTriangle(dev);
     m_historyIndex = write;
     return m_history[write];
 }
@@ -1218,7 +1209,7 @@ void Renderer::DrawGodRayMask(IDirect3DDevice9* dev, IDirect3DTexture9* depthTex
     dev->SetPixelShaderConstantF(9, &mask[0].x, 2);
     BindTexture(dev, 0, depthTexture, false);
     BindTexture(dev, 1, m_rays[0], true);
-    DrawFullscreen(dev);
+    DrawFullscreenTriangle(dev);
 
     float norm = 0.0f;
     for (int k = 0; k < kRayTaps; ++k)
@@ -1235,7 +1226,7 @@ void Renderer::DrawGodRayMask(IDirect3DDevice9* dev, IDirect3DTexture9* depthTex
         };
         dev->SetPixelShaderConstantF(9, &blur[0].x, 2);
         BindTexture(dev, 0, m_rays[pass == 0 ? 1 : 0], true);
-        DrawFullscreen(dev);
+        DrawFullscreenTriangle(dev);
         step /= kRayTaps;
     }
 }
@@ -1267,7 +1258,7 @@ bool Renderer::DrawGodRaysOverScene(IDirect3DDevice9* dev, const SceneDepth& dep
     dev->SetPixelShaderConstantF(96, &composite[0].x, 3);
     BindTexture(dev, 2, m_rays[1], true);
     BindTexture(dev, 3, m_sceneCopy, false);
-    DrawFullscreen(dev);
+    DrawFullscreenTriangle(dev);
     return true;
 }
 
@@ -1437,7 +1428,7 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDir
                               static_cast<float>(std::fmod(TickSeconds(now) * cfg.noiseWindSpeed, windPeriod)), 0.0f};
     dev->SetPixelShaderConstantF(78, &variation.x, 1);
     BindTexture(dev, 0, depthTexture, false);
-    DrawFullscreen(dev);
+    DrawFullscreenTriangle(dev);
 
     m_adaptiveLightingHistory =
         pointLightCount > 0 || m_prevLocalLightCount > 0 || cfg.noiseAmount > 0.0f || samplesNoise;
@@ -1499,7 +1490,7 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDir
     if (splitSamples)
         DrawCompositeBySampleDepth(dev, depth.bound, vp, compositeChoice, sceneBlend);
     else
-        DrawFullscreen(dev);
+        DrawFullscreenTriangle(dev);
     if (raysAfterWorld)
     {
         m_lateGodRays = godRays;

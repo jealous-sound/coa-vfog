@@ -4,6 +4,7 @@
 #include "fog_data.h"
 #include "fog_model.h"
 #include "forever_look.h"
+#include "fullscreen_triangle.h"
 #include "gpu_timing.h"
 #include "grading_renderer.h"
 #include "log.h"

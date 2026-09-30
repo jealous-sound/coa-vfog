@@ -182,7 +182,6 @@ private:
     void BuildReflectionFog();
     void AddToSummary(bool shaded);
     void LogSummaryWhenDue(IDirect3DDevice9* dev);
-    void DrawFullscreen(IDirect3DDevice9* dev);
 
     IDirect3DVertexShader9* m_vs = nullptr;
     IDirect3DVertexDeclaration9* m_decl = nullptr;

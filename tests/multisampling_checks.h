@@ -594,6 +594,8 @@ void CheckWaterOnMultisampledTargets(const WaterFrames& frames, const std::wstri
     Check(EdgesBlendByCoverage(coverage),
           "on a 4x device the tagged water samples are reshaded, water edges blend by coverage and no dry pixel "
           "changes");
+    water_checks::CheckFirstColumnReshaded("4x device", frames.mask.image, frames.stock.image, frames.shaded.image,
+                                           water_checks::DefaultWaterView().world);
 }
 
 struct CopiedSurfaceDepths

@@ -1,5 +1,6 @@
 #include "water_ripples.h"
 
+#include "fullscreen_triangle.h"
 #include "log.h"
 
 #include "ps_vw_ripple_step.h"
@@ -19,8 +20,6 @@ constexpr UINT kFirstSegmentConstant = 1;
 constexpr UINT kFirstShapeConstant = kFirstSegmentConstant + kMaxWaterRippleDisturbances;
 constexpr float kMaxWindowCentreYards = 100000.0f;
 constexpr const char* kWithheldByHarness = "ripple support withheld by the harness";
-constexpr float kFullscreenTriangle[3][4] = {
-    {-1.0f, -1.0f, 0.0f, 1.0f}, {-1.0f, 3.0f, 0.0f, 1.0f}, {3.0f, -1.0f, 0.0f, 1.0f}};
 
 struct RenderStateSetting
 {
@@ -373,7 +372,7 @@ void WaterRipples::Step(IDirect3DDevice9* dev, const float centre[2], const Wate
     const uint32_t used = UploadDisturbances(dev, shift, disturbances, count);
     SetTarget(dev, m_maps[1 - m_current]);
     dev->SetTexture(0, m_maps[m_current]);
-    dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 1, kFullscreenTriangle, sizeof(kFullscreenTriangle[0]));
+    DrawFullscreenTriangle(dev);
     dev->SetTexture(0, nullptr);
     m_current = 1 - m_current;
     ++m_stepsRun;
