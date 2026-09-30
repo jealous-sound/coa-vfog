@@ -41,7 +41,8 @@ constexpr int kLoggedDives = 60;
 constexpr float kTypedDensity = 3.3712f;
 constexpr Hotkey kCtrlF8 = {VK_F8, true, false, false};
 
-const char* const kEditedWaterKeys[] = {"Water", "WaterQuality", "WaterWaves", "WaterFoam", "WaterDebugView"};
+const char* const kEditedWaterKeys[] = {"Water",        "WaterQuality",        "WaterWaves",    "WaterFoam",
+                                        "WaterRipples", "WaterClientSplashes", "WaterDebugView"};
 
 std::vector<std::string> IniLines(const std::string& text)
 {
@@ -82,7 +83,8 @@ bool SameWaterSettings(const Config& a, const Config& b)
     return a.water == b.water && a.waterQuality == b.waterQuality && a.waterWaves == b.waterWaves &&
            a.waterWind == b.waterWind && a.waterFoam == b.waterFoam && a.waterReflections == b.waterReflections &&
            a.waterSpecular == b.waterSpecular && a.waterClarity == b.waterClarity &&
-           a.waterZoneColors == b.waterZoneColors && a.waterDebugView == b.waterDebugView;
+           a.waterZoneColors == b.waterZoneColors && a.waterRipples == b.waterRipples &&
+           a.waterClientSplashes == b.waterClientSplashes && a.waterDebugView == b.waterDebugView;
 }
 
 void CheckShippedWaterDefaults(const std::wstring& shippedIni)
@@ -90,11 +92,13 @@ void CheckShippedWaterDefaults(const std::wstring& shippedIni)
     ConfigStore store;
     store.Load(NarrowPath(shippedIni));
     Check(SameWaterSettings(store.Get(), Config()), "the shipped INI's water keys load with their defaults");
+    Check(Config().waterRipples == 0.5f && store.Get().waterRipples == 0.5f,
+          "WaterRipples defaults to 0.5, in the code and in the shipped INI");
     const std::vector<std::string> lines = IniLines(ReadText(shippedIni));
     const char* const shippedLines[] = {"Water=1",          "WaterQuality=2",     "WaterWaves=1.0",
                                         "WaterWind=2.0",    "WaterFoam=1.0",      "WaterReflections=1.0",
                                         "WaterSpecular=1.0", "WaterClarity=1.0", "WaterZoneColors=0.5",
-                                        "WaterDebugView=0"};
+                                        "WaterRipples=0.5", "WaterClientSplashes=0", "WaterDebugView=0"};
     int found = 0;
     for (const char* shipped : shippedLines)
         found += std::count(lines.begin(), lines.end(), std::string(shipped)) == 1 ? 1 : 0;
@@ -104,8 +108,13 @@ void CheckShippedWaterDefaults(const std::wstring& shippedIni)
           "the shipped INI lists every water key once with its default");
     const std::string text = ReadText(shippedIni);
     Check(text.find("; Modern water:") != std::string::npos &&
-              text.find("surfaces write depth whatever LiquidDepth says") != std::string::npos,
-          "the shipped INI documents the water keys and that water writes depth while modern water is drawn");
+              text.find("surfaces write depth whatever LiquidDepth says") != std::string::npos &&
+              text.find("; Ripples and wakes where players") != std::string::npos &&
+              text.find("drags a thin V behind it") != std::string::npos &&
+              text.find("0.5 is the default strength") != std::string::npos &&
+              text.find("; The client's own flat splash discs and white V-shaped wake trails") != std::string::npos,
+          "the shipped INI documents the water keys, that water writes depth while modern water is drawn, the "
+          "ripples' V wake and default strength, and the client's splash and wake sprites");
 }
 
 void CheckWaterSettingsSave(const std::wstring& outDir, const std::wstring& shippedIni)
@@ -119,7 +128,9 @@ void CheckWaterSettingsSave(const std::wstring& outDir, const std::wstring& ship
     edited.waterQuality = 3;
     edited.waterWaves = 1.5f;
     edited.waterFoam = 0.25f;
-    edited.waterDebugView = 5;
+    edited.waterRipples = 1.5f;
+    edited.waterClientSplashes = true;
+    edited.waterDebugView = 6;
     store.Apply(edited);
     Check(store.HasUnsavedChanges() && store.Save() && !store.HasUnsavedChanges(),
           "water settings edited in the window save to the INI");
@@ -150,7 +161,8 @@ void CheckWaterSettingsSave(const std::wstring& outDir, const std::wstring& ship
         return std::find(saved.begin(), saved.end(), std::string(line)) != saved.end();
     };
     Check(has("Water=0") && has("WaterQuality=3") && has("WaterWaves=1.5") && has("WaterFoam=0.25") &&
-              has("WaterDebugView=5") && has("WaterWind=2.0"),
+              has("WaterRipples=1.5") && has("WaterClientSplashes=1") && has("WaterDebugView=6") &&
+              has("WaterWind=2.0"),
           "the saved water lines hold the edited values and the untouched ones keep their text");
 }
 
@@ -162,7 +174,7 @@ void CheckWaterSettingClamps(const std::wstring& outDir, const std::wstring& shi
         {L"Water", L"7"},           {L"WaterQuality", L"9"},     {L"WaterWaves", L"-3"},
         {L"WaterWind", L"100"},     {L"WaterFoam", L"5"},        {L"WaterReflections", L"-1"},
         {L"WaterSpecular", L"9"},   {L"WaterClarity", L"0"},     {L"WaterZoneColors", L"2"},
-        {L"WaterDebugView", L"42"},
+        {L"WaterRipples", L"5"},    {L"WaterDebugView", L"42"},    {L"WaterClientSplashes", L"7"},
     };
     for (const auto& key : outOfRange)
         WritePrivateProfileStringW(L"CoAVolFog", key[0], key[1], clampedIni.c_str());
@@ -170,12 +182,12 @@ void CheckWaterSettingClamps(const std::wstring& outDir, const std::wstring& shi
     store.Load(NarrowPath(clampedIni));
     const Config& c = store.Get();
     std::printf("     clamped: quality %d waves %.2f wind %.2f foam %.2f reflections %.2f specular %.2f clarity %.2f "
-                "zone %.2f view %d\n",
+                "zone %.2f ripples %.2f view %d\n",
                 c.waterQuality, c.waterWaves, c.waterWind, c.waterFoam, c.waterReflections, c.waterSpecular,
-                c.waterClarity, c.waterZoneColors, c.waterDebugView);
+                c.waterClarity, c.waterZoneColors, c.waterRipples, c.waterDebugView);
     Check(c.water && c.waterQuality == 3 && c.waterWaves == 0.0f && c.waterWind == 10.0f && c.waterFoam == 2.0f &&
               c.waterReflections == 0.0f && c.waterSpecular == 4.0f && c.waterClarity == 0.25f &&
-              c.waterZoneColors == 1.0f && c.waterDebugView == 5,
+              c.waterZoneColors == 1.0f && c.waterRipples == 2.0f && c.waterDebugView == 6 && c.waterClientSplashes,
           "out-of-range water keys in the INI are clamped to their ranges");
 
     WritePrivateProfileStringW(L"CoAVolFog", L"WaterWaves", L"nan", clampedIni.c_str());
@@ -191,11 +203,12 @@ void CheckWaterSettingClamps(const std::wstring& outDir, const std::wstring& shi
     edited.waterWind = 0.1f;
     edited.waterClarity = 100.0f;
     edited.waterZoneColors = -0.5f;
+    edited.waterRipples = -1.0f;
     edited.waterDebugView = -1;
     store.Apply(edited);
     const Config& applied = store.Get();
     Check(applied.waterQuality == 1 && applied.waterWind == 0.5f && applied.waterClarity == 4.0f &&
-              applied.waterZoneColors == 0.0f && applied.waterDebugView == 0,
+              applied.waterZoneColors == 0.0f && applied.waterRipples == 0.0f && applied.waterDebugView == 0,
           "water edits from the window are clamped like the INI");
 }
 
@@ -231,6 +244,8 @@ void CheckWaterOnlyEditsKeepFogHistory()
     waterOnly.waterReflections = 0.5f;
     waterOnly.waterZoneColors = 0.25f;
     waterOnly.waterQuality = 3;
+    waterOnly.waterRipples = 1.0f;
+    waterOnly.waterClientSplashes = true;
     waterOnly.waterDebugView = 4;
     Check(SameFogSettings(base, waterOnly) && !SameLiveSettings(base, waterOnly),
           "water-only edits leave the fog's settings (and its temporal history) alone but count as live changes");
@@ -251,9 +266,11 @@ void CheckSettingChangesListed()
     after.waterWind = 4.0f;
     after.waterFoam = 1.5f;
     after.water = false;
+    after.waterClientSplashes = true;
     const std::string changes = SettingChanges(before, after);
     std::printf("     changes: %s\n", changes.c_str());
-    Check(changes == "WaterQuality 2 -> 3, Density 1 -> 2.5, WaterWind 2 -> 4, WaterFoam 1 -> 1.5, Water 1 -> 0" &&
+    Check(changes == "WaterQuality 2 -> 3, Density 1 -> 2.5, WaterWind 2 -> 4, WaterFoam 1 -> 1.5, Water 1 -> 0, "
+                     "WaterClientSplashes 0 -> 1" &&
               SettingChanges(before, before).empty(),
           "a settings change lists every changed fog and water key with its old and new value");
 }

@@ -1,15 +1,76 @@
 #include "d3d9_wrap.h"
 
+#include "client_ripple_sprites.h"
 #include "log.h"
+#include "msaa_depth.h"
 #include "overlay.h"
 #include "renderer.h"
 #include "water_renderer.h"
 
+#include <cstdio>
+
 namespace
 {
 constexpr D3DFORMAT kIntz = static_cast<D3DFORMAT>(MAKEFOURCC('I', 'N', 'T', 'Z'));
+constexpr D3DFORMAT kMultisampledStencilDepth = D3DFMT_D24S8;
+constexpr const char* kGameMultisamplingOff = "the game's Multisampling option is 1x";
+constexpr const char* kMultisamplingSettingOff = "Multisampling=0 in CoAVolFog.ini";
+constexpr const char* kSelfTestFailed = "the depth copy self-test failed";
+constexpr const char* kMultisampledDeviceFailed = "the device could not be created with the game's multisampling";
+constexpr const char* kMultisampledResetFailed = "Reset with the game's multisampling failed";
+constexpr const char* kNoMultisampledStencil =
+    "the game's depth format has no stencil and D24S8 is not available with its multisampling";
 
 constexpr int kMaxDevices = 8;
+
+struct NamedFormat
+{
+    D3DFORMAT format;
+    const char* name;
+};
+
+const NamedFormat kDepthFormatNames[] = {
+    {D3DFMT_UNKNOWN, "none"},
+    {D3DFMT_D16, "D16"},
+    {D3DFMT_D16_LOCKABLE, "D16_LOCKABLE"},
+    {D3DFMT_D15S1, "D15S1"},
+    {D3DFMT_D24X8, "D24X8"},
+    {D3DFMT_D24S8, "D24S8"},
+    {D3DFMT_D24X4S4, "D24X4S4"},
+    {D3DFMT_D24FS8, "D24FS8"},
+    {D3DFMT_D32, "D32"},
+    {D3DFMT_D32F_LOCKABLE, "D32F_LOCKABLE"},
+    {kIntz, "INTZ"},
+};
+
+const char* DepthFormatName(D3DFORMAT format)
+{
+    for (const NamedFormat& named : kDepthFormatNames)
+        if (named.format == format)
+            return named.name;
+    return "other";
+}
+
+D3DFORMAT RequestedDepthFormat(const D3DPRESENT_PARAMETERS& pp)
+{
+    return pp.EnableAutoDepthStencil ? pp.AutoDepthStencilFormat : D3DFMT_UNKNOWN;
+}
+
+D3DFORMAT BoundDepthFormat(IDirect3DDevice9* dev)
+{
+    IDirect3DSurface9* depth = nullptr;
+    D3DSURFACE_DESC desc = {};
+    if (FAILED(dev->GetDepthStencilSurface(&depth)) || !depth)
+        return D3DFMT_UNKNOWN;
+    depth->GetDesc(&desc);
+    depth->Release();
+    return desc.Format;
+}
+
+bool HasEightBitStencil(D3DFORMAT format)
+{
+    return format == D3DFMT_D24S8 || format == D3DFMT_D24FS8;
+}
 
 Direct3DCreate9Fn g_realCreate = nullptr;
 bool g_fogAllowedOnNewDevices = false;
@@ -44,18 +105,36 @@ FogDevice* RegisteredWrapperOf(void* gameDevice)
 }
 
 class WrappedD3D9;
+
+struct MultisampleDecision
+{
+    DepthCopyMethod method = DepthCopyMethod::None;
+    const char* off = "";
+};
 }
 
 class FogDevice final : public IDirect3DDevice9
 {
 public:
-    FogDevice(WrappedD3D9* parent, IDirect3DDevice9* real, bool fog, D3DFORMAT depthFormat);
+    FogDevice(WrappedD3D9* parent, IDirect3DDevice9* real, bool fog, D3DFORMAT depthFormat, UINT adapter,
+              D3DDEVTYPE deviceType);
 
     bool FogActive() const { return m_fog && m_depthTexture; }
     IDirect3DDevice9* Real() const { return m_real; }
     bool CreateDepth();
-    bool Render(const FrameInputs& in, const Config& cfg, const char** skip);
+    bool CopyMultisampledDepth(DepthCopyMethod method, const D3DPRESENT_PARAMETERS& used);
+    void KeepSingleSampled(const char* why);
+    const MultisamplingStatus& Multisampling() const { return m_multisampling; }
+    bool ReadSceneDepth(const DepthTexel* texels, int count, float* values);
+    bool Render(const FrameInputs& in, const Config& cfg, FogPass pass, const char** skip);
+    bool RenderGodRaysAfterWorld(const char** skip);
+    bool ReadyToRender(const D3DVIEWPORT9& vp, const char** skip);
+    const StockFogFit& LastStockFogFit() const { return m_renderer.LastStockFogFit(); }
     bool AdaptiveLightingHistory() const { return m_renderer.AdaptiveLightingHistory(); }
+    IDirect3DPixelShader9* DrawnFogMarch() const { return m_renderer.DrawnMarch(); }
+    IDirect3DPixelShader9* DrawnFogComposite() const { return m_renderer.DrawnComposite(); }
+    IDirect3DPixelShader9* DrawnFogSplitComposite() const { return m_renderer.DrawnSplitComposite(); }
+    float DrawnFogGlowCompensation() const { return m_renderer.DrawnGlowCompensation(); }
     void ForceDepthWrite(bool force) { OverrideDepthWrite(m_forceDepthWrite, force); }
     void SuppressDepthWrite(bool suppress) { OverrideDepthWrite(m_suppressDepthWrite, suppress); }
     bool BeginWater(const FrameInputs& in, const WaterInputs& water, const Config& cfg, const char** skip);
@@ -69,6 +148,9 @@ public:
         m_water.ReleaseDefaultPool();
     }
     const WaterRenderer& Water() const { return m_water; }
+    bool Grade(const D3DVIEWPORT9& world, const float* curve, float strength, const char** skip);
+    void ReleaseGrading() { m_grading.ReleaseDefaultPool(); }
+    GradingStats Grading() const { return m_grading.Stats(); }
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** out) override;
     ULONG STDMETHODCALLTYPE AddRef() override;
@@ -453,6 +535,7 @@ private:
     ~FogDevice();
     void ReleaseDepth();
     bool BindFallbackDepth();
+    SceneDepth Depth() const;
     bool DepthWriteOverridden() const { return m_suppressDepthWrite || m_forceDepthWrite || m_waterForcesDepthWrite; }
     DWORD DepthWriteToApply() const
     {
@@ -480,10 +563,16 @@ private:
     IDirect3DDevice9* m_real;
     bool m_fog;
     D3DFORMAT m_depthFormat;
+    UINT m_adapter;
+    D3DDEVTYPE m_deviceType;
     IDirect3DTexture9* m_depthTexture = nullptr;
     IDirect3DSurface9* m_depthSurface = nullptr;
+    IDirect3DSurface9* m_clientDepth = nullptr;
+    DepthCopy m_depthCopy;
+    MultisamplingStatus m_multisampling;
     Renderer m_renderer;
     WaterRenderer m_water;
+    GradingRenderer m_grading;
 };
 
 namespace
@@ -506,6 +595,75 @@ void CopyBackParameters(D3DPRESENT_PARAMETERS* engine, const D3DPRESENT_PARAMETE
     copy.EnableAutoDepthStencil = engine->EnableAutoDepthStencil;
     copy.AutoDepthStencilFormat = engine->AutoDepthStencilFormat;
     *engine = copy;
+}
+
+MultisampleDecision g_loggedOffer = {DepthCopyMethod::None, nullptr};
+
+void LogMultisamplingOffer(const MultisampleDecision& decision)
+{
+    if (decision.method == g_loggedOffer.method && decision.off == g_loggedOffer.off)
+        return;
+    g_loggedOffer = decision;
+    if (decision.method != DepthCopyMethod::None)
+        VF_LOG_INFO("multisampling offered to the game's Video options; its depth is copied by %s",
+                    DepthCopyMethodName(decision.method));
+    else
+        VF_LOG_INFO("multisampling hidden from the game's Video options: %s", decision.off);
+}
+
+void LogAdapter(IDirect3D9* d3d, UINT adapter)
+{
+    D3DADAPTER_IDENTIFIER9 id = {};
+    if (FAILED(d3d->GetAdapterIdentifier(adapter, 0, &id)))
+        return;
+    const auto high = static_cast<DWORD>(id.DriverVersion.HighPart);
+    const auto low = static_cast<DWORD>(id.DriverVersion.LowPart);
+    VF_LOG_INFO("adapter %u: %s, vendor 0x%04lX device 0x%04lX, driver %s %u.%u.%u.%u", adapter, id.Description,
+                id.VendorId, id.DeviceId, id.Driver, HIWORD(high), LOWORD(high), HIWORD(low), LOWORD(low));
+}
+
+void LogReset(IDirect3DDevice9* dev, const D3DPRESENT_PARAMETERS& requested, const D3DPRESENT_PARAMETERS& used,
+              bool fog)
+{
+    VF_LOG_INFO("Reset: %lux%lu ms requested %d (quality %lu) used %d depth requested %s used %s fog=%d",
+                used.BackBufferWidth, used.BackBufferHeight, requested.MultiSampleType, requested.MultiSampleQuality,
+                used.MultiSampleType, DepthFormatName(RequestedDepthFormat(requested)),
+                DepthFormatName(BoundDepthFormat(dev)), fog ? 1 : 0);
+}
+
+void LogMultisampling(const MultisamplingStatus& status)
+{
+    if (status.method[0])
+        VF_LOG_INFO("multisampling %dx kept; %s copies its depth for the fog and water", status.samples,
+                    status.method);
+    else
+        VF_LOG_INFO("multisampling off: %s", status.off);
+}
+
+void LogDepthCopyTest(DepthCopyMethod method, const D3DSURFACE_DESC& depth, const DepthCopyTest& test)
+{
+    const char* name = DepthCopyMethodName(method);
+    if (!test.passed)
+    {
+        VF_LOG_ERROR("depth copy self-test: %s failed on the %dx %lux%lu depth (read %.7f and %.7f, expected %.7f "
+                     "and %.7f)",
+                     name, depth.MultiSampleType, depth.Width, depth.Height, test.read[0], test.read[1],
+                     test.expected[0], test.expected[1]);
+        return;
+    }
+    char timing[64] = "copy time unavailable";
+    if (test.copyMilliseconds >= 0.0f)
+        std::snprintf(timing, sizeof(timing), "copy of a cleared depth %.3f ms", test.copyMilliseconds);
+    VF_LOG_INFO("depth copy self-test: %s copies the %dx %lux%lu depth into INTZ (%s)", name, depth.MultiSampleType,
+                depth.Width, depth.Height, timing);
+}
+
+template <typename T>
+void ReleaseReference(T*& object)
+{
+    if (object)
+        object->Release();
+    object = nullptr;
 }
 
 class WrappedD3D9 final : public IDirect3D9
@@ -571,7 +729,7 @@ public:
     HRESULT STDMETHODCALLTYPE CheckDeviceMultiSampleType(UINT a, D3DDEVTYPE t, D3DFORMAT f, BOOL w,
                                                          D3DMULTISAMPLE_TYPE ms, DWORD* q) override
     {
-        if (g_fogAllowedOnNewDevices && ms != D3DMULTISAMPLE_NONE)
+        if (g_fogAllowedOnNewDevices && ms != D3DMULTISAMPLE_NONE && !OffersMultisampling(a, t, ms))
             return D3DERR_NOTAVAILABLE;
         return m_real->CheckDeviceMultiSampleType(a, t, f, w, ms, q);
     }
@@ -592,29 +750,109 @@ public:
     HRESULT STDMETHODCALLTYPE CreateDevice(UINT adapter, D3DDEVTYPE type, HWND window, DWORD flags,
                                            D3DPRESENT_PARAMETERS* pp, IDirect3DDevice9** out) override;
 
+    MultisampleDecision PrepareMultisampling(UINT adapter, D3DDEVTYPE type, D3DPRESENT_PARAMETERS& used)
+    {
+        const MultisampleDecision decision = DecideMultisampling(adapter, type, used.MultiSampleType);
+        if (decision.method == DepthCopyMethod::None || GiveDepthAStencil(adapter, type, used))
+            return decision;
+        return {DepthCopyMethod::None, kNoMultisampledStencil};
+    }
+
 private:
-    bool SupportsIntz(UINT adapter, D3DDEVTYPE type, const D3DPRESENT_PARAMETERS& pp)
+    MultisampleDecision DecideMultisampling(UINT adapter, D3DDEVTYPE type, D3DMULTISAMPLE_TYPE requested)
+    {
+        if (requested == D3DMULTISAMPLE_NONE)
+            return {DepthCopyMethod::None, kGameMultisamplingOff};
+        if (!GlobalConfig().Get().multisampling)
+            return {DepthCopyMethod::None, kMultisamplingSettingOff};
+        const DepthCopyProbe probe = m_depthCopyProbes.Probe(m_real, adapter, type);
+        return {probe.method, probe.unavailable};
+    }
+
+    bool OffersMultisampling(UINT adapter, D3DDEVTYPE type, D3DMULTISAMPLE_TYPE requested)
+    {
+        const MultisampleDecision decision = DecideMultisampling(adapter, type, requested);
+        LogMultisamplingOffer(decision);
+        return decision.method != DepthCopyMethod::None;
+    }
+
+    FogDevice* CreateMultisampledFogDevice(UINT adapter, D3DDEVTYPE type, HWND window, DWORD flags,
+                                           D3DPRESENT_PARAMETERS& used, DepthCopyMethod method, const char*& off);
+
+    D3DFORMAT AdapterFormat(UINT adapter, const D3DPRESENT_PARAMETERS& pp)
     {
         D3DFORMAT adapterFormat = pp.BackBufferFormat;
         D3DDISPLAYMODE mode;
         if (pp.Windowed || adapterFormat == D3DFMT_UNKNOWN)
             if (SUCCEEDED(m_real->GetAdapterDisplayMode(adapter, &mode)))
                 adapterFormat = mode.Format;
-        return SUCCEEDED(m_real->CheckDeviceFormat(adapter, type, adapterFormat, D3DUSAGE_DEPTHSTENCIL,
+        return adapterFormat;
+    }
+
+    bool SupportsIntz(UINT adapter, D3DDEVTYPE type, const D3DPRESENT_PARAMETERS& pp)
+    {
+        return SUCCEEDED(m_real->CheckDeviceFormat(adapter, type, AdapterFormat(adapter, pp), D3DUSAGE_DEPTHSTENCIL,
                                                    D3DRTYPE_TEXTURE, kIntz));
+    }
+
+    bool SupportsMultisampledStencilDepth(UINT adapter, D3DDEVTYPE type, const D3DPRESENT_PARAMETERS& pp)
+    {
+        const D3DFORMAT adapterFormat = AdapterFormat(adapter, pp);
+        const D3DFORMAT targetFormat = pp.BackBufferFormat != D3DFMT_UNKNOWN ? pp.BackBufferFormat : adapterFormat;
+        DWORD levels = 0;
+        return SUCCEEDED(m_real->CheckDeviceFormat(adapter, type, adapterFormat, D3DUSAGE_DEPTHSTENCIL,
+                                                   D3DRTYPE_SURFACE, kMultisampledStencilDepth)) &&
+               SUCCEEDED(m_real->CheckDepthStencilMatch(adapter, type, adapterFormat, targetFormat,
+                                                        kMultisampledStencilDepth)) &&
+               SUCCEEDED(m_real->CheckDeviceMultiSampleType(adapter, type, kMultisampledStencilDepth, pp.Windowed,
+                                                            pp.MultiSampleType, &levels)) &&
+               pp.MultiSampleQuality < levels;
+    }
+
+    bool GiveDepthAStencil(UINT adapter, D3DDEVTYPE type, D3DPRESENT_PARAMETERS& used)
+    {
+        if (HasEightBitStencil(used.AutoDepthStencilFormat))
+            return true;
+        if (!SupportsMultisampledStencilDepth(adapter, type, used))
+            return false;
+        used.AutoDepthStencilFormat = kMultisampledStencilDepth;
+        return true;
     }
 
     ~WrappedD3D9() = default;
 
     LONG m_ref = 1;
     IDirect3D9* m_real;
+    DepthCopyProbes m_depthCopyProbes;
 };
+
+FogDevice* WrappedD3D9::CreateMultisampledFogDevice(UINT adapter, D3DDEVTYPE type, HWND window, DWORD flags,
+                                                    D3DPRESENT_PARAMETERS& used, DepthCopyMethod method,
+                                                    const char*& off)
+{
+    IDirect3DDevice9* real = nullptr;
+    const HRESULT hr = m_real->CreateDevice(adapter, type, window, flags, &used, &real);
+    if (FAILED(hr))
+    {
+        VF_LOG_ERROR("CreateDevice with %dx multisampling failed (0x%08lX); retrying without it", used.MultiSampleType,
+                     hr);
+        off = kMultisampledDeviceFailed;
+        return nullptr;
+    }
+    auto* device = new FogDevice(this, real, true, used.AutoDepthStencilFormat, adapter, type);
+    if (device->CopyMultisampledDepth(method, used))
+        return device;
+    off = device->Multisampling().off;
+    device->Release();
+    return nullptr;
+}
 
 HRESULT WrappedD3D9::CreateDevice(UINT adapter, D3DDEVTYPE type, HWND window, DWORD flags,
                                   D3DPRESENT_PARAMETERS* pp, IDirect3DDevice9** out)
 {
     if (!pp || !out)
         return D3DERR_INVALIDCALL;
+    LogAdapter(m_real, adapter);
     bool fog = g_fogAllowedOnNewDevices && GlobalConfig().Get().enable && pp->EnableAutoDepthStencil;
     if (fog && !SupportsIntz(adapter, type, *pp))
     {
@@ -622,43 +860,59 @@ HRESULT WrappedD3D9::CreateDevice(UINT adapter, D3DDEVTYPE type, HWND window, DW
         fog = false;
     }
 
-    D3DPRESENT_PARAMETERS used = *pp;
-    DWORD usedFlags = flags;
-    if (fog)
+    const D3DPRESENT_PARAMETERS requested = *pp;
+    const DWORD usedFlags = fog ? flags & ~static_cast<DWORD>(D3DCREATE_PUREDEVICE) : flags;
+    D3DPRESENT_PARAMETERS used = requested;
+    MultisampleDecision decision = fog ? PrepareMultisampling(adapter, type, used) : MultisampleDecision{};
+    FogDevice* device = nullptr;
+    HRESULT hr = D3D_OK;
+    if (decision.method != DepthCopyMethod::None)
+        device = CreateMultisampledFogDevice(adapter, type, window, usedFlags, used, decision.method, decision.off);
+    if (!device)
     {
-        ApplyFogParameters(used);
-        usedFlags &= ~static_cast<DWORD>(D3DCREATE_PUREDEVICE);
+        used = requested;
+        if (fog)
+            ApplyFogParameters(used);
+        IDirect3DDevice9* real = nullptr;
+        hr = m_real->CreateDevice(adapter, type, window, usedFlags, &used, &real);
+        if (FAILED(hr) && fog)
+        {
+            VF_LOG_ERROR("CreateDevice with fog parameters failed (0x%08lX); retrying unchanged", hr);
+            fog = false;
+            used = requested;
+            hr = m_real->CreateDevice(adapter, type, window, flags, &used, &real);
+        }
+        if (FAILED(hr))
+            return hr;
+        device = new FogDevice(this, real, fog, requested.AutoDepthStencilFormat, adapter, type);
+        if (fog && !device->CreateDepth())
+            VF_LOG_ERROR("fog depth could not be created; fog disabled for this device");
+        device->KeepSingleSampled(decision.off);
     }
-    IDirect3DDevice9* real = nullptr;
-    HRESULT hr = m_real->CreateDevice(adapter, type, window, usedFlags, &used, &real);
-    if (FAILED(hr) && fog)
-    {
-        VF_LOG_ERROR("CreateDevice with fog parameters failed (0x%08lX); retrying unchanged", hr);
-        fog = false;
-        used = *pp;
-        hr = m_real->CreateDevice(adapter, type, window, flags, &used, &real);
-    }
-    if (FAILED(hr))
-        return hr;
     CopyBackParameters(pp, used);
 
-    auto* device = new FogDevice(this, real, fog, pp->AutoDepthStencilFormat);
-    if (fog && !device->CreateDepth())
-        VF_LOG_ERROR("fog depth could not be created; fog disabled for this device");
-    VF_LOG_INFO("CreateDevice: %lux%lu windowed=%d flags 0x%02lX -> 0x%02lX ms=%d fog=%d", used.BackBufferWidth,
-                used.BackBufferHeight, used.Windowed, flags, usedFlags, pp->MultiSampleType,
+    VF_LOG_INFO("CreateDevice: %lux%lu windowed=%d flags 0x%02lX -> 0x%02lX ms requested %d (quality %lu) used %d "
+                "depth requested %s used %s fog=%d",
+                used.BackBufferWidth, used.BackBufferHeight, used.Windowed, flags, usedFlags,
+                requested.MultiSampleType, requested.MultiSampleQuality, used.MultiSampleType,
+                DepthFormatName(RequestedDepthFormat(requested)), DepthFormatName(BoundDepthFormat(device->Real())),
                 device->FogActive() ? 1 : 0);
     if (device->FogActive())
+    {
+        LogMultisampling(device->Multisampling());
         g_latestFogDevice = device;
+    }
     if (device->FogActive() && GlobalConfig().Get().overlay)
-        AttachOverlay(real, DeviceWindow(window, *pp));
+        AttachOverlay(device->Real(), DeviceWindow(window, *pp));
     *out = device;
     return hr;
 }
 }
 
-FogDevice::FogDevice(WrappedD3D9* parent, IDirect3DDevice9* real, bool fog, D3DFORMAT depthFormat)
-    : m_parent(parent), m_real(real), m_fog(fog), m_depthFormat(depthFormat)
+FogDevice::FogDevice(WrappedD3D9* parent, IDirect3DDevice9* real, bool fog, D3DFORMAT depthFormat, UINT adapter,
+                     D3DDEVTYPE deviceType)
+    : m_parent(parent), m_real(real), m_fog(fog), m_depthFormat(depthFormat), m_adapter(adapter),
+      m_deviceType(deviceType)
 {
     m_parent->AddRef();
     Register(this);
@@ -666,9 +920,11 @@ FogDevice::FogDevice(WrappedD3D9* parent, IDirect3DDevice9* real, bool fog, D3DF
 
 FogDevice::~FogDevice()
 {
+    GlobalClientRippleSprites().Restore();
     DetachOverlay(m_real);
     Unregister(this);
     AbortWater();
+    m_grading.ReleaseAll();
     m_water.ReleaseAll();
     m_renderer.ReleaseAll();
     ReleaseDepth();
@@ -678,16 +934,60 @@ FogDevice::~FogDevice()
 
 void FogDevice::ReleaseDepth()
 {
-    if (m_depthSurface)
+    m_depthCopy.Detach();
+    ReleaseReference(m_clientDepth);
+    ReleaseReference(m_depthSurface);
+    ReleaseReference(m_depthTexture);
+}
+
+SceneDepth FogDevice::Depth() const
+{
+    SceneDepth depth;
+    depth.texture = m_depthTexture;
+    depth.bound = m_clientDepth ? m_clientDepth : m_depthSurface;
+    depth.copy = m_clientDepth ? &m_depthCopy : nullptr;
+    return depth;
+}
+
+bool FogDevice::CopyMultisampledDepth(DepthCopyMethod method, const D3DPRESENT_PARAMETERS& used)
+{
+    ReleaseDepth();
+    D3DSURFACE_DESC desc = {};
+    const bool bound = SUCCEEDED(m_real->GetDepthStencilSurface(&m_clientDepth)) && m_clientDepth &&
+                       SUCCEEDED(m_clientDepth->GetDesc(&desc));
+    const bool created = bound && SUCCEEDED(m_real->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_DEPTHSTENCIL,
+                                                                  kIntz, D3DPOOL_DEFAULT, &m_depthTexture, nullptr));
+    const bool attached = created && m_depthCopy.Attach(method, m_clientDepth, m_depthTexture);
+    if (!attached)
     {
-        m_depthSurface->Release();
-        m_depthSurface = nullptr;
+        const char* why = !bound ? "the game's depth buffer is unavailable"
+                                 : (!created ? "the INTZ copy could not be created" : "the depth copy could not start");
+        VF_LOG_ERROR("multisampled depth copy by %s unavailable: %s", DepthCopyMethodName(method), why);
+        ReleaseDepth();
+        KeepSingleSampled(why);
+        return false;
     }
-    if (m_depthTexture)
+    const DepthCopyTest test = TestDepthCopy(m_real, m_depthCopy, m_clientDepth, m_depthTexture);
+    LogDepthCopyTest(method, desc, test);
+    if (!test.passed)
     {
-        m_depthTexture->Release();
-        m_depthTexture = nullptr;
+        ReleaseDepth();
+        KeepSingleSampled(kSelfTestFailed);
+        return false;
     }
+    m_multisampling = {static_cast<int>(used.MultiSampleType), DepthCopyMethodName(method), "",
+                       test.copyMilliseconds};
+    return true;
+}
+
+void FogDevice::KeepSingleSampled(const char* why)
+{
+    m_multisampling = {0, "", why && *why ? why : kGameMultisamplingOff, -1.0f};
+}
+
+bool FogDevice::ReadSceneDepth(const DepthTexel* texels, int count, float* values)
+{
+    return FogActive() && ReadDepthTexels(m_real, m_depthTexture, texels, count, values);
 }
 
 bool FogDevice::BindFallbackDepth()
@@ -774,12 +1074,32 @@ HRESULT FogDevice::Reset(D3DPRESENT_PARAMETERS* pp)
     ReleaseOverlayDeviceObjects(m_real);
     AbortWater();
     m_water.ReleaseDefaultPool();
+    m_grading.ReleaseDefaultPool();
     if (!m_fog)
         return m_real->Reset(pp);
 
     m_renderer.ReleaseDefaultPool();
     ReleaseDepth();
-    D3DPRESENT_PARAMETERS used = *pp;
+    LogAdapter(m_parent->Real(), m_adapter);
+    const D3DPRESENT_PARAMETERS requested = *pp;
+    D3DPRESENT_PARAMETERS used = requested;
+    MultisampleDecision decision = m_parent->PrepareMultisampling(m_adapter, m_deviceType, used);
+    if (decision.method != DepthCopyMethod::None)
+    {
+        const HRESULT multisampled = m_real->Reset(&used);
+        if (SUCCEEDED(multisampled) && CopyMultisampledDepth(decision.method, used))
+        {
+            CopyBackParameters(pp, used);
+            LogReset(m_real, requested, used, true);
+            LogMultisampling(m_multisampling);
+            return multisampled;
+        }
+        if (FAILED(multisampled))
+            VF_LOG_ERROR("Reset with %dx multisampling failed (0x%08lX); retrying without it",
+                         requested.MultiSampleType, multisampled);
+        decision.off = FAILED(multisampled) ? kMultisampledResetFailed : m_multisampling.off;
+        used = requested;
+    }
     ApplyFogParameters(used);
     HRESULT hr = m_real->Reset(&used);
     if (FAILED(hr))
@@ -790,13 +1110,32 @@ HRESULT FogDevice::Reset(D3DPRESENT_PARAMETERS* pp)
     CopyBackParameters(pp, used);
     if (!CreateDepth())
         VF_LOG_ERROR("fog depth could not be recreated after Reset; fog disabled");
-    VF_LOG_INFO("Reset: %lux%lu fog=%d", used.BackBufferWidth, used.BackBufferHeight, FogActive() ? 1 : 0);
+    KeepSingleSampled(decision.off);
+    LogReset(m_real, requested, used, FogActive());
+    if (FogActive())
+        LogMultisampling(m_multisampling);
     return hr;
 }
 
-bool FogDevice::Render(const FrameInputs& in, const Config& cfg, const char** skip)
+bool FogDevice::Render(const FrameInputs& in, const Config& cfg, FogPass pass, const char** skip)
 {
-    bool ok = FogActive() && m_renderer.Render(m_real, m_depthTexture, m_depthSurface, in, cfg);
+    bool ok = FogActive() && m_renderer.Render(m_real, Depth(), in, cfg, pass);
+    if (skip)
+        *skip = FogActive() ? m_renderer.LastSkipReason() : "fog inactive";
+    return ok;
+}
+
+bool FogDevice::ReadyToRender(const D3DVIEWPORT9& vp, const char** skip)
+{
+    const bool ready = FogActive() && m_renderer.ReadyToRender(m_real, Depth(), vp);
+    if (skip)
+        *skip = FogActive() ? m_renderer.LastSkipReason() : "fog inactive";
+    return ready;
+}
+
+bool FogDevice::RenderGodRaysAfterWorld(const char** skip)
+{
+    const bool ok = FogActive() && m_renderer.RenderGodRaysAfterWorld(m_real, Depth());
     if (skip)
         *skip = FogActive() ? m_renderer.LastSkipReason() : "fog inactive";
     return ok;
@@ -805,7 +1144,7 @@ bool FogDevice::Render(const FrameInputs& in, const Config& cfg, const char** sk
 bool FogDevice::BeginWater(const FrameInputs& in, const WaterInputs& water, const Config& cfg, const char** skip)
 {
     AbortWater();
-    const bool armed = FogActive() && m_water.Begin(m_real, m_depthTexture, m_depthSurface, in, water, cfg);
+    const bool armed = FogActive() && m_water.Begin(m_real, Depth(), in, water, cfg);
     if (armed)
         OverrideDepthWrite(m_waterForcesDepthWrite, true);
     if (skip)
@@ -817,10 +1156,11 @@ WaterPassEnd FogDevice::EndWater()
 {
     OverrideDepthWrite(m_waterForcesDepthWrite, false);
     WaterPassEnd end;
-    end.shaded = m_water.End(m_real, m_depthTexture, m_depthSurface);
+    end.shaded = m_water.End(m_real, Depth());
     end.skipReason = end.shaded ? "" : m_water.LastSkipReason();
     end.flatWaves = end.shaded && !m_water.WavesSimulated();
     end.shadedClasses = end.shaded ? m_water.ShadedClasses() : 0u;
+    end.ripplesAvailable = m_water.RipplesAvailable();
     return end;
 }
 
@@ -828,6 +1168,14 @@ void FogDevice::AbortWater()
 {
     OverrideDepthWrite(m_waterForcesDepthWrite, false);
     m_water.Abort(m_real);
+}
+
+bool FogDevice::Grade(const D3DVIEWPORT9& world, const float* curve, float strength, const char** skip)
+{
+    const bool graded = m_grading.Grade(m_real, world, curve, strength);
+    if (skip)
+        *skip = graded ? "" : m_grading.LastSkipReason();
+    return graded;
 }
 
 void SetRealDirect3DCreate9(Direct3DCreate9Fn fn)
@@ -853,6 +1201,16 @@ void AllowFogOnNewDevices(bool allowedOnNewDevices)
 FogDevice* LatestFogDevice()
 {
     return g_latestFogDevice;
+}
+
+MultisamplingStatus CurrentMultisamplingStatus()
+{
+    return g_latestFogDevice ? g_latestFogDevice->Multisampling() : MultisamplingStatus();
+}
+
+bool ReadSceneDepth(FogDevice* device, const DepthTexel* texels, int count, float* values)
+{
+    return device && device->ReadSceneDepth(texels, count, values);
 }
 
 bool IsWrapperOf(FogDevice* device, void* gameDevice)
@@ -887,12 +1245,53 @@ void SuppressDepthWrite(FogDevice* device, bool suppress)
 
 bool RenderFog(FogDevice* device, const FrameInputs& in, const Config& cfg, const char** skipReason)
 {
-    return device && device->Render(in, cfg, skipReason);
+    return RenderFog(device, in, cfg, FogPass::WholeFrame, skipReason);
+}
+
+bool RenderFog(FogDevice* device, const FrameInputs& in, const Config& cfg, FogPass pass, const char** skipReason)
+{
+    return device && device->Render(in, cfg, pass, skipReason);
+}
+
+bool FogReadyToRender(FogDevice* device, const D3DVIEWPORT9& vp, const char** skipReason)
+{
+    if (device)
+        return device->ReadyToRender(vp, skipReason);
+    if (skipReason)
+        *skipReason = "no fog device";
+    return false;
+}
+
+bool RenderGodRaysAfterWorld(FogDevice* device, const char** skipReason)
+{
+    if (device)
+        return device->RenderGodRaysAfterWorld(skipReason);
+    if (skipReason)
+        *skipReason = "no fog device";
+    return false;
+}
+
+StockFogFit LastStockFogFit(FogDevice* device)
+{
+    return device ? device->LastStockFogFit() : StockFogFit();
 }
 
 bool AdaptiveLightingHistory(FogDevice* device)
 {
     return device && device->AdaptiveLightingHistory();
+}
+
+void DrawnFogShaders(FogDevice* device, IDirect3DPixelShader9** march, IDirect3DPixelShader9** composite,
+                     IDirect3DPixelShader9** splitComposite)
+{
+    *march = device ? device->DrawnFogMarch() : nullptr;
+    *composite = device ? device->DrawnFogComposite() : nullptr;
+    *splitComposite = device ? device->DrawnFogSplitComposite() : nullptr;
+}
+
+float DrawnFogGlowCompensation(FogDevice* device)
+{
+    return device ? device->DrawnFogGlowCompensation() : 0.0f;
 }
 
 bool BeginWaterPass(FogDevice* device, const FrameInputs& in, const WaterInputs& water, const Config& cfg,
@@ -957,4 +1356,40 @@ int UploadedWaterMasks(FogDevice* device)
 int LastWaterShadingVariant(FogDevice* device)
 {
     return device ? device->Water().LastShadingVariant() : -1;
+}
+
+int RequiredWaterMasks(FogDevice* device)
+{
+    return device ? device->Water().RequiredMasks() : 0;
+}
+
+void ReadWaterRippleStats(FogDevice* device, WaterRippleStats& out)
+{
+    out = device ? device->Water().RippleStats() : WaterRippleStats();
+}
+
+void ReadWaterRippleShading(FogDevice* device, WaterRippleShading& out)
+{
+    out = device ? device->Water().RippleShading() : WaterRippleShading();
+}
+
+bool GradeWorld(FogDevice* device, const D3DVIEWPORT9& world, const float* curve, float strength,
+                const char** skipReason)
+{
+    if (device)
+        return device->Grade(world, curve, strength, skipReason);
+    if (skipReason)
+        *skipReason = "no fog device";
+    return false;
+}
+
+void ReleaseGrading(FogDevice* device)
+{
+    if (device)
+        device->ReleaseGrading();
+}
+
+GradingStats GradingStatsOf(FogDevice* device)
+{
+    return device ? device->Grading() : GradingStats();
 }

@@ -38,6 +38,11 @@ constexpr uint32_t kFlagRelativeHeights = 0x2;
 
 constexpr float kDerivedLayerLimit = 1500.0f;
 
+constexpr float kNoiseCurveShape = (kNoiseCurveContrast - 1.0f) / (2.0f - kNoiseCurveContrast);
+constexpr float kFourPi = 12.5663706f;
+constexpr float kMaxEnergyNormalisedPhaseG = 0.95f;
+constexpr int kEnergyNormalisedClassicPhase = 1;
+
 constexpr float kLightSettingHalfWidth = 0.02f;
 constexpr float kMinClassicDirectLuminance = 1.0e-3f;
 constexpr float kLuminanceWeights[3] = {0.2126f, 0.7152f, 0.0722f};
@@ -55,6 +60,11 @@ void Scale(const float* rgb, float s, float* out)
     out[0] = rgb[0] * s;
     out[1] = rgb[1] * s;
     out[2] = rgb[2] * s;
+}
+
+bool ScattersInLinearLight(const Config& cfg)
+{
+    return cfg.colorSpace == 1;
 }
 
 void Encode(float* rgb, bool linear)
@@ -130,16 +140,39 @@ void DerivedLayers(const FrameInputs& in, const Config& cfg, const FogParams& p,
     Unbounded(out[2]);
 }
 
-void AuthoredLayers(const AuthoredFog& fog, const Config& cfg, const FogParams& p, float sunScatter, FogLayer* out)
+LayerNoise AuthoredLayerNoise(const AuthoredNoise& authored, const Config& cfg, bool linear)
+{
+    LayerNoise noise = {};
+    const float octaveShares = authored.octaveShare[0] + authored.octaveShare[1];
+    if (!cfg.classicNoise || authored.presence <= 0.0f || octaveShares <= 0.0f)
+        return noise;
+    noise.alpha = std::min(authored.presence, 1.0f);
+    for (int octave = 0; octave < kAuthoredNoiseOctaves; ++octave)
+    {
+        noise.octaveWeight[octave] = authored.octaveShare[octave] / octaveShares;
+        noise.inverseTileYards[octave] =
+            authored.tileYards[octave] > 0.0f ? 1.0f / authored.tileYards[octave] : 0.0f;
+        std::memcpy(noise.velocity[octave], authored.velocity[octave], sizeof(noise.velocity[octave]));
+    }
+    Scale(authored.fade, cfg.ambient, noise.fade);
+    Encode(noise.fade, linear);
+    return noise;
+}
+
+void AuthoredLayers(const AuthoredFog& fog, const Config& cfg, const FogParams& p, float sunScatter, FogLayer* out,
+                    LayerNoise* noise)
 {
     for (int i = 0; i < kSceneLayers; ++i)
     {
         FogLayer& l = out[i];
         l = FogLayer{};
+        noise[i] = LayerNoise{};
         Unbounded(l);
         if (i >= fog.layerCount)
             continue;
         const AuthoredLayer& a = fog.layers[i];
+        noise[i] = AuthoredLayerNoise(a.noise, cfg, p.linear);
+        l.densityVariation = 1.0f - noise[i].alpha;
         const float heightBase = a.flags & kFlagRelativeHeights ? p.referenceZ : 0.0f;
         l.start = std::clamp(a.start, 0.0f, std::max(p.maxDistance - kFogRangeMargin, 0.0f));
         l.density = a.density * kClassicUnits * cfg.density;
@@ -159,7 +192,9 @@ void AuthoredLayers(const AuthoredFog& fog, const Config& cfg, const FogParams& 
         Encode(l.emissive, p.linear);
         Encode(l.diffuse, p.linear);
         Encode(l.shadowEmissive, p.linear);
-        Scale(l.diffuse, a.intensity * sunScatter, l.diffuse);
+        const float phaseScale =
+            cfg.classicPhase == kEnergyNormalisedClassicPhase ? EnergyNormalisedPhaseScale(l.g) : 1.0f;
+        Scale(l.diffuse, a.intensity * sunScatter * phaseScale, l.diffuse);
     }
 }
 
@@ -221,7 +256,8 @@ float SceneLayersLevelRayOpticalDepth(const FogParams& p, float cameraZ)
         const FogLayer& l = p.layers[i];
         const float heightFactor = HeightDensityFactor(l, cameraZ);
         const float shadowFactor = ShadowDensityFactor(l, p.lightAboveHorizon);
-        opticalDepth += l.density * heightFactor * shadowFactor * RampedPathLength(l, p.maxDistance);
+        const float noiseFactor = MeanNoiseDensity(p.noise[i]);
+        opticalDepth += l.density * heightFactor * shadowFactor * noiseFactor * RampedPathLength(l, p.maxDistance);
     }
     return opticalDepth;
 }
@@ -298,7 +334,7 @@ void UnpackColor(uint32_t argb, float* rgb)
 FogParams BuildFogParams(const FrameInputs& in, const Config& cfg, const AuthoredFog* authored)
 {
     FogParams p = {};
-    p.linear = cfg.colorSpace == 1;
+    p.linear = ScattersInLinearLight(cfg);
     p.authored = authored != nullptr;
     const float interiorWeight = InteriorWeight(in, cfg);
     float fogColor[3];
@@ -326,7 +362,7 @@ FogParams BuildFogParams(const FrameInputs& in, const Config& cfg, const Authore
     if (p.authored)
     {
         p.directLightMatch = ClientToClassicDirectLight(*authored, p.lightColor, p.linear);
-        AuthoredLayers(*authored, cfg, p, cfg.sunScatter * p.directLightMatch, p.layers);
+        AuthoredLayers(*authored, cfg, p, cfg.sunScatter * p.directLightMatch, p.layers, p.noise);
         HaloHue(*authored, p.rayColor);
         DistanceLayer(in, cfg, p, elevationFadedScatter, fogColor, distanceFog);
         const float thinness = ClassicFogThinness(p, *authored, in.camPos[2]);
@@ -339,6 +375,118 @@ FogParams BuildFogParams(const FrameInputs& in, const Config& cfg, const Authore
     }
     ApplyInteriorFog(interiorWeight, cfg, p);
     return p;
+}
+
+float EnergyNormalisedPhaseScale(float g)
+{
+    const float capped = std::min(g, kMaxEnergyNormalisedPhaseG);
+    return (1.0f + capped) / (kFourPi * (1.0f - capped) * (1.0f - capped));
+}
+
+PointLightUpload LocalLightUpload(const Config& cfg)
+{
+    return {ScattersInLinearLight(cfg), cfg.localLightIntensity};
+}
+
+bool AnyLayerNoise(const FogParams& fog)
+{
+    for (const LayerNoise& noise : fog.noise)
+        if (noise.alpha > 0.0f)
+            return true;
+    return false;
+}
+
+float NoiseDensityCurve(float x)
+{
+    const auto belowPivot = [](float v) { return v * v * (kNoiseCurveShape + 1.0f) / (v + kNoiseCurveShape / 2.0f); };
+    const float clamped = std::clamp(x, 0.0f, 1.0f);
+    return clamped < kNoiseCurvePivot ? belowPivot(clamped) : 1.0f - belowPivot(1.0f - clamped);
+}
+
+float MeanNoiseDensity(const LayerNoise& noise)
+{
+    return 1.0f - noise.alpha * (1.0f - kNoiseCurveMean);
+}
+
+void MeanNoiseEmissive(const LayerNoise& noise, const float* emissive, float* out)
+{
+    const float thinnedDensity = 1.0f - noise.alpha;
+    const float thinnedWeight = (1.0f - kNoiseCurveMean) * thinnedDensity;
+    const float totalWeight = kNoiseCurveMean + thinnedWeight;
+    for (int c = 0; c < 3; ++c)
+    {
+        const float thinnedEmissive = emissive[c] + noise.alpha * (noise.fade[c] - emissive[c]);
+        out[c] = totalWeight > 0.0f ? (kNoiseCurveMean * emissive[c] + thinnedWeight * thinnedEmissive) / totalWeight
+                                    : emissive[c];
+    }
+}
+
+FogLayer MeanNoiseLayer(const FogLayer& layer, const LayerNoise& noise, float lightAboveHorizon)
+{
+    FogLayer mean = layer;
+    if (noise.alpha <= 0.0f)
+        return mean;
+    const float shadow = HorizonShadow(layer, lightAboveHorizon);
+    float shadowMixed[3];
+    for (int c = 0; c < 3; ++c)
+        shadowMixed[c] = layer.emissive[c] + (layer.shadowEmissive[c] - layer.emissive[c]) * shadow;
+    MeanNoiseEmissive(noise, shadowMixed, mean.emissive);
+    std::memcpy(mean.shadowEmissive, mean.emissive, sizeof(mean.emissive));
+    mean.density *= MeanNoiseDensity(noise);
+    return mean;
+}
+
+FogParams WithMeanNoise(const FogParams& fog)
+{
+    FogParams mean = fog;
+    for (int i = 0; i < kSceneLayers; ++i)
+    {
+        mean.layers[i] = MeanNoiseLayer(fog.layers[i], fog.noise[i], fog.lightAboveHorizon);
+        mean.noise[i] = LayerNoise{};
+    }
+    return mean;
+}
+
+void AuthoredNoiseScroll::Advance(const FogParams& fog, const float* camera, double seconds)
+{
+    for (int layer = 0; layer < kSceneLayers; ++layer)
+        for (int octave = 0; octave < kAuthoredNoiseOctaves; ++octave)
+        {
+            const double inverseTile = fog.noise[layer].inverseTileYards[octave];
+            double& previousInverseTile = m_inverseTileYards[layer][octave];
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                const double scaledAboutCamera = camera[axis] * (inverseTile - previousInverseTile);
+                const double drift = fog.noise[layer].velocity[octave][axis] * inverseTile * seconds;
+                double& phase = m_phaseInTiles[layer][octave][axis];
+                phase += scaledAboutCamera + drift;
+                phase -= std::floor(phase);
+            }
+            previousInverseTile = inverseTile;
+        }
+}
+
+void AuthoredNoiseScroll::Registers(const FogParams& fog, LayerNoiseRegisters* out) const
+{
+    for (int layer = 0; layer < kSceneLayers; ++layer)
+    {
+        const LayerNoise& noise = fog.noise[layer];
+        LayerNoiseRegisters& registers = out[layer];
+        registers = {};
+        for (int octave = 0; octave < kAuthoredNoiseOctaves; ++octave)
+        {
+            float* octaveRegister = registers.octaveOffsetAndInverseTile[octave];
+            octaveRegister[3] = noise.inverseTileYards[octave];
+            if (noise.inverseTileYards[octave] <= 0.0f)
+                continue;
+            const double tile = 1.0 / noise.inverseTileYards[octave];
+            for (int axis = 0; axis < 3; ++axis)
+                octaveRegister[axis] = static_cast<float>(m_phaseInTiles[layer][octave][axis] * tile);
+            registers.octaveWeights[octave] = noise.octaveWeight[octave];
+        }
+        std::memcpy(registers.fadeAndAlpha, noise.fade, sizeof(noise.fade));
+        registers.fadeAndAlpha[3] = noise.alpha;
+    }
 }
 
 void Mul4x4(const float* a, const float* b, float* out)

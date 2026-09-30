@@ -188,6 +188,206 @@ void CheckDepthProbeAndGpuTimeLog(Harness& h, Vec3 eye, Vec3 at)
     vf_test_set_config(&saved);
 }
 
+std::string StormSummaryAtHarbour(Harness& h, Config config, bool classicNoise, const D3DVIEWPORT9& world)
+{
+    config.classicNoise = classicNoise;
+    vf_test_set_config(&config);
+    const Vec3 at = Add(kHarbourEye, {100, 100, -5});
+    float view[16];
+    float projection[16];
+    CameraRelativeLookAt(kHarbourEye, at, view);
+    EngineProjection(static_cast<float>(world.Width) / world.Height, projection);
+    FrameInputs input = MakeInputs(view, projection, kHarbourEye, at, world);
+    input.mapId = kEasternKingdoms;
+    input.dayFraction = kNoon;
+    input.lightParams = Storm(1.0f);
+    const size_t logStart = ReadText(FogLogBesideTheFogDll()).size();
+    h.BeginFrame();
+    h.DrawScene(kHarbourEye, view, projection, world);
+    const char* skip = "";
+    const bool rendered = vf_test_render(&input, &skip) != 0;
+    h.dev->EndScene();
+    h.dev->Present(nullptr, nullptr, nullptr, nullptr);
+    return rendered ? LogWrittenSince(logStart) : std::string();
+}
+
+void CheckFrameSummaryLogsClassicExtras(Harness& h)
+{
+    Config saved;
+    vf_test_get_config(&saved);
+    Config config = saved;
+    config.logLevel = 1;
+    config.dataMode = 1;
+    config.godRays = 0.0f;
+    config.temporal = 0.0f;
+    config.localLights = false;
+    const D3DVIEWPORT9 noisyView = {0, 0, 126, 94, 0, 1};
+    const D3DVIEWPORT9 quietView = {0, 0, 122, 92, 0, 1};
+    const std::string noisy = StormSummaryAtHarbour(h, config, true, noisyView);
+    const std::string quiet = StormSummaryAtHarbour(h, config, false, quietView);
+    const size_t noiseLine = noisy.find("  classic layer ");
+    std::printf("     storm summary noise line: %s\n",
+                noiseLine == std::string::npos ? "missing" : noisy.substr(noiseLine, noisy.find('\n', noiseLine) -
+                                                                                        noiseLine).c_str());
+    Check(HasLine(noisy, "  Classic glow ") && HasLine(noisy, "(ForeverGlow 0, ColorGrading 0.00)") &&
+              HasLine(noisy, " noise: share 1.00, drawn alpha 1.00;"),
+          "the frame summary logs the Classic glow, the grading curve and each noisy layer's drawn noise");
+    Check(HasLine(quiet, " noise: share 1.00, drawn alpha 0.00 (off: ClassicNoise=0);"),
+          "with ClassicNoise=0 the frame summary logs the authored noise as off, not as drawn");
+    vf_test_set_config(&saved);
+}
+
+constexpr int kFramesPastLightSetSettling = 40;
+constexpr float kFarClipStepThatLogsASummary = 100.0f;
+constexpr float kLoggedLightAttenuation[3] = {0.0f, 0.7f, 0.03f};
+
+size_t CountOf(const std::string& text, const char* fragment)
+{
+    size_t count = 0;
+    for (size_t at = text.find(fragment); at != std::string::npos; at = text.find(fragment, at + 1))
+        ++count;
+    return count;
+}
+
+LocalPointLight LoggedLight(Vec3 eye, Vec3 forward, float yardsAhead, const float (&colour)[3], uintptr_t id)
+{
+    LocalPointLight light;
+    const Vec3 position = Add(eye, {forward.x * yardsAhead, forward.y * yardsAhead, forward.z * yardsAhead});
+    light.position[0] = position.x;
+    light.position[1] = position.y;
+    light.position[2] = position.z;
+    std::memcpy(light.color, colour, sizeof(light.color));
+    std::memcpy(light.attenuation, kLoggedLightAttenuation, sizeof(light.attenuation));
+    light.nativeId = id;
+    return light;
+}
+
+void CheckLocalLightLogLines(Harness& h)
+{
+    Config saved;
+    vf_test_get_config(&saved);
+    Config config = saved;
+    config.logLevel = 1;
+    config.quality = 1;
+    config.dataMode = 0;
+    config.temporal = 0.0f;
+    config.godRays = 0.0f;
+    config.localLights = true;
+    vf_test_set_config(&config);
+    const D3DVIEWPORT9 world = {0, 0, 128, 96, 0, 1};
+    const Vec3 eye = Add(kGameLikeWorldOffset, {0, 0, 9});
+    const Vec3 at = Add(kGameLikeWorldOffset, {100, 0, 9});
+    const Vec3 forward = Norm(Sub(at, eye));
+    float view[16];
+    float projection[16];
+    CameraRelativeLookAt(eye, at, view);
+    EngineProjection(128.0f / 96.0f, projection);
+    const FrameInputs empty = MakeInputs(view, projection, eye, at, world);
+    const float statue[3] = {65.9f, 255.0f, 255.0f};
+    const float lantern[3] = {1.0f, 0.72f, 0.4f};
+    const LocalPointLight lights[] = {LoggedLight(eye, forward, 20.0f, statue, 0x1001),
+                                      LoggedLight(eye, forward, 40.0f, lantern, 0x1002),
+                                      LoggedLight(eye, forward, 60.0f, lantern, 0x1003)};
+    auto inputsWith = [&](int count) {
+        FrameInputs inputs = empty;
+        for (int i = 0; i < count; ++i)
+            engine::SelectLocalPointLight(inputs.localLights, lights[i], inputs.camPos, LocalLightUpload(config));
+        return inputs;
+    };
+    const FrameInputs two = inputsWith(2);
+    const FrameInputs three = inputsWith(3);
+    bool rendered = two.localLights.pointLightCount == 2 && three.localLights.pointLightCount == 3;
+    auto frame = [&](const FrameInputs& inputs) {
+        h.BeginFrame();
+        h.DrawScene(eye, view, projection, world);
+        const char* skip = "";
+        rendered = vf_test_render(&inputs, &skip) != 0 && rendered;
+        h.dev->EndScene();
+        h.dev->Present(nullptr, nullptr, nullptr, nullptr);
+    };
+    const size_t logStart = ReadText(FogLogBesideTheFogDll()).size();
+    frame(two);
+    const bool settling = !HasLine(LogWrittenSince(logStart), "local lights:");
+    for (int i = 0; i < kFramesPastLightSetSettling; ++i)
+        frame(two);
+    const std::string infoLog = LogWrittenSince(logStart);
+    Check(rendered && settling &&
+              CountOf(infoLog, "local lights: 2 uploaded, brightest linear (12.99 255 255), nearest 20.0 yd") == 1 &&
+              !HasLine(infoLog, "  local light 0:"),
+          "at LogLevel 1 a settled change of the uploaded point lights logs one line with the count, the brightest "
+          "uploaded colour and the nearest distance");
+
+    auto logLevel = [&](int level) {
+        config.logLevel = level;
+        vf_test_set_config(&config);
+    };
+    logLevel(2);
+    const size_t raisedStart = ReadText(FogLogBesideTheFogDll()).size();
+    frame(two);
+    const std::string raisedLog = LogWrittenSince(raisedStart);
+    logLevel(1);
+    frame(two);
+    logLevel(2);
+    const size_t raisedAgainStart = ReadText(FogLogBesideTheFogDll()).size();
+    frame(two);
+    const std::string raisedAgainLog = LogWrittenSince(raisedAgainStart);
+    logLevel(1);
+    Check(rendered && CountOf(raisedLog, "local lights: 2 uploaded") == 1 &&
+              CountOf(raisedLog, "  local light 0: ") == 1 && CountOf(raisedLog, "  local light 1: ") == 1 &&
+              !HasLine(raisedLog, "  local light 2: ") && !HasLine(raisedAgainLog, "local light"),
+          "raising LogLevel from 1 to 2 over the same uploaded point lights logs their per-light lines once");
+
+    const size_t flickerStart = ReadText(FogLogBesideTheFogDll()).size();
+    for (int i = 0; i < kFramesPastLightSetSettling; ++i)
+        frame(i % 2 ? two : three);
+    Check(rendered && !HasLine(LogWrittenSince(flickerStart), "local lights:"),
+          "a point-light set that changes every frame is not logged until it settles");
+
+    config.logLevel = 2;
+    vf_test_set_config(&config);
+    const size_t debugStart = ReadText(FogLogBesideTheFogDll()).size();
+    for (int i = 0; i < kFramesPastLightSetSettling; ++i)
+        frame(three);
+    const std::string debugLog = LogWrittenSince(debugStart);
+    const size_t firstLight = debugLog.find("  local light 0: ");
+    std::printf("     %s\n", firstLight == std::string::npos
+                                   ? "no per-light line"
+                                   : debugLog.substr(firstLight, debugLog.find('\n', firstLight) - firstLight).c_str());
+    Check(rendered && CountOf(debugLog, "local lights: 3 uploaded") == 1 &&
+              CountOf(debugLog, "attenuation 0 0.7 0.03, enabled 1; uploaded (") == 3 &&
+              HasLine(debugLog, "  local light 0: at (") && HasLine(debugLog, "20.0 yd; diffuse (65.9 255 255)") &&
+              HasLine(debugLog, "uploaded (12.99 255 255), reach ") && HasLine(debugLog, "  local light 2: "),
+          "at LogLevel 2 each uploaded point light logs its position, distance, captured diffuse, attenuation, "
+          "enabled flag, uploaded colour and reach");
+
+    const size_t emptyStart = ReadText(FogLogBesideTheFogDll()).size();
+    for (int i = 0; i < kFramesPastLightSetSettling; ++i)
+        frame(empty);
+    Check(rendered && CountOf(LogWrittenSince(emptyStart), "local lights: none uploaded") == 1,
+          "the log says when the last point light stops being uploaded");
+
+    FrameInputs rejected = empty;
+    rejected.localLights.capture = LocalLightCapture::DisabledLight;
+    rejected.farClip = empty.farClip + kFarClipStepThatLogsASummary;
+    const size_t rejectedStart = ReadText(FogLogBesideTheFogDll()).size();
+    frame(rejected);
+    const std::string firstRejectedFrame = LogWrittenSince(rejectedStart);
+    for (int i = 0; i < kFramesPastLightSetSettling; ++i)
+        frame(rejected);
+    const std::string rejectedLog = LogWrittenSince(rejectedStart);
+    Check(rendered &&
+              HasLine(firstRejectedFrame,
+                      "local lights: capture rejected (disabled light in the table), first on frame ") &&
+              HasLine(firstRejectedFrame,
+                      "  local points 0 enabled 1, capture rejected (disabled light in the table); interior ") &&
+              CountOf(rejectedLog, "capture rejected (disabled light in the table), first on frame ") == 1 &&
+              CountOf(rejectedLog, "local lights: none uploaded, capture rejected (disabled light in the table)") ==
+                  1,
+          "a rejected point-light capture is logged with its reason on its first frame, in the frame summary and "
+          "once settled, not as an area without lights");
+    vf_test_set_config(&saved);
+}
+
 struct ScriptedQueryCreation
 {
     HRESULT failure = S_OK;

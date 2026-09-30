@@ -1,14 +1,22 @@
+#include "client_ripple_sprites.h"
 #include "config.h"
 #include "engine.h"
 #include "fog_data.h"
 #include "fog_model.h"
+#include "forever_look.h"
+#include "fullscreen_triangle.h"
 #include "gpu_timing.h"
+#include "grading_renderer.h"
 #include "log.h"
+#include "msaa_depth.h"
 #include "noise_volume.h"
+#include "water_contacts.h"
 #include "water_data.h"
 #include "water_fft.h"
+#include "water_ripples.h"
 #include "water_spectrum.h"
 #include "status_log.h"
+#include "transparent_fog.h"
 
 #include <windows.h>
 #include <d3d9.h>
@@ -16,9 +24,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -27,10 +38,14 @@ extern "C" __declspec(dllimport) void __cdecl vf_test_set_config(const Config*);
 extern "C" __declspec(dllimport) void __cdecl vf_test_get_config(Config*);
 extern "C" __declspec(dllimport) int __cdecl vf_test_render(const FrameInputs*, const char**);
 extern "C" __declspec(dllimport) int __cdecl vf_test_adaptive_lighting_history();
+extern "C" __declspec(dllimport) void __cdecl vf_test_drawn_fog_shaders(IDirect3DPixelShader9**,
+                                                                        IDirect3DPixelShader9**,
+                                                                        IDirect3DPixelShader9**);
 extern "C" __declspec(dllimport) void __cdecl vf_test_force_depth_write(int);
 extern "C" __declspec(dllimport) void __cdecl vf_test_suppress_depth_write(int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_overlay_visible();
 extern "C" __declspec(dllimport) void __cdecl vf_test_draw_overlay();
+extern "C" __declspec(dllimport) int __cdecl vf_test_settings_window(float*);
 extern "C" __declspec(dllimport) int __cdecl vf_test_assign_water_data(const WaterPreset*, int,
                                                                        const WaterFftTile*, int,
                                                                        const WaterMaskView*, int);
@@ -60,14 +75,49 @@ extern "C" __declspec(dllimport) int __cdecl vf_test_water_status(const char**);
 extern "C" __declspec(dllimport) const void* __cdecl vf_test_water_pass_thunk(uintptr_t);
 extern "C" __declspec(dllimport) void __cdecl vf_test_water_pass_begin_reuses_argument_slot(int);
 extern "C" __declspec(dllimport) void __cdecl vf_test_record_fog_frame(int, int, const char*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_use_fog_hook_client(const FrameInputs*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_stock_fog(engine::StockFog*, const engine::StockFog*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_frame_begin();
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_liquid_end();
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_world_done();
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_m2_batch_fog(M2BatchFogArgs*);
+extern "C" __declspec(dllimport) const void* __cdecl vf_test_m2_batch_fog_thunk(uintptr_t);
+extern "C" __declspec(dllimport) const void* __cdecl vf_test_glare_pass_thunk(uintptr_t);
+extern "C" __declspec(dllimport) void __cdecl vf_test_log_transparent_fog_stats();
+extern "C" __declspec(dllimport) void __cdecl vf_test_clear_transparent_fog_failure();
+extern "C" __declspec(dllimport) void __cdecl vf_test_force_fog_params(const FogParams*);
 extern "C" __declspec(dllimport) void __cdecl vf_test_fail_water_mask_uploads(int);
-extern "C" __declspec(dllimport) int __cdecl vf_test_water_masks_uploaded();
+extern "C" __declspec(dllimport) int __cdecl vf_test_water_masks_uploaded(int*);
 extern "C" __declspec(dllimport) void __cdecl vf_test_force_water_shading_variant(int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_water_shading_variant();
+extern "C" __declspec(dllimport) void __cdecl vf_test_force_depth_copy_method(int);
+extern "C" __declspec(dllimport) int __cdecl vf_test_read_scene_depth(const DepthTexel*, int, float*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_multisampling(MultisamplingStatus*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_probe_depth_copy(IDirect3D9*, DepthCopyProbe*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_water_ripple_stats(WaterRippleStats*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_water_ripple_shading(WaterRippleShading*);
+extern "C" __declspec(dllimport) unsigned __cdecl vf_test_water_contact_reads();
+extern "C" __declspec(dllimport) void __cdecl vf_test_refuse_water_contacts(int);
+extern "C" __declspec(dllimport) void __cdecl vf_test_inject_water_ripple_fault(int);
+extern "C" __declspec(dllimport) int __cdecl vf_test_bind_client_ripple_gate(volatile int32_t*, uintptr_t,
+                                                                             const unsigned char*, size_t);
+extern "C" __declspec(dllimport) void __cdecl vf_test_update_client_ripple_sprites(int, int, double);
+extern "C" __declspec(dllimport) void __cdecl vf_test_use_forever_look_frame(const ForeverLookFrame*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_forever_look_world_done();
+extern "C" __declspec(dllimport) int __cdecl vf_test_delivered_glow(float*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_grading_stats(GradingStats*);
+extern "C" __declspec(dllimport) int __cdecl vf_test_forever_look_guards(engine::CodeRange*, int);
+extern "C" __declspec(dllimport) void __cdecl vf_test_forever_look_status(ForeverLookStatus*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_use_world_hook_client(const FrameInputs*, int);
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_opaque_done();
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_world_done();
+extern "C" __declspec(dllimport) void __cdecl vf_test_simulate_fog_hook_failure(int);
+extern "C" __declspec(dllimport) float __cdecl vf_test_drawn_glow_compensation();
 
 namespace
 {
 constexpr D3DFORMAT kIntz = static_cast<D3DFORMAT>(MAKEFOURCC('I', 'N', 'T', 'Z'));
+constexpr D3DFORMAT kClientDepthFormat = D3DFMT_D24X8;
 constexpr float kPi = 3.14159265f;
 constexpr float kNear = 0.4f;
 constexpr float kFar = 1000.0f;
@@ -88,6 +138,8 @@ constexpr UINT kOverlayProbeRight = 400;
 constexpr UINT kOverlayProbeBottom = 300;
 constexpr int kOverlayTitleBarX = 200;
 constexpr int kOverlayTitleBarY = 40;
+constexpr UINT kSkyRowsFraction = 4;
+constexpr int kMaxAdjacentSkyColumnDifference = 2;
 constexpr int kBesideOverlayX = 1100;
 constexpr int kBesideOverlayY = 600;
 constexpr int kOverlayBodyX = 480;
@@ -96,6 +148,17 @@ constexpr int kDensitySliderY = 197;
 constexpr int kDensitySliderGrabX = 60;
 constexpr int kDensitySliderDragX = 250;
 constexpr float kDensityAfterDragAtLeast = 2.5f;
+constexpr float kPanelLinePixels = 16.0f;
+constexpr float kPanelFirstWidth = 30.0f * kPanelLinePixels;
+constexpr float kPanelMinWidth = 20.0f * kPanelLinePixels;
+constexpr float kPanelMinHeight = 16.0f * kPanelLinePixels;
+constexpr float kPanelMargin = 2.0f * kPanelLinePixels;
+constexpr int kGripInset = 4;
+constexpr int kGripDragX = 160;
+constexpr int kGripDragY = 24;
+constexpr int kGripShrink = -2000;
+constexpr float kPanelSizeTolerance = 1.5f;
+constexpr float kBesideShrunkPanelGap = 4.0f;
 
 int g_failures = 0;
 
@@ -240,6 +303,19 @@ struct Image
     }
 };
 
+IDirect3DSurface9* ResolvedCopy(IDirect3DDevice9* dev, IDirect3DSurface9* target, const D3DSURFACE_DESC& desc)
+{
+    IDirect3DSurface9* resolved = nullptr;
+    if (SUCCEEDED(dev->CreateRenderTarget(desc.Width, desc.Height, desc.Format, D3DMULTISAMPLE_NONE, 0, FALSE,
+                                          &resolved, nullptr)) &&
+        SUCCEEDED(dev->StretchRect(target, nullptr, resolved, nullptr, D3DTEXF_NONE)))
+        return resolved;
+    if (resolved)
+        resolved->Release();
+    target->AddRef();
+    return target;
+}
+
 Image Capture(IDirect3DDevice9* dev)
 {
     Image img;
@@ -248,6 +324,12 @@ Image Capture(IDirect3DDevice9* dev)
     dev->GetRenderTarget(0, &bb);
     D3DSURFACE_DESC desc;
     bb->GetDesc(&desc);
+    if (desc.MultiSampleType != D3DMULTISAMPLE_NONE)
+    {
+        IDirect3DSurface9* resolved = ResolvedCopy(dev, bb, desc);
+        bb->Release();
+        bb = resolved;
+    }
     dev->CreateOffscreenPlainSurface(desc.Width, desc.Height, desc.Format, D3DPOOL_SYSTEMMEM, &sys, nullptr);
     dev->GetRenderTargetData(bb, sys);
     D3DLOCKED_RECT lr;
@@ -268,8 +350,29 @@ Image Capture(IDirect3DDevice9* dev)
     return img;
 }
 
-constexpr DWORD kFogPassTextureStages = 10;
-constexpr UINT kFogPassPixelConstants = 99;
+struct Rgb
+{
+    float r, g, b;
+};
+
+Rgb SampleRgb(const Image& img, int cx, int cy, int radius)
+{
+    Rgb sum = {};
+    int n = 0;
+    for (int y = cy - radius; y <= cy + radius; ++y)
+        for (int x = cx - radius; x <= cx + radius; ++x)
+        {
+            const unsigned char* p = img.At(static_cast<UINT>(x), static_cast<UINT>(y));
+            sum.r += p[2];
+            sum.g += p[1];
+            sum.b += p[0];
+            ++n;
+        }
+    return {sum.r / n, sum.g / n, sum.b / n};
+}
+
+constexpr DWORD kFogPassTextureStages = 11;
+constexpr UINT kFogPassPixelConstants = 100;
 
 struct Sentinel
 {
@@ -390,6 +493,7 @@ struct Harness
     IDirect3DPixelShader9* enginePs = nullptr;
     IDirect3DVertexDeclaration9* engineDecl = nullptr;
     D3DCOLOR clearColor = 0xFF6FA0DC;
+    DWORD clearFlags = D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL;
 
     void CreateEngineObjects()
     {
@@ -425,7 +529,7 @@ struct Harness
         dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
         for (DWORD t = 0; t < kFogPassTextureStages; ++t)
             dev->SetTexture(t, nullptr);
-        dev->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL, clearColor, 1.0f, 0);
+        dev->Clear(0, nullptr, clearFlags, clearColor, 1.0f, 0);
     }
 
     void DrawScene(Vec3 eye, const float* view, const float* engineProj, const D3DVIEWPORT9& vp)
@@ -641,13 +745,13 @@ void CheckClassicData(const FogData& data)
               stormwindWeight > 0.05f && stormwindWeight < 0.1f,
           "Classic light blend at the harbour (light 77 falloff edge)");
     Check(wall && haze && std::fabs(wall->start - 3000.0f) < 0.5f &&
-              std::fabs(wall->density - (globalWeight * 0.6f + stormwindWeight * 0.1f)) < 1e-4f &&
-              std::fabs(haze->density - (globalWeight * 0.12f + stormwindWeight * 0.1f)) < 1e-4f,
+              std::fabs(wall->density - (globalWeight * 0.6f + stormwindWeight * 1.0f)) < 1e-4f &&
+              std::fabs(haze->density - (globalWeight * 0.12f + stormwindWeight * 0.125f)) < 1e-4f,
           "Classic layers blended by light weight at a key time");
 
     AuthoredFog mid = {};
     data.Resolve(kEasternKingdoms, harbourAtStormwindLightEdge, kDayFraction1845, kClearWeather, mid);
-    float expected = WeightOf(mid, kEasternKingdomsGlobalLight) * 0.8f + WeightOf(mid, kStormwindLight) * 0.3f;
+    float expected = WeightOf(mid, kEasternKingdomsGlobalLight) * 0.8f + WeightOf(mid, kStormwindLight) * 0.75f;
     const AuthoredLayer* midWall = FarWall(mid);
     std::printf("     harbour at 18:45: far wall density %.4f (expected %.4f)\n", midWall ? midWall->density : -1.0f,
                 expected);
@@ -702,12 +806,12 @@ void CheckStormBlendsLayersByClassicIndex(const FogData& data)
               Near(clear.layers[1].start, 3000.0f) && Near(clear.layers[1].density, 0.3f) &&
               Near(clear.layers[2].density, 0.1f),
           "open sea resolves only the Eastern Kingdoms light");
-    Check(storm.layerCount == 3 && storm.layers[0].density == 0.0f && Near(storm.layers[1].start, 800.0f) &&
-              Near(storm.layers[1].density, 0.75f) && Near(storm.layers[2].density, 0.75f),
+    Check(storm.layerCount == 3 && storm.layers[0].density == 0.0f && Near(storm.layers[1].start, 500.0f) &&
+              Near(storm.layers[1].density, 0.75f) && Near(storm.layers[2].density, 0.3f),
           "a full storm uses the storm layers at their Classic indices");
     Check(Near(half.layers[0].density, 0.015f) && Near(half.layers[0].g, clear.layers[0].g) &&
-              Near(half.layers[1].start, 1900.0f) && Near(half.layers[1].density, 0.525f) &&
-              Near(half.layers[2].density, 0.425f),
+              Near(half.layers[1].start, 1750.0f) && Near(half.layers[1].density, 0.525f) &&
+              Near(half.layers[2].density, 0.2f),
           "a half storm blends matching layers and thins the clear-only haze");
 }
 
@@ -785,6 +889,46 @@ constexpr float kContinentFarClip = 791.6f;
 constexpr Vec3 kHarbourEye = {-8576.0f, 1007.0f, 104.0f};
 constexpr float kHarbourDayFraction = 0.7802f;
 constexpr Vec3 kHarbourToLight = {0.673f, 0.673f, 0.307f};
+constexpr float kHarbourNear = 0.2f;
+constexpr float kHarbourFar = 791.6f;
+constexpr float kHarbourLoggedP11 = 1.511f;
+constexpr D3DCOLOR kHarbourSky = 0xFFFFD890;
+constexpr float kDegree = kPi / 180.0f;
+
+Vec3 Dir(float azimuthDeg, float elevationDeg)
+{
+    float a = azimuthDeg * kDegree;
+    float e = elevationDeg * kDegree;
+    return {std::cos(e) * std::cos(a), std::cos(e) * std::sin(a), std::sin(e)};
+}
+
+FrameInputs HarbourSunsetInputs(const float* view, const float* proj, Vec3 at, const D3DVIEWPORT9& vp,
+                                float stormBlend)
+{
+    const Vec3 toLight = Norm(kHarbourToLight);
+    FrameInputs in = MakeInputs(view, proj, kHarbourEye, at, vp);
+    Vec3 clientTargetOneYardAhead = Add(kHarbourEye, Norm(Sub(at, kHarbourEye)));
+    in.camTarget[0] = clientTargetOneYardAhead.x;
+    in.camTarget[1] = clientTargetOneYardAhead.y;
+    in.camTarget[2] = clientTargetOneYardAhead.z;
+    in.dayFraction = kHarbourDayFraction;
+    in.toLight[0] = toLight.x;
+    in.toLight[1] = toLight.y;
+    in.toLight[2] = toLight.z;
+    in.lightIsMoon = false;
+    in.fogColor = 0xFF574C5C;
+    in.sunColor = 0xFFFFE7B6;
+    in.directColor = 0xFFFF7400;
+    in.ambientColor = 0xFF676680;
+    in.fogStart = kContinentFogStart;
+    in.fogEnd = 791.7f;
+    in.zoneFogDistance = 791.7f;
+    in.farClip = kHarbourFar;
+    in.inLiquid = false;
+    in.mapId = kEasternKingdoms;
+    in.lightParams = Storm(stormBlend);
+    return in;
+}
 
 FrameInputs ContinentFrame(int map, Vec3 eye, float dayFraction, Vec3 toLight, bool lightIsMoon)
 {
@@ -1527,12 +1671,125 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
     DrawOverlayFrames(1);
 }
 
+struct PanelRect
+{
+    float x = 0.0f;
+    float y = 0.0f;
+    float w = 0.0f;
+    float h = 0.0f;
+    bool known = false;
+
+    int GripX() const { return static_cast<int>(x + w) - kGripInset; }
+    int GripY() const { return static_cast<int>(y + h) - kGripInset; }
+};
+
+PanelRect SettingsWindow()
+{
+    float rect[4] = {};
+    const bool known = vf_test_settings_window(rect) != 0;
+    return {rect[0], rect[1], rect[2], rect[3], known};
+}
+
+bool NearPixels(float a, float b)
+{
+    return std::fabs(a - b) <= kPanelSizeTolerance;
+}
+
+PanelRect DragGrip(Harness& h, const PanelRect& from, int dx, int dy)
+{
+    DragAcross(h.window, ClientPointOfBackBufferPixel(h, from.GripX(), from.GripY()),
+               ClientPointOfBackBufferPixel(h, from.GripX() + dx, from.GripY() + dy));
+    DrawOverlayFrames(kOverlaySettleFrames);
+    return SettingsWindow();
+}
+
+void ShowOverlay(Harness& h, bool visible)
+{
+    if ((vf_test_overlay_visible() != 0) != visible)
+        PressHotkey(h.window, kDefaultOverlayHotkey);
+    DrawOverlayFrames(kOverlaySettleFrames);
+}
+
+UINT PanelEdge(float edge, UINT limit)
+{
+    return static_cast<UINT>(std::clamp(edge, 0.0f, static_cast<float>(limit)));
+}
+
+double ChangeBesideShrunkPanel(const Image& under, const Image& drawn, const PanelRect& shrunk, const PanelRect& grown)
+{
+    const UINT left = PanelEdge(grown.x, drawn.w);
+    const UINT top = PanelEdge(grown.y, drawn.h);
+    const UINT right = PanelEdge(grown.x + grown.w, drawn.w);
+    const UINT bottom = PanelEdge(grown.y + grown.h, drawn.h);
+    const UINT shrunkRight = PanelEdge(shrunk.x + shrunk.w + kBesideShrunkPanelGap, right);
+    const UINT shrunkBottom = PanelEdge(shrunk.y + shrunk.h + kBesideShrunkPanelGap, bottom);
+    return MeanLumaChange(under, drawn, shrunkRight, top, right, bottom) +
+           MeanLumaChange(under, drawn, left, shrunkBottom, shrunkRight, bottom);
+}
+
+PanelRect CheckSettingsWindowResizes(Harness& h, const D3DVIEWPORT9& world, const std::wstring& outDir)
+{
+    const bool wasVisible = vf_test_overlay_visible() != 0;
+    ShowOverlay(h, true);
+    const PanelRect first = SettingsWindow();
+    g_clientInput = {};
+    const PanelRect grown = DragGrip(h, first, kGripDragX, kGripDragY);
+    const ClientInput seen = g_clientInput;
+    const PanelRect smallest = DragGrip(h, grown, kGripShrink, kGripShrink);
+    const D3DVIEWPORT9 wholeBackBuffer = {0, 0, h.pp.BackBufferWidth, h.pp.BackBufferHeight, 0.0f, 1.0f};
+    h.dev->SetViewport(&wholeBackBuffer);
+    DrawEngineFrameWithoutPresent(h, world);
+    const Image underSmallest = Capture(h.dev);
+    vf_test_draw_overlay();
+    const Image smallestImage = Capture(h.dev);
+    SavePng(outDir + L"\\overlay-smallest.png", smallestImage.w, smallestImage.h, smallestImage.bgra);
+    const double besideSmallest = ChangeBesideShrunkPanel(underSmallest, smallestImage, smallest, grown);
+    const PanelRect restored =
+        DragGrip(h, smallest, static_cast<int>(grown.w - smallest.w), static_cast<int>(grown.h - smallest.h));
+    std::printf("     settings window at %.0f, %.0f: %.0f x %.0f, after dragging its grip by %d, %d: %.0f x %.0f, "
+                "shrunk as far as it goes: %.0f x %.0f (mean luma change beside it %.4f); the game saw %d presses and "
+                "%d releases\n",
+                first.x, first.y, first.w, first.h, kGripDragX, kGripDragY, grown.w, grown.h, smallest.w, smallest.h,
+                besideSmallest, seen.mouseDowns, seen.mouseUps);
+    Check(first.known && NearPixels(first.x, kPanelMargin) && NearPixels(first.y, kPanelMargin) &&
+              NearPixels(first.w, kPanelFirstWidth) && first.h > kPanelMinHeight,
+          "the settings window opens 30 lines wide and as tall as the screen allows, 2 lines from the corner");
+    Check(NearPixels(grown.w, first.w + kGripDragX) && NearPixels(grown.h, first.h + kGripDragY) &&
+              NearPixels(grown.x, first.x) && NearPixels(grown.y, first.y),
+          "dragging the settings window's resize grip through the window procedure resizes it");
+    Check(seen.mouseDowns == 0 && seen.mouseUps == 0, "the resize grip keeps its press and release from the game");
+    Check(NearPixels(smallest.w, kPanelMinWidth) && NearPixels(smallest.h, kPanelMinHeight) &&
+              NearPixels(restored.w, grown.w) && NearPixels(restored.h, grown.h),
+          "the settings window shrinks no further than 20 x 16 lines and grows back");
+    Check(besideSmallest == 0.0,
+          "the shrunk settings window draws nothing where the larger one was (overlay-smallest.png, drawn on a fresh "
+          "frame)");
+    ShowOverlay(h, wasVisible);
+    return restored;
+}
+
+void CheckSettingsWindowKeepsItsSize(Harness& h, const PanelRect& expected, const char* what)
+{
+    const bool wasVisible = vf_test_overlay_visible() != 0;
+    ShowOverlay(h, true);
+    const PanelRect now = SettingsWindow();
+    ShowOverlay(h, wasVisible);
+    std::printf("     settings window %.0f x %.0f at %.0f, %.0f (expected %.0f x %.0f)\n", now.w, now.h, now.x, now.y,
+                expected.w, expected.h);
+    Check(now.known && NearPixels(now.w, expected.w) && NearPixels(now.h, expected.h) &&
+              NearPixels(now.x, expected.x) && NearPixels(now.y, expected.y),
+          what);
+}
+
+#include "authored_fog_checks.h"
 #include "fog_integration_checks.h"
 #include "local_lights_checks.h"
 #include "noise_variation_checks.h"
+#include "classic_phase_checks.h"
 #include "march_layer_checks.h"
 #include "local_light_gpu_checks.h"
 #include "silhouette_quality_checks.h"
+#include "authored_noise_checks.h"
 #include "grazing_upsample_checks.h"
 #include "god_ray_quality_checks.h"
 #include "temporal_quality_checks.h"
@@ -1542,7 +1799,32 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "water_data_checks.h"
 #include "water_settings_checks.h"
 #include "water_fft_checks.h"
+#include "water_mask_packing_checks.h"
+#include "water_contact_checks.h"
+#include "water_ripple_checks.h"
 #include "water_checks.h"
+#include "water_ripple_pass_checks.h"
+#include "water_wake_checks.h"
+#include "ripple_scene.h"
+#include "client_sprite_checks.h"
+#include "forever_look_checks.h"
+#include "transparent_fog_checks.h"
+#include "early_composite_look_checks.h"
+#include "multisampling_checks.h"
+
+void CheckFirstColumnIsFogged(const Image& transmittance, const D3DVIEWPORT9& world)
+{
+    int largest = 0;
+    for (UINT y = world.Y; y < world.Y + world.Height / kSkyRowsFraction; ++y)
+        for (int c = 0; c < 3; ++c)
+            largest = std::max(largest, std::abs(static_cast<int>(transmittance.At(world.X, y)[c]) -
+                                                 transmittance.At(world.X + 1, y)[c]));
+    std::printf("     transmittance view over the sky: largest difference between the viewport's first two columns "
+                "%d/255\n",
+                largest);
+    Check(largest <= kMaxAdjacentSkyColumnDifference,
+          "the full-screen fog passes cover the viewport's first column (their triangle's left edge lies outside it)");
+}
 
 void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3 at,
                                    const float* proj, const D3DVIEWPORT9& world)
@@ -1588,6 +1870,10 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckDenseClassicFogAtHarbourSunset(classic);
     CheckThinClassicFogAtHyjalMidnight(classic);
     CheckFogThinsIntoFoglessClassicLight(classic);
+    authored_fog::CheckAuthoredFogExtras(classic);
+    authored_noise::CheckAuthoredNoise(classic);
+    classic_phase::CheckClassicPhase();
+    transparent_fog_checks::CheckStockFogFit(classic);
 
     CreateDirectoryW(outDir.c_str(), nullptr);
     g_harnessLog = FullPath(outDir + L"\\harness.log");
@@ -1596,8 +1882,11 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckOverlayKeyNames();
     CheckSettingsSaveKeepsTheIni(outDir, FullPath(iniPath));
     CheckFogDataBounds(outDir, dataPath);
+    forever_look_checks::CheckForeverGlow();
+    forever_look_checks::CheckLookSettings(outDir, FullPath(iniPath));
     water_data_checks::CheckWaterData(outDir, waterDataPath);
     water_settings_checks::CheckWaterSettings(outDir, FullPath(iniPath));
+    transparent_fog_checks::CheckTransparentFogSetting(outDir, FullPath(iniPath));
 
     WNDCLASSW wc = {};
     wc.lpfnWndProc = ClientWindowProc;
@@ -1615,10 +1904,13 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     if (!h.d3d)
         return 1;
 
+    Config withoutMultisampling = {};
+    withoutMultisampling.multisampling = false;
+    vf_test_set_config(&withoutMultisampling);
     D3DMULTISAMPLE_TYPE ms = D3DMULTISAMPLE_4_SAMPLES;
     Check(h.d3d->CheckDeviceMultiSampleType(0, D3DDEVTYPE_HAL, D3DFMT_X8R8G8B8, TRUE, ms, nullptr) ==
               D3DERR_NOTAVAILABLE,
-          "multisampling reported unavailable while fog is enabled");
+          "with Multisampling=0 multisampling is reported unavailable while fog is enabled");
 
     h.pp.Windowed = TRUE;
     h.pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
@@ -1626,7 +1918,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     h.pp.BackBufferHeight = 720;
     h.pp.BackBufferFormat = D3DFMT_X8R8G8B8;
     h.pp.EnableAutoDepthStencil = TRUE;
-    h.pp.AutoDepthStencilFormat = D3DFMT_D24S8;
+    h.pp.AutoDepthStencilFormat = kClientDepthFormat;
     h.pp.hDeviceWindow = h.window;
     h.pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
     DWORD engineFlags = D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_PUREDEVICE | D3DCREATE_FPU_PRESERVE;
@@ -1647,7 +1939,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     h.dev->GetDeviceCaps(&caps);
     std::printf("     adapter %s, PS3 slots %lu, executed instructions %lu\n", adapter.Description,
                 caps.MaxPixelShader30InstructionSlots, caps.MaxPShaderInstructionsExecuted);
-    Check(h.pp.EnableAutoDepthStencil == TRUE && h.pp.AutoDepthStencilFormat == D3DFMT_D24S8,
+    Check(h.pp.EnableAutoDepthStencil == TRUE && h.pp.AutoDepthStencilFormat == kClientDepthFormat,
           "engine-visible depth parameters preserved");
     IDirect3DSurface9* depth = nullptr;
     h.dev->GetDepthStencilSurface(&depth);
@@ -1666,17 +1958,26 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     h.CreateEngineObjects();
     CheckFogIntegration(h.dev);
     CheckLocalLightInputs();
+    CheckPointLightTableCapture();
+    CheckHdrLocalLightColours();
     CheckInteriorFogInputs();
     CheckNoiseVariation(h.dev);
+    authored_noise::CheckAuthoredNoiseOnTheGpu(h.dev);
+    classic_phase::CheckIsotropicSlabSaturation(h.dev);
     march_layers::CheckUnrolledMarchMatchesLoopedMarch(h.dev);
     local_light_gpu::CheckLocalLightIntegration(h.dev);
     silhouette_quality::CheckSilhouettes(h.dev);
     grazing_upsample::CheckGrazingGroundUpsample(h.dev);
     god_ray_quality::CheckGodRays(h.dev);
     CheckTemporalQuality(h.dev);
+    CheckTemporalFallbackNoise(h.dev);
     CheckLightDisappearanceHistory(h);
     CheckSunOccluderLeavesFogLit(h);
+    classic_phase::CheckSunsetHaloKeepsItsHue(h, FullPath(iniPath));
     water_fft_checks::CheckWaterFft(h.dev);
+    water_mask_packing_checks::CheckWaveFoamMaskPacking(h.dev);
+    water_contact_checks::CheckWaterContacts();
+    water_ripple_checks::CheckWaterRipples(h.dev);
     const float aspect = 1280.0f / 688.0f;
     const D3DVIEWPORT9 world = {0, 0, 1280, 688, 0.0f, 1.0f};
     float proj[16];
@@ -1769,6 +2070,9 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
 
     CheckLinearComposite(h, cfg, eye, at, proj, world);
     CheckDisabledTemporalIsStable(h, cfg, eye, at, proj, world);
+    forever_look_checks::CheckColourGrading(h, world, classic);
+    forever_look_checks::CheckFogCompensatesTheDeliveredGlow(h, cfg, world);
+    vf_test_set_config(&cfg);
 
     auto renderDebugIn = [&](int mode, float maxDist, const D3DVIEWPORT9& vp, float wdlPatchRawDepth) {
         Config c = cfg;
@@ -1795,6 +2099,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     SavePng(outDir + L"\\debug-radiance.png", radiance.w, radiance.h, radiance.bgra);
     Image transmittance = renderDebug(2, 5000.0f);
     SavePng(outDir + L"\\debug-transmittance.png", transmittance.w, transmittance.h, transmittance.bgra);
+    CheckFirstColumnIsFogged(transmittance, world);
 
     {
         Config c = cfg;
@@ -1994,9 +2299,19 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
 
     CheckDepthWriteStateBlockRestore(h.dev);
     CheckWorldTextDepthIsolation(h);
+    transparent_fog_checks::CheckTransparentFog(h);
+    early_composite_look::CheckLookThroughTheEarlyComposite(h);
     Config restored = cfg;
     vf_test_set_config(&restored);
+    water_checks::CheckWaterRipplePass(h, outDir);
+    vf_test_set_config(&restored);
+    water_wake_checks::CheckWakes(h);
+    vf_test_set_config(&restored);
+    client_sprite_checks::CheckClientSprites(h);
+    vf_test_set_config(&restored);
     water_checks::CheckWaterPass(h, outDir, waterDataPath);
+    vf_test_set_config(&restored);
+    ripple_scene::CheckWakesShowInShadedWater(h, outDir, waterDataPath);
     vf_test_set_config(&restored);
 
     CheckOverlayInput(h);
@@ -2004,8 +2319,10 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckOverlayWidgets(h);
     water_settings_checks::CheckSliderDragLoggedOnce(logBeforeWidgets);
     CheckOverlayDraw(h, world, outDir);
+    PanelRect panel = CheckSettingsWindowResizes(h, world, outDir);
 
     h.ReleaseEngineObjects();
+    const unsigned curveUploadsBeforeReset = forever_look_checks::CurveUploads();
     h.pp.BackBufferWidth = 1024;
     h.pp.BackBufferHeight = 600;
     hr = h.dev->Reset(&h.pp);
@@ -2031,40 +2348,51 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     DrawOverlayFrames(kOverlaySettleFrames);
     Check(OverlayProbeChange(beforeOverlay, Capture(h.dev)) > 0.05, "the overlay draws again after Reset");
     PressHotkey(h.window, kDefaultOverlayHotkey);
+    panel.h = std::min(panel.h, static_cast<float>(h.pp.BackBufferHeight) - kPanelMargin);
+    CheckSettingsWindowKeepsItsSize(h, panel,
+                                    "after a Reset to a smaller back buffer the settings window keeps its place and "
+                                    "width and fits its height to the screen");
+    forever_look_checks::CheckColourGradingAfterReset(h, resized, curveUploadsBeforeReset);
+    vf_test_set_config(&restored);
 
     runtime_cost::CheckDisabledTemporalSkipsHistoryPasses(h, eye, at, proj, resized);
     CheckRendererSwitchesLitShaders(h);
+    authored_noise::CheckRendererDrawsStormNoise(h);
+    runtime_cost::CheckFrameSummaryLogsClassicExtras(h);
+    runtime_cost::CheckLocalLightLogLines(h);
     runtime_cost::CheckDepthProbeAndGpuTimeLog(h, eye, at);
     runtime_cost::CheckGpuTimerRetriesTransientCreationFailures(h.dev);
     runtime_cost::CheckGpuTimerReportsUnsupportedBeforeFirstSummary(h.dev);
 
     vf_test_set_config(&restored);
     h.ReleaseEngineObjects();
+    client_sprite_checks::HoldGateForDeviceRelease();
     ULONG devRefs = h.dev->Release();
+    client_sprite_checks::CheckDeviceReleaseRestoresTheGate();
+    h.dev = nullptr;
+    hr = h.d3d->CreateDevice(0, D3DDEVTYPE_HAL, h.window, engineFlags, &h.pp, &h.dev);
+    Check(SUCCEEDED(hr) && h.dev, "a device is created again on the harness window");
+    if (h.dev)
+    {
+        CheckSettingsWindowKeepsItsSize(h, panel,
+                                        "a device created again for the same session opens the settings window at "
+                                        "the place and size it had");
+        devRefs += h.dev->Release();
+    }
     ULONG d3dRefs = h.d3d->Release();
     Check(devRefs == 0 && d3dRefs == 0, "wrapper reference counts reach zero");
+    multisampling_checks::CheckMultisampling(realCreate, h.window, outDir, FullPath(iniPath));
+    vf_test_set_config(&restored);
     DestroyWindow(h.window);
     CoUninitialize();
     std::printf("%s (%d failure%s)\n", g_failures ? "FAILED" : "OK", g_failures, g_failures == 1 ? "" : "s");
     return g_failures ? 1 : 0;
 }
 
-constexpr float kHarbourNear = 0.2f;
-constexpr float kHarbourFar = 791.6f;
-constexpr float kHarbourLoggedP11 = 1.511f;
 constexpr UINT kHarbourWidth = 2560;
 constexpr UINT kHarbourHeight = 1440;
 constexpr int kHarbourSettleFrames = 24;
-constexpr D3DCOLOR kHarbourSky = 0xFFFFD890;
 constexpr D3DCOLOR kHarbourSea = 0xFF1A2430;
-constexpr float kDegree = kPi / 180.0f;
-
-Vec3 Dir(float azimuthDeg, float elevationDeg)
-{
-    float a = azimuthDeg * kDegree;
-    float e = elevationDeg * kDegree;
-    return {std::cos(e) * std::cos(a), std::cos(e) * std::sin(a), std::sin(e)};
-}
 
 D3DCOLOR Shade(D3DCOLOR c, float s)
 {
@@ -2213,27 +2541,6 @@ bool DepthViewIsSky(const Image& depth, int x, int y)
     return depth.At(x, y)[2] >= 254;
 }
 
-struct Rgb
-{
-    float r, g, b;
-};
-
-Rgb SampleRgb(const Image& img, int cx, int cy, int radius)
-{
-    Rgb sum = {};
-    int n = 0;
-    for (int y = cy - radius; y <= cy + radius; ++y)
-        for (int x = cx - radius; x <= cx + radius; ++x)
-        {
-            const unsigned char* p = img.At(static_cast<UINT>(x), static_cast<UINT>(y));
-            sum.r += p[2];
-            sum.g += p[1];
-            sum.b += p[0];
-            ++n;
-        }
-    return {sum.r / n, sum.g / n, sum.b / n};
-}
-
 void ReferenceUnshadowedLayerOpticalDepths(const FogParams& fog, float camZ, Vec3 dirW, float viewZ, float rayLen,
                                            bool sky, float* tau)
 {
@@ -2283,7 +2590,13 @@ void PrintLayers(const FogParams& fog)
     }
 }
 
-int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
+struct HarbourOptions
+{
+    int classicPhase = Config().classicPhase;
+    float stormBlend = 0.0f;
+};
+
+int RunHarbour(const std::wstring& outDir, const std::string& dataPath, const HarbourOptions& options)
 {
     FogData classic;
     if (!classic.Load(dataPath))
@@ -2330,7 +2643,7 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
     h.pp.BackBufferHeight = kHarbourHeight;
     h.pp.BackBufferFormat = D3DFMT_X8R8G8B8;
     h.pp.EnableAutoDepthStencil = TRUE;
-    h.pp.AutoDepthStencilFormat = D3DFMT_D24S8;
+    h.pp.AutoDepthStencilFormat = kClientDepthFormat;
     h.pp.hDeviceWindow = h.window;
     h.pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
     DWORD engineFlags = D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_PUREDEVICE | D3DCREATE_FPU_PRESERVE;
@@ -2347,30 +2660,11 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
     const float aspect = static_cast<float>(kHarbourWidth) / kHarbourHeight;
     float proj[16];
     EngineGlDepthProjection(kHarbourLoggedP11, aspect, kHarbourNear, kHarbourFar, proj);
-    const Config shippedCfg = {};
+    Config shippedCfg = {};
+    shippedCfg.classicPhase = options.classicPhase;
 
     auto inputsFor = [&](const float* view, Vec3 at) {
-        FrameInputs in = MakeInputs(view, proj, kHarbourEye, at, vp);
-        Vec3 clientTargetOneYardAhead = Add(kHarbourEye, Norm(Sub(at, kHarbourEye)));
-        in.camTarget[0] = clientTargetOneYardAhead.x;
-        in.camTarget[1] = clientTargetOneYardAhead.y;
-        in.camTarget[2] = clientTargetOneYardAhead.z;
-        in.dayFraction = kHarbourDayFraction;
-        in.toLight[0] = toLight.x;
-        in.toLight[1] = toLight.y;
-        in.toLight[2] = toLight.z;
-        in.lightIsMoon = false;
-        in.fogColor = 0xFF574C5C;
-        in.sunColor = 0xFFFFE7B6;
-        in.directColor = 0xFFFF7400;
-        in.ambientColor = 0xFF676680;
-        in.fogStart = kContinentFogStart;
-        in.fogEnd = 791.7f;
-        in.zoneFogDistance = 791.7f;
-        in.farClip = kHarbourFar;
-        in.inLiquid = false;
-        in.mapId = kEasternKingdoms;
-        return in;
+        return HarbourSunsetInputs(view, proj, at, vp, options.stormBlend);
     };
 
     {
@@ -2379,7 +2673,9 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
         CameraRelativeLookAt(kHarbourEye, at, view);
         FrameInputs in = inputsFor(view, at);
         AuthoredFog authored = {};
-        bool resolved = classic.Resolve(kEasternKingdoms, in.camPos, in.dayFraction, kClearWeather, authored);
+        bool resolved = classic.Resolve(kEasternKingdoms, in.camPos, in.dayFraction, in.lightParams, authored);
+        std::printf("harbour frame: ClassicPhase %d, storm weight %.2f\n", shippedCfg.classicPhase,
+                    in.lightParams.stormBlend);
         std::printf("harbour frame: camera (%.1f %.1f %.1f), day %.4f, toLight (%.3f %.3f %.3f) = azimuth %.1f "
                     "elevation %.2f deg\n",
                     in.camPos[0], in.camPos[1], in.camPos[2], in.dayFraction, toLight.x, toLight.y, toLight.z, sunAz,
@@ -2394,9 +2690,9 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
         {
             const AuthoredLayer& a = authored.layers[i];
             std::printf("  authored %d: start %.1f density %.4f g %.3f intensity %.2f strength %.3f exponent %.3f "
-                        "diffuse %.3f %.3f %.3f emissive %.3f %.3f %.3f flags %u\n",
+                        "diffuse %.3f %.3f %.3f emissive %.3f %.3f %.3f flags %u noise %.2f\n",
                         i, a.start, a.density, a.g, a.intensity, a.strength, a.exponent, a.diffuse[0], a.diffuse[1],
-                        a.diffuse[2], a.emissive[0], a.emissive[1], a.emissive[2], a.flags);
+                        a.diffuse[2], a.emissive[0], a.emissive[1], a.emissive[2], a.flags, a.noise.presence);
         }
         FogParams fog = BuildFogParams(in, shippedCfg, resolved ? &authored : nullptr);
         std::printf("  fog params (as the DLL logs them): refZ %.1f maxDistance %.0f horizonStart %.1f farLimit %.1f "
@@ -2471,8 +2767,9 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
         SavePng(stem + L"-depth.png", depth.w, depth.h, depth.bgra);
 
         AuthoredFog authored = {};
-        bool resolved = classic.Resolve(kEasternKingdoms, in.camPos, in.dayFraction, kClearWeather, authored);
-        FogParams fog = BuildFogParams(in, shippedCfg, resolved ? &authored : nullptr);
+        bool resolved = classic.Resolve(kEasternKingdoms, in.camPos, in.dayFraction, in.lightParams, authored);
+        const FogParams drawn = BuildFogParams(in, shippedCfg, resolved ? &authored : nullptr);
+        const FogParams fog = WithMeanNoise(drawn);
         float sunV[3];
         TransformDirection(in.toLight, view, sunV);
         std::printf("\nview %ls: %s (azimuth %.1f, pitch %.1f; sun view-space %.3f %.3f %.3f, refZ %.1f, "
@@ -2482,6 +2779,9 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
         std::printf("  %-31s %6s %6s %6s %13s %6s %15s %15s %15s %15s %6s  %s\n", "probe", "px", "py", "dist",
                     "viewZ/shader", "alpha", "fog rgb", "fog rgb / a", "before", "after", "cpu a",
                     "cpu tau L0 L1 L2 L3");
+        if (AnyLayerNoise(drawn))
+            std::printf("  cpu a and tau take the authored noise at its mean density; the GPU samples the noise, so "
+                        "probes differ where it is patchy\n");
         for (const HarbourProbe& p : kHarbourProbes)
         {
             Vec3 d = ProbeOffsetFromEye(p, hv.baseAzimuth, sunAz, sunEl);
@@ -2564,8 +2864,16 @@ int wmain(int argc, wchar_t** argv)
     std::string waterData = "waterdata.bin";
     std::wstring ini = L"CoAVolFog.ini";
     std::wstring scene;
+    D3DMULTISAMPLE_TYPE samples = D3DMULTISAMPLE_NONE;
+    HarbourOptions harbour;
     for (int i = 1; i + 1 < argc; ++i)
     {
+        if (std::wcscmp(argv[i], L"--samples") == 0 && _wtoi(argv[i + 1]) > 1)
+            samples = static_cast<D3DMULTISAMPLE_TYPE>(_wtoi(argv[i + 1]));
+        if (std::wcscmp(argv[i], L"--classic-phase") == 0)
+            harbour.classicPhase = _wtoi(argv[i + 1]);
+        if (std::wcscmp(argv[i], L"--storm") == 0)
+            harbour.stormBlend = static_cast<float>(_wtof(argv[i + 1]));
         if (std::wcscmp(argv[i], L"--out") == 0)
             out = argv[i + 1];
         if (std::wcscmp(argv[i], L"--data") == 0)
@@ -2590,12 +2898,14 @@ int wmain(int argc, wchar_t** argv)
         }
     }
     if (scene == L"harbour")
-        return RunHarbour(out, data);
+        return RunHarbour(out, data, harbour);
     if (scene == L"performance")
-        return RunPerformance();
+        return RunPerformance(samples);
+    if (scene == L"ripples")
+        return ripple_scene::RunRippleScene(out, waterData);
     if (!scene.empty())
     {
-        std::printf("unknown scene %ls (known: harbour, performance)\n", scene.c_str());
+        std::printf("unknown scene %ls (known: harbour, performance, ripples)\n", scene.c_str());
         return 2;
     }
     return Run(out, data, ini, waterData);

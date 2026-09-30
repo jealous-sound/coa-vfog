@@ -19,6 +19,7 @@ constexpr uint32_t kMaxPointLightNodes = 8192;
 constexpr uint32_t kNativePointLightType = 1;
 constexpr float kMaxWorldCoordinate = 1000000.0f;
 constexpr float kMaxLightComponent = 10000.0f;
+constexpr float kMaxUploadedLightComponent = 1000000.0f;
 constexpr float kMaxAttenuationCoefficient = 1000000.0f;
 constexpr uintptr_t kCameraWmoInstance = 0x00CD87A4;
 constexpr uintptr_t kCameraWmoGroupCount = 0x00CDB0D8;
@@ -95,12 +96,20 @@ float PeakColor(const float color[3])
     return std::max(color[0], std::max(color[1], color[2]));
 }
 
+float LinearChannel(float channel, float peak)
+{
+    const float gammaChannel = std::max(channel, 0.0f);
+    if (peak <= 1.0f)
+        return std::pow(gammaChannel, kLocalLightGamma);
+    return std::pow(gammaChannel / peak, kLocalLightGamma) * peak;
+}
+
 double LightPriority(const LocalPointLight& light, const float cameraPosition[3])
 {
     const double distanceSquared = SquaredDistance(light.position, cameraPosition);
     const double denominator = light.attenuation[0] + light.attenuation[1] * std::sqrt(distanceSquared) +
                                light.attenuation[2] * distanceSquared;
-    return PeakColor(light.color) / std::max(denominator, 1.0);
+    return PeakColor(light.uploadedColor) / std::max(denominator, 1.0);
 }
 
 bool Precedes(const LocalPointLight& a, const LocalPointLight& b, const float cameraPosition[3])
@@ -169,18 +178,30 @@ bool SupportedLayout()
     }
 }
 
-bool CapturePointLightsUnsafe(const float cameraPosition[3], LocalLightInputs& out)
+LocalLightCapture NativeLightRejection(const NativePointLight& native, uintptr_t scene, uintptr_t previousLink)
 {
-    const uintptr_t scene = Read<uintptr_t>(kWorldM2Scene);
+    if (native.scene != scene || native.previousLink != previousLink)
+        return LocalLightCapture::DamagedTable;
+    if (native.type != kNativePointLightType)
+        return LocalLightCapture::NonPointLight;
+    if (!native.enabled)
+        return LocalLightCapture::DisabledLight;
+    return LocalLightCapture::Captured;
+}
+
+LocalLightCapture CapturePointLightsUnsafe(uintptr_t sceneSlot, const float cameraPosition[3],
+                                           const PointLightUpload& upload, LocalLightInputs& out)
+{
+    const uintptr_t scene = Read<uintptr_t>(sceneSlot);
     if (!scene)
-        return true;
+        return LocalLightCapture::Captured;
     if (!ValidPointer(scene, kScenePointLightBuckets + sizeof(uintptr_t)))
-        return false;
+        return LocalLightCapture::DamagedTable;
     const uintptr_t buckets = Read<uintptr_t>(scene + kScenePointLightBuckets);
     if (!buckets)
-        return true;
+        return LocalLightCapture::Captured;
     if (!ValidPointer(buckets, kPointLightBucketCount * sizeof(uintptr_t)))
-        return false;
+        return LocalLightCapture::DamagedTable;
     uint32_t nodeCount = 0;
     for (uint32_t bucket = 0; bucket < kPointLightBucketCount; ++bucket)
     {
@@ -191,21 +212,25 @@ bool CapturePointLightsUnsafe(const float cameraPosition[3], LocalLightInputs& o
         {
             if (++bucketNodes > kMaxPointLightBucketNodes || ++nodeCount > kMaxPointLightNodes ||
                 !ValidPointer(address, sizeof(NativePointLight)))
-                return false;
+                return LocalLightCapture::DamagedTable;
             const NativePointLight native = Read<NativePointLight>(address);
-            if (native.scene != scene || native.previousLink != previousLink ||
-                native.type != kNativePointLightType || !native.enabled)
-                return false;
+            const LocalLightCapture rejection = NativeLightRejection(native, scene, previousLink);
+            if (rejection != LocalLightCapture::Captured)
+                return rejection;
             LocalPointLight light;
             std::memcpy(light.position, native.position, sizeof(light.position));
             std::memcpy(light.color, native.color, sizeof(light.color));
             std::memcpy(light.attenuation, native.attenuation, sizeof(light.attenuation));
-            engine::SelectLocalPointLight(out, light, cameraPosition);
+            light.enabled = native.enabled;
+            light.nativeId = address;
+            engine::SelectLocalPointLight(out, light, cameraPosition, upload);
             previousLink = address + offsetof(NativePointLight, next);
             address = native.next;
         }
     }
-    return Read<uintptr_t>(kWorldM2Scene) == scene && Read<uintptr_t>(scene + kScenePointLightBuckets) == buckets;
+    const bool unchanged =
+        Read<uintptr_t>(sceneSlot) == scene && Read<uintptr_t>(scene + kScenePointLightBuckets) == buckets;
+    return unchanged ? LocalLightCapture::Captured : LocalLightCapture::TableChanged;
 }
 
 bool CaptureInteriorUnsafe(LocalLightInputs& out)
@@ -243,24 +268,57 @@ bool CaptureInteriorUnsafe(LocalLightInputs& out)
            Read<uintptr_t>(kCameraWmoGroupIds) == ids;
 }
 
-bool CaptureInputsGuarded(const float cameraPosition[3], bool withPointLights, LocalLightInputs& out)
+LocalLightCapture CaptureInputsUnsafe(const float cameraPosition[3], bool withPointLights,
+                                      const PointLightUpload& upload, LocalLightInputs& out)
+{
+    const LocalLightCapture points = withPointLights
+                                         ? CapturePointLightsUnsafe(kWorldM2Scene, cameraPosition, upload, out)
+                                         : LocalLightCapture::Captured;
+    if (points != LocalLightCapture::Captured)
+        return points;
+    return CaptureInteriorUnsafe(out) ? LocalLightCapture::Captured : LocalLightCapture::InteriorRejected;
+}
+
+LocalLightCapture CaptureInputsGuarded(const float cameraPosition[3], bool withPointLights,
+                                       const PointLightUpload& upload, LocalLightInputs& out)
 {
     __try
     {
-        return (!withPointLights || CapturePointLightsUnsafe(cameraPosition, out)) && CaptureInteriorUnsafe(out);
+        return CaptureInputsUnsafe(cameraPosition, withPointLights, upload, out);
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
-        return false;
+        return LocalLightCapture::ReadFault;
+    }
+}
+
+LocalLightCapture CapturePointLightTableGuarded(uintptr_t sceneSlot, const float cameraPosition[3],
+                                                const PointLightUpload& upload, LocalLightInputs& out)
+{
+    __try
+    {
+        return CapturePointLightsUnsafe(sceneSlot, cameraPosition, upload, out);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return LocalLightCapture::ReadFault;
     }
 }
 }
 
 namespace engine
 {
+void UploadedPointLightColor(const float captured[3], const PointLightUpload& upload, float uploaded[3])
+{
+    const float peak = PeakColor(captured);
+    for (int channel = 0; channel < 3; ++channel)
+        uploaded[channel] = (upload.linear ? LinearChannel(captured[channel], peak)
+                                           : std::max(captured[channel], 0.0f)) * upload.intensity;
+}
+
 float PointLightCutoff(const float color[3], const float attenuation[3])
 {
-    if (!ValidVector(color, 0.0f, kMaxLightComponent) ||
+    if (!ValidVector(color, 0.0f, kMaxUploadedLightComponent) ||
         !ValidVector(attenuation, 0.0f, kMaxAttenuationCoefficient))
         return 0.0f;
     const double peak = PeakColor(color);
@@ -280,14 +338,18 @@ float PointLightCutoff(const float color[3], const float attenuation[3])
     return static_cast<float>(std::min(radius, static_cast<double>(kMaxLocalPointLightRadius)));
 }
 
-bool SelectLocalPointLight(LocalLightInputs& out, const LocalPointLight& light, const float cameraPosition[3])
+bool SelectLocalPointLight(LocalLightInputs& out, const LocalPointLight& light, const float cameraPosition[3],
+                           const PointLightUpload& upload)
 {
     if (out.pointLightCount > kMaxLocalPointLights ||
         !ValidVector(cameraPosition, -kMaxWorldCoordinate, kMaxWorldCoordinate) ||
-        !ValidVector(light.position, -kMaxWorldCoordinate, kMaxWorldCoordinate))
+        !ValidVector(light.position, -kMaxWorldCoordinate, kMaxWorldCoordinate) ||
+        !ValidVector(light.color, 0.0f, kMaxLightComponent) || !std::isfinite(upload.intensity) ||
+        upload.intensity < 0.0f)
         return false;
     LocalPointLight candidate = light;
-    candidate.cutoff = PointLightCutoff(candidate.color, candidate.attenuation);
+    UploadedPointLightColor(candidate.color, upload, candidate.uploadedColor);
+    candidate.cutoff = PointLightCutoff(candidate.uploadedColor, candidate.attenuation);
     const double limit = candidate.cutoff + kMaxLocalPointLightRadius;
     if (candidate.cutoff <= 0.0f || SquaredDistance(candidate.position, cameraPosition) > limit * limit)
         return false;
@@ -304,16 +366,59 @@ bool SelectLocalPointLight(LocalLightInputs& out, const LocalPointLight& light, 
     return true;
 }
 
-bool CaptureLocalLightInputs(const float cameraPosition[3], bool withPointLights, LocalLightInputs& out)
+const char* LocalLightCaptureName(LocalLightCapture capture)
+{
+    switch (capture)
+    {
+    case LocalLightCapture::Captured:
+        return "captured";
+    case LocalLightCapture::UnsupportedClient:
+        return "client code differs from build 12340";
+    case LocalLightCapture::CameraOutOfRange:
+        return "camera position out of range";
+    case LocalLightCapture::DamagedTable:
+        return "damaged light table";
+    case LocalLightCapture::DisabledLight:
+        return "disabled light in the table";
+    case LocalLightCapture::NonPointLight:
+        return "non-point light in the table";
+    case LocalLightCapture::TableChanged:
+        return "table changed during the walk";
+    case LocalLightCapture::ReadFault:
+        return "read fault";
+    case LocalLightCapture::InteriorRejected:
+        return "camera interior groups rejected";
+    }
+    return "unknown";
+}
+
+LocalLightCapture CapturePointLightTable(uintptr_t sceneSlot, const float cameraPosition[3],
+                                         const PointLightUpload& upload, LocalLightInputs& out)
+{
+    LocalLightInputs captured;
+    const LocalLightCapture result = CapturePointLightTableGuarded(sceneSlot, cameraPosition, upload, captured);
+    out = result == LocalLightCapture::Captured ? captured : LocalLightInputs{};
+    out.capture = result;
+    return result;
+}
+
+bool CaptureLocalLightInputs(const float cameraPosition[3], bool withPointLights, const PointLightUpload& upload,
+                             LocalLightInputs& out)
 {
     out = {};
     static const bool supported = SupportedLayout();
-    if (!supported || !ValidVector(cameraPosition, -kMaxWorldCoordinate, kMaxWorldCoordinate))
-        return false;
-    LocalLightInputs captured;
-    const bool valid = CaptureInputsGuarded(cameraPosition, withPointLights, captured);
-    if (valid)
-        out = captured;
-    return valid;
+    if (!supported)
+        out.capture = LocalLightCapture::UnsupportedClient;
+    else if (!ValidVector(cameraPosition, -kMaxWorldCoordinate, kMaxWorldCoordinate))
+        out.capture = LocalLightCapture::CameraOutOfRange;
+    else
+    {
+        LocalLightInputs captured;
+        const LocalLightCapture result = CaptureInputsGuarded(cameraPosition, withPointLights, upload, captured);
+        if (result == LocalLightCapture::Captured)
+            out = captured;
+        out.capture = result;
+    }
+    return out.capture == LocalLightCapture::Captured;
 }
 }

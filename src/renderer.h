@@ -3,11 +3,14 @@
 #include "config.h"
 #include "engine.h"
 #include "fog_data.h"
+#include "fog_model.h"
 #include "gpu_timing.h"
+#include "msaa_depth.h"
+#include "transparent_fog.h"
 
 #include <d3d9.h>
 
-struct FogParams;
+void ForceFogParams(const FogParams* fog);
 
 class Renderer
 {
@@ -17,11 +20,18 @@ public:
     void ReleaseDefaultPool();
     void ReleaseAll();
 
-    bool Render(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* boundDepthStencil,
-                const FrameInputs& in, const Config& cfg);
+    bool Render(IDirect3DDevice9* dev, const SceneDepth& depth, const FrameInputs& in, const Config& cfg,
+                FogPass pass = FogPass::WholeFrame);
+    bool RenderGodRaysAfterWorld(IDirect3DDevice9* dev, const SceneDepth& depth);
+    bool ReadyToRender(IDirect3DDevice9* dev, const SceneDepth& depth, const D3DVIEWPORT9& vp);
 
+    const StockFogFit& LastStockFogFit() const { return m_stockFogFit; }
     const char* LastSkipReason() const { return m_skip; }
     bool AdaptiveLightingHistory() const { return m_adaptiveLightingHistory; }
+    IDirect3DPixelShader9* DrawnMarch() const { return m_drawnMarch; }
+    IDirect3DPixelShader9* DrawnComposite() const { return m_drawnComposite; }
+    IDirect3DPixelShader9* DrawnSplitComposite() const { return m_drawnSplitComposite; }
+    float DrawnGlowCompensation() const { return m_drawnGlowCompensation; }
 
 private:
     struct PendingDepthProbe
@@ -34,13 +44,49 @@ private:
         float deepestWorldDepth = 0.0f;
     };
 
+    struct CompositeChoice
+    {
+        bool lit;
+        bool noisy;
+        int quality;
+    };
+
+    struct GodRayFrame
+    {
+        bool pending = false;
+        float common[9][4] = {};
+        D3DVIEWPORT9 viewport = {};
+        float toLightInView[3] = {};
+        float sunPx[2] = {};
+        float strength = 0.0f;
+        float colour[3] = {};
+        float glowToCompensate = 0.0f;
+    };
+
+    template <typename Passes>
+    bool WithClientStateSaved(IDirect3DDevice9* dev, const SceneDepth& depth, Passes passes);
+    void PrepareFullscreenPasses(IDirect3DDevice9* dev);
+    void CopySceneForGodRays(IDirect3DDevice9* dev, IDirect3DSurface9* target, const D3DVIEWPORT9& vp);
+    void DrawGodRayMask(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, const GodRayFrame& rays);
+    bool DrawGodRaysOverScene(IDirect3DDevice9* dev, const SceneDepth& depth, IDirect3DSurface9* target,
+                              const D3DSURFACE_DESC& depthDesc, const GodRayFrame& rays);
     bool EnsureShaders(IDirect3DDevice9* dev);
+    bool EnsureSplitComposites(IDirect3DDevice9* dev);
+    void ReleaseSplitComposites();
+    IDirect3DPixelShader9* CompositeShader(const CompositeChoice& choice, bool splitSamples) const;
+    void MarkSilhouetteSamples(IDirect3DDevice9* dev, IDirect3DSurface9* sampleDepth, const D3DVIEWPORT9& vp);
+    void DrawSamplesMarked(IDirect3DDevice9* dev, DWORD marker, IDirect3DPixelShader9* shader, const float* side);
+    void DrawCompositeBySampleDepth(IDirect3DDevice9* dev, IDirect3DSurface9* sampleDepth, const D3DVIEWPORT9& vp,
+                                    const CompositeChoice& choice, bool overwrites);
     bool EnsureStateBlock(IDirect3DDevice9* dev);
     bool EnsureTargets(IDirect3DDevice9* dev, UINT lowW, UINT lowH, UINT rayW, UINT rayH);
     bool EnsureSceneCopy(IDirect3DDevice9* dev, IDirect3DSurface9* target, UINT w, UINT h);
     bool CopyWorldViewport(IDirect3DDevice9* dev, IDirect3DSurface9* target, const D3DVIEWPORT9& vp);
     bool Skip(const char* reason);
+    bool NotReady(const char* reason);
     void LogLightChange(const FrameInputs& in, const AuthoredFog& fog, bool authored);
+    void LogFirstLocalLightRejection(LocalLightCapture capture);
+    void LogUploadedLocalLights(const FrameInputs& in, const Config& cfg, uint32_t uploaded);
     bool DepthProbeDue(long long now) const;
     bool EnsureDepthProbe(IDirect3DDevice9* dev);
     void IssueDepthProbe(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DTexture9* fog,
@@ -50,23 +96,38 @@ private:
     IDirect3DTexture9* FilterWithHistory(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture,
                                          const float* viewToPreviousClip, bool historyValid, float historyWeight);
     void LogFrameSummary(IDirect3DDevice9* dev, long long now, const FrameInputs& in, const Config& cfg,
-                         const FogParams& fog, const D3DSURFACE_DESC& depthDesc, const float* viewToWorld,
-                         const float* toLightInView, const float* sunPx, float rayStrength);
-    void DrawFullscreen(IDirect3DDevice9* dev);
+                         const FogParams& fog, const AuthoredFog& authored, const D3DSURFACE_DESC& depthDesc,
+                         const float* viewToWorld, const float* toLightInView, const float* sunPx, float rayStrength);
     void BindTexture(IDirect3DDevice9* dev, DWORD stage, IDirect3DBaseTexture9* tex, bool linear);
-    bool RenderPasses(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DSurface9* target,
-                      const D3DSURFACE_DESC& depthDesc, const FrameInputs& in, const Config& cfg);
+    void BindWrappedVolume(IDirect3DDevice9* dev, DWORD stage, IDirect3DVolumeTexture9* volume);
+    FogParams DrawableFog(IDirect3DDevice9* dev, const FogParams& fog);
+    void UploadLayerNoise(IDirect3DDevice9* dev, const FogParams& fog, const float* camera, long long now);
+    bool RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDirect3DSurface9* target,
+                      const D3DSURFACE_DESC& depthDesc, const FrameInputs& in, const Config& cfg, FogPass pass);
 
     IDirect3DVertexShader9* m_vs = nullptr;
     IDirect3DDevice9* m_unsupportedShaderDevice = nullptr;
     IDirect3DPixelShader9* m_march[3] = {};
     IDirect3DPixelShader9* m_litMarch[3] = {};
+    IDirect3DPixelShader9* m_noisyMarch[3] = {};
+    IDirect3DPixelShader9* m_litNoisyMarch[3] = {};
     IDirect3DPixelShader9* m_temporal = nullptr;
     IDirect3DPixelShader9* m_historyDepthShader = nullptr;
     IDirect3DPixelShader9* m_composite[3] = {};
+    IDirect3DPixelShader9* m_noisyComposite[3] = {};
     IDirect3DPixelShader9* m_litComposite[3] = {};
+    IDirect3DPixelShader9* m_silhouetteMask = nullptr;
+    IDirect3DPixelShader9* m_splitComposite[3] = {};
+    IDirect3DPixelShader9* m_noisySplitComposite[3] = {};
+    IDirect3DPixelShader9* m_litSplitComposite[3] = {};
+    bool m_splitCompositesUnavailable = false;
+    IDirect3DPixelShader9* m_drawnMarch = nullptr;
+    IDirect3DPixelShader9* m_drawnComposite = nullptr;
+    IDirect3DPixelShader9* m_drawnSplitComposite = nullptr;
+    float m_drawnGlowCompensation = 0.0f;
     IDirect3DPixelShader9* m_rayMask = nullptr;
     IDirect3DPixelShader9* m_rayBlur = nullptr;
+    IDirect3DPixelShader9* m_rayComposite = nullptr;
     IDirect3DPixelShader9* m_probe = nullptr;
     IDirect3DVertexDeclaration9* m_decl = nullptr;
     IDirect3DStateBlock9* m_state = nullptr;
@@ -78,11 +139,16 @@ private:
     IDirect3DTexture9* m_sceneCopy = nullptr;
     IDirect3DTexture9* m_localLightData = nullptr;
     IDirect3DVolumeTexture9* m_densityNoise = nullptr;
+    IDirect3DVolumeTexture9* m_authoredNoise = nullptr;
+    AuthoredNoiseScroll m_noiseScroll;
+    long long m_noiseTicks = 0;
     IDirect3DTexture9* m_probeTarget = nullptr;
     IDirect3DSurface9* m_probeReadback = nullptr;
     IDirect3DQuery9* m_probeCopied = nullptr;
     PendingDepthProbe m_pendingProbe;
     GpuTimer m_gpuTimer{"fog"};
+    StockFogFit m_stockFogFit;
+    GodRayFrame m_lateGodRays;
     UINT m_lowW = 0;
     UINT m_lowH = 0;
     UINT m_rayW = 0;
@@ -115,5 +181,10 @@ private:
     float m_loggedBlendMode = -1.0f;
     D3DVIEWPORT9 m_loggedViewport = {};
     uint32_t m_lightSignature = 0;
+    uint64_t m_pendingLocalLightSet = 0;
+    unsigned m_pendingLocalLightFrames = 0;
+    uint64_t m_loggedLocalLightSet = 0;
+    bool m_loggedLocalLightDetail = true;
+    uint32_t m_loggedLocalLightRejections = 0;
     const char* m_skip = "";
 };

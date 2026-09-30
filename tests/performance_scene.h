@@ -16,12 +16,14 @@ constexpr float kLampHeight = 5.0f;
 constexpr float kLampColor[3] = {1.0f, 0.72f, 0.4f};
 constexpr float kLampPeakColor = std::max({kLampColor[0], kLampColor[1], kLampColor[2]});
 constexpr int kErrorLogLevel = 0;
+constexpr float kFullStorm = 1.0f;
 constexpr int kShippedLogLevel = 1;
 
 enum class FogSource
 {
     Derived,
     Classic,
+    ClassicStorm,
 };
 
 enum class PointLights
@@ -45,6 +47,8 @@ constexpr BenchmarkCase kCases[] = {
     {"derived-lamps8", FogSource::Derived, PointLights::Lamps, kErrorLogLevel},
     {"classic-none", FogSource::Classic, PointLights::None, kErrorLogLevel},
     {"classic-lamps8", FogSource::Classic, PointLights::Lamps, kErrorLogLevel},
+    {"classic-storm", FogSource::ClassicStorm, PointLights::None, kErrorLogLevel},
+    {"classic-storm-lamps8", FogSource::ClassicStorm, PointLights::Lamps, kErrorLogLevel},
     {"derived-none-log1", FogSource::Derived, PointLights::None, kShippedLogLevel},
 };
 
@@ -199,8 +203,10 @@ FrameInputs StreetInputs(const Street& street, FogSource fog, const float* proje
     float view[16];
     CameraRelativeLookAt(street.eye, street.at, view);
     FrameInputs inputs = MakeInputs(view, projection, street.eye, street.at, viewport);
-    if (fog == FogSource::Classic)
+    if (fog != FogSource::Derived)
         UseHarbourSunset(inputs);
+    if (fog == FogSource::ClassicStorm)
+        inputs.lightParams.stormBlend = kFullStorm;
     return inputs;
 }
 
@@ -213,7 +219,7 @@ bool AddPointLight(FrameInputs& inputs, Vec3 position, const float* color, float
     std::memcpy(light.color, color, sizeof(light.color));
     light.attenuation[0] = 1.0f;
     light.attenuation[2] = quadraticAttenuation;
-    return engine::SelectLocalPointLight(inputs.localLights, light, inputs.camPos);
+    return engine::SelectLocalPointLight(inputs.localLights, light, inputs.camPos, LocalLightUpload(Config{}));
 }
 
 bool AddFloodLights(FrameInputs& inputs, const Street& street)
@@ -286,13 +292,16 @@ std::string FogDataBesideTheFogDll()
     return module.substr(0, module.find_last_of("\\/") + 1) + "fogdata.bin";
 }
 
-bool ClassicFogResolves(const FrameInputs& inputs, int& layers)
+bool ClassicFogResolves(const FrameInputs& inputs, int& layers, int& noisyLayers)
 {
     FogData data;
     AuthoredFog fog = {};
     const bool resolved = data.Load(FogDataBesideTheFogDll()) &&
                           data.Resolve(inputs.mapId, inputs.camPos, inputs.dayFraction, inputs.lightParams, fog);
     layers = fog.layerCount;
+    noisyLayers = 0;
+    for (int i = 0; i < fog.layerCount; ++i)
+        noisyLayers += fog.layers[i].noise.presence > 0.0f ? 1 : 0;
     return resolved;
 }
 
@@ -320,6 +329,62 @@ bool Measure(Harness& h, Timer& timer, const Config& config, const FrameInputs& 
         if (FAILED(h.dev->Present(nullptr, nullptr, nullptr, nullptr)))
             return false;
     }
+    return true;
+}
+
+void PrintTiming(int quality, const char* name, uint32_t pointLights, std::vector<double>& samples)
+{
+    std::sort(samples.begin(), samples.end());
+    const double median = (samples[kMeasuredFrames / 2 - 1] + samples[kMeasuredFrames / 2]) * 0.5;
+    const double p95 = samples[(kMeasuredFrames * 95 + 99) / 100 - 1];
+    std::printf("%d,%s,%u,%.3f,%.3f\n", quality, name, pointLights, median, p95);
+    std::fflush(stdout);
+}
+
+bool MeasureGrading(Harness& h, Timer& timer, const Street& street, const float* projection,
+                    const D3DVIEWPORT9& viewport)
+{
+    float curve[kGradingCurveEntries];
+    forever_look_checks::SyntheticCurve(curve);
+    const ForeverLookFrame look = forever_look_checks::GradingFrame(1.0f, curve);
+    Config config;
+    config.overlay = false;
+    config.logLevel = kErrorLogLevel;
+    config.colorGrading = 1.0f;
+    vf_test_set_config(&config);
+    vf_test_use_forever_look_frame(&look);
+    const FrameInputs inputs = StreetInputs(street, FogSource::Derived, projection, viewport);
+    h.scene = SceneAlong(street);
+    std::vector<double> samples;
+    for (int frame = 0; frame < kWarmupFrames + kMeasuredFrames; ++frame)
+    {
+        GradingStats before;
+        GradingStats after;
+        h.BeginFrame();
+        h.DrawScene(street.eye, inputs.cameraRelativeView, inputs.glProjection, inputs.viewport);
+        forever_look_checks::CaptureWorldViewport(h.dev, inputs.viewport);
+        vf_test_forever_look_world_done();
+        vf_test_grading_stats(&before);
+        const bool started = timer.Begin();
+        vf_test_hook_frame_end();
+        const bool ended = timer.End();
+        vf_test_grading_stats(&after);
+        h.dev->EndScene();
+        double milliseconds = 0;
+        if (after.grades != before.grades + 1 || !started || !ended || !timer.Resolve(milliseconds))
+        {
+            std::printf("colour grading measurement failed\n");
+            return false;
+        }
+        if (frame >= kWarmupFrames)
+            samples.push_back(milliseconds);
+        if (FAILED(h.dev->Present(nullptr, nullptr, nullptr, nullptr)))
+            return false;
+    }
+    Config off = config;
+    off.colorGrading = 0.0f;
+    vf_test_set_config(&off);
+    PrintTiming(0, "colour-grading", 0, samples);
     return true;
 }
 
@@ -357,7 +422,13 @@ bool MeasureCases(Harness& h)
     D3DCAPS9 caps = {};
     h.d3d->GetAdapterIdentifier(0, 0, &adapter);
     h.dev->GetDeviceCaps(&caps);
+    MultisamplingStatus multisampling;
+    vf_test_multisampling(&multisampling);
     std::printf("1080p fog benchmark: %s; %s\n", adapter.Description, timer.Method());
+    if (multisampling.method && *multisampling.method)
+        std::printf("multisampling %dx kept, depth copied by %s\n", multisampling.samples, multisampling.method);
+    else
+        std::printf("multisampling off: %s\n", multisampling.off);
     std::printf("pixel shader slots %lu, executed instructions %lu; %d warmup and %d measured frames\n",
                 caps.MaxPixelShader30InstructionSlots, caps.MaxPShaderInstructionsExecuted,
                 kWarmupFrames, kMeasuredFrames);
@@ -376,11 +447,17 @@ bool MeasureCases(Harness& h)
         return false;
     DescribeLights("lamps8", described);
     int classicLayers = 0;
-    const bool classic =
-        ClassicFogResolves(StreetInputs(harbourStreet, FogSource::Classic, projection, viewport), classicLayers);
+    int noisyLayers = 0;
+    const bool classic = ClassicFogResolves(StreetInputs(harbourStreet, FogSource::Classic, projection, viewport),
+                                            classicLayers, noisyLayers);
+    int stormLayers = 0;
+    int noisyStormLayers = 0;
+    ClassicFogResolves(StreetInputs(harbourStreet, FogSource::ClassicStorm, projection, viewport), stormLayers,
+                       noisyStormLayers);
     if (classic)
-        std::printf("classic: the street moved to the Stormwind harbour at 18:43, %d Classic fog layers\n",
-                    classicLayers);
+        std::printf("classic: the street moved to the Stormwind harbour at 18:43, %d Classic fog layers (%d with "
+                    "authored noise); in a full storm %d layers (%d with authored noise)\n",
+                    classicLayers, noisyLayers, stormLayers, noisyStormLayers);
     else
         std::printf("classic cases skipped: fogdata.bin beside CoAVolFog.dll does not resolve the harbour\n");
 
@@ -391,7 +468,7 @@ bool MeasureCases(Harness& h)
     {
         for (const BenchmarkCase& benchmark : kCases)
         {
-            const bool classicCase = benchmark.fog == FogSource::Classic;
+            const bool classicCase = benchmark.fog != FogSource::Derived;
             if (classicCase && !classic)
                 continue;
             const Street& street = classicCase ? harbourStreet : derivedStreet;
@@ -407,19 +484,14 @@ bool MeasureCases(Harness& h)
             std::vector<double> samples;
             if (!Measure(h, timer, config, inputs, street.eye, samples))
                 return false;
-            std::sort(samples.begin(), samples.end());
-            const double median = (samples[kMeasuredFrames / 2 - 1] + samples[kMeasuredFrames / 2]) * 0.5;
-            const double p95 = samples[(kMeasuredFrames * 95 + 99) / 100 - 1];
-            std::printf("%d,%s,%u,%.3f,%.3f\n", quality, benchmark.name, inputs.localLights.pointLightCount, median,
-                        p95);
-            std::fflush(stdout);
+            PrintTiming(quality, benchmark.name, inputs.localLights.pointLightCount, samples);
         }
     }
-    return true;
+    return MeasureGrading(h, timer, derivedStreet, projection, viewport);
 }
 }
 
-int RunPerformance()
+int RunPerformance(D3DMULTISAMPLE_TYPE samples)
 {
     WNDCLASSW windowClass = {};
     windowClass.lpfnWndProc = DefWindowProcW;
@@ -444,7 +516,8 @@ int RunPerformance()
     h.pp.BackBufferHeight = 1080;
     h.pp.BackBufferFormat = D3DFMT_X8R8G8B8;
     h.pp.EnableAutoDepthStencil = TRUE;
-    h.pp.AutoDepthStencilFormat = D3DFMT_D24S8;
+    h.pp.AutoDepthStencilFormat = kClientDepthFormat;
+    h.pp.MultiSampleType = samples;
     h.pp.hDeviceWindow = h.window;
     h.pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
     const DWORD flags = D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_PUREDEVICE | D3DCREATE_FPU_PRESERVE;

@@ -2,14 +2,24 @@
 
 #include "imgui.h"
 
-#include <cfloat>
+#include <algorithm>
 #include <cmath>
+#include <cstdarg>
+#include <cstdio>
 
 namespace
 {
 constexpr float kMultiplierSliderMax = 4.0f;
 constexpr float kPanelWidthInLines = 30.0f;
+constexpr float kPanelHeightInLines = 42.0f;
+constexpr float kMinPanelWidthInLines = 20.0f;
+constexpr float kMinPanelHeightInLines = 16.0f;
 constexpr float kPanelMarginInLines = 2.0f;
+constexpr float kLabelWidthInLines = 11.0f;
+constexpr float kLabelShareOfWidth = 0.45f;
+constexpr float kFirstFooterLines = 4.0f;
+constexpr float kNoTextWrap = -1.0f;
+constexpr size_t kStatusTextSize = 512;
 const ImVec4 kDrawnColour = {0.45f, 0.85f, 0.45f, 1.0f};
 const ImVec4 kSkippedColour = {0.95f, 0.75f, 0.35f, 1.0f};
 const ImVec4 kErrorColour = {1.0f, 0.4f, 0.4f, 1.0f};
@@ -21,7 +31,8 @@ const char* const kLogLevelNames[] = {"Errors", "Info", "Debug"};
 const char* const kWaterQualityNames[] = {"Low: 128 waves, sky reflections only",
                                           "Medium: 256 waves, scene reflections",
                                           "High: 256 waves, finer scene reflections"};
-const char* const kWaterDebugViewNames[] = {"Off", "Normals", "Foam", "Transmittance", "Reflection", "Liquid class"};
+const char* const kWaterDebugViewNames[] = {"Off",        "Normals",      "Foam",   "Transmittance",
+                                           "Reflection", "Liquid class", "Ripples"};
 
 template <int N>
 bool Choice(const char* label, int& value, int first, const char* const (&names)[N], const char* help)
@@ -98,15 +109,38 @@ void DrawStatus(const FogFrameStatus& status)
         ImGui::TextColored(kSkippedColour, "Fog: Not drawing (%s)", status.reason);
 }
 
+void StatusLine(const ImVec4& colour, const char* format, ...)
+{
+    char text[kStatusTextSize];
+    va_list args;
+    va_start(args, format);
+    std::vsnprintf(text, sizeof(text), format, args);
+    va_end(args);
+    ImGui::PushTextWrapPos(kNoTextWrap);
+    ImGui::TextColored(colour, "%s", text);
+    ImGui::PopTextWrapPos();
+    ImGui::SetItemTooltip("%s", text);
+}
+
 void DrawWaterStatus(const WaterFrameStatus& status)
 {
     const bool named = status.reason && *status.reason;
     if (status.drawn && named)
-        ImGui::TextColored(kDrawnColour, "Water: Drawing (%s)", status.reason);
+        StatusLine(kDrawnColour, "Water: Drawing (%s)", status.reason);
     else if (status.drawn)
-        ImGui::TextColored(kDrawnColour, "Water: Drawing");
+        StatusLine(kDrawnColour, "Water: Drawing");
     else
-        ImGui::TextColored(kSkippedColour, "Water: Not drawing (%s)", named ? status.reason : "no reason given");
+        StatusLine(kSkippedColour, "Water: Not drawing (%s)", named ? status.reason : "no reason given");
+}
+
+void DrawMultisamplingStatus(const MultisamplingStatus& status)
+{
+    if (status.method && *status.method)
+        StatusLine(kDrawnColour, "Antialiasing: multisampling %dx kept (depth copied by %s)", status.samples,
+                   status.method);
+    else
+        StatusLine(ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), "Antialiasing: multisampling off (%s)",
+                   status.off);
 }
 
 bool DrawQuality(Config& c)
@@ -143,6 +177,10 @@ bool DrawDensity(Config& c)
                       "Larger values make smaller mist patches", ImGuiSliderFlags_Logarithmic);
     changed |= Slider("Mist drift", c.noiseWindSpeed, 0.0f, 10.0f, "%.2f yd/s",
                       "Speed of drifting mist; 0 keeps it stationary");
+    changed |= Toggle("Classic fog noise", c.classicNoise,
+                      "Drifting fog banks where the Classic layers carry the modern client's noise, mostly in storms; "
+                      "it thins those layers to about half their density on average. Off: the density variation "
+                      "above applies to them instead");
     return changed;
 }
 
@@ -155,17 +193,42 @@ bool DrawLight(Config& c)
     changed |= Multiplier("Ambient", c.ambient, "Ambient fog brightness");
     changed |= Multiplier("Exposure", c.exposure, "Brightness of the layers used where no Classic data exists");
     changed |= Multiplier("Classic exposure", c.classicExposure, "Brightness of the Classic layers, 1 = default");
+    changed |= Toggle("Energy-normalised Classic phase", c.classicPhase,
+                      "Scatter the sun and moon into the Classic layers with an energy-normalised phase, as their "
+                      "authored intensities suggest the modern client does: dimmer horizon bands, a larger and "
+                      "brighter halo around the sun. Off: the phase peaks at 1 toward the light");
     changed |= Toggle("Linear light", c.colorSpace,
                       "Scatter and blend in linear light like the modern client, with a soft highlight roll-off. "
                       "Off: gamma");
     changed |= Toggle("Local lights", c.localLights, "Scatter nearby point lights from the world into the fog");
     changed |= Slider("Local light intensity", c.localLightIntensity, 0.0f, 8.0f, "%.2f",
                       "Brightness of nearby point lights in the fog");
+    changed |= Slider("Local light phase", c.localLightPhase, -0.9f, 0.9f, "%.2f",
+                      "How every point light scatters in the fog: 0 evenly in all directions; toward 0.9 mostly in "
+                      "the fog between you and the light; below 0 the fog behind the light, steeply brighter toward "
+                      "-0.9. The modern client uses one such value for all its lights; 0.3 is a calibration");
     changed |= Slider("God rays", c.godRays, 0.0f, 4.0f, "%.2f",
                       "Radial rays from the bright sky around the sun, 0 = off");
     changed |= Toggle("Glow compensation", c.glowCompensation,
                       "Pre-compensate the fog for the client's full-screen glow, which otherwise bleaches bright fog "
                       "around the sun to white");
+    return changed;
+}
+
+bool DrawGlowAndGrading(Config& c)
+{
+    const Section section("Glow and colour grading");
+    if (!section)
+        return false;
+    bool changed = Toggle("Forever glow", c.foreverGlow,
+                          "Use the modern client's glow amount where Classic lights cover the camera: 0 on most "
+                          "continent lights, so the full-screen glow mostly disappears there. It replaces the client's "
+                          "own amount, Ascension's ambientGlow included, and fades back to it at the edge of Classic "
+                          "coverage. Off: the client's glow");
+    changed |= Slider("Colour grading", c.colorGrading, 0.0f, 1.0f, "%.2f",
+                      "Strength of the modern client's colour curve for the lights around the camera: brighter "
+                      "midtones, and the brightest highlights clipped to white. Names, the interface, the ghost view "
+                      "and the view under water are not graded. 0 = off");
     return changed;
 }
 
@@ -191,6 +254,13 @@ bool DrawWorld(Config& c)
     if (!section)
         return false;
     bool changed = Toggle("Fog under water", c.underwater, "Keep the effect while the camera is under water");
+    changed |= Toggle("Fog effects at their own distance", c.transparentFog,
+                      "Particles, spell effects and other see-through models are fogged by their own distance, as "
+                      "the stock client does, with a linear fog fitted to the volumetric fog within 100 yd; the fog "
+                      "is drawn before them, after the water. Beyond 100 yd the line is extended, so distant effects "
+                      "and fading models can be fogged more or less than the scene around them, and past its end "
+                      "distant glows vanish. Off: the fog is drawn once after the whole world and they take the fog "
+                      "of the scene behind them");
     changed |= Toggle("Water writes depth", c.liquidDepth,
                       "Let water surfaces write depth so water is fogged by its own distance; always on while Modern "
                       "water is drawn");
@@ -200,6 +270,19 @@ bool DrawWorld(Config& c)
                       "Outdoor fog density retained indoors; the area's native distance fog still applies");
     changed |= DrawViewDistance(c);
     return changed;
+}
+
+bool DrawAntialiasing(Config& c)
+{
+    const Section section("Antialiasing");
+    if (!section)
+        return false;
+    return Toggle("Keep the game's multisampling", c.multisampling,
+                  "Keep the game's Multisampling video option (smooth edges) when the graphics driver can copy its "
+                  "depth for the fog and water: NVIDIA through NVAPI, AMD and Intel through RESZ. Off: multisampling "
+                  "stays off. The game lists its Multisampling choices once per start, so turning this on takes "
+                  "effect after restarting the game; turning it off applies the next time the game resets its "
+                  "display, for example after changing Multisampling or the resolution in its Video options");
 }
 
 bool DrawWater(Config& c)
@@ -225,6 +308,12 @@ bool DrawWater(Config& c)
     changed |= Slider("Zone colours", c.waterZoneColors, 0.0f, 1.0f, "%.2f",
                       "How much the zone's own water colours from the client's lights tint the water, 0 = the modern "
                       "colours only");
+    changed |= Slider("Ripples", c.waterRipples, 0.0f, 2.0f, "%.2f",
+                      "Wakes of players, creatures, pets and mounts in the water: a thin V behind a unit that runs or "
+                      "swims, one ring as it starts or stops, a calm surface while it stands. 0.5 = default, 0 = none");
+    changed |= Toggle("Client splashes", c.waterClientSplashes,
+                      "Keep the client's own flat splash and wake sprites while the ripples run; off hides them for "
+                      "every unit, also those beyond the ripples' reach");
     changed |= Choice("Water view", c.waterDebugView, 0, kWaterDebugViewNames,
                       "Show one input of the water shading instead of the scene");
     return changed;
@@ -242,35 +331,82 @@ bool DrawDebug(Config& c)
 }
 }
 
-void SettingsPanel::Draw(ConfigStore& store, const FogFrameStatus& fogStatus, const WaterFrameStatus& waterStatus,
-                         bool& open)
+void SettingsPanel::PlaceWindow()
 {
     const float line = ImGui::GetFontSize();
-    const float width = kPanelWidthInLines * line;
-    ImGui::SetNextWindowPos(ImVec2(kPanelMarginInLines * line, kPanelMarginInLines * line), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(width, 0.0f), ImVec2(width, FLT_MAX));
-    if (!ImGui::Begin("CoAVolFog", &open,
-                      ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
-                          ImGuiWindowFlags_NoNavInputs))
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const float margin = kPanelMarginInLines * line;
+    const ImVec2 smallest(kMinPanelWidthInLines * line, kMinPanelHeightInLines * line);
+    const ImVec2 largest(std::max(display.x - margin, smallest.x), std::max(display.y - margin, smallest.y));
+    const ImVec2 firstSize(kPanelWidthInLines * line,
+                           std::max(smallest.y, std::min(kPanelHeightInLines * line, display.y - 2.0f * margin)));
+    const PanelPlacement& p = m_placement;
+    ImGui::SetNextWindowPos(p.known ? ImVec2(p.position[0], p.position[1]) : ImVec2(margin, margin),
+                            ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(p.known ? ImVec2(p.size[0], p.size[1]) : firstSize, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(smallest, largest);
+}
+
+void SettingsPanel::RememberPlacement()
+{
+    const ImVec2 position = ImGui::GetWindowPos();
+    const ImVec2 size = ImGui::GetWindowSize();
+    m_placement = {true, {position.x, position.y}, {size.x, size.y}};
+}
+
+bool SettingsPanel::DrawSettings(Config& edited, const FogFrameStatus& fogStatus)
+{
+    const float footer =
+        m_footerHeight > 0.0f ? m_footerHeight : kFirstFooterLines * ImGui::GetFrameHeightWithSpacing();
+    ImGui::BeginChild("Settings", ImVec2(0.0f, -footer), ImGuiChildFlags_None, ImGuiWindowFlags_NoNavInputs);
+    DrawStatus(fogStatus);
+    const float labels =
+        std::min(kLabelWidthInLines * ImGui::GetFontSize(), kLabelShareOfWidth * ImGui::GetContentRegionAvail().x);
+    ImGui::PushItemWidth(-labels);
+    bool changed = DrawQuality(edited);
+    changed |= DrawDensity(edited);
+    changed |= DrawLight(edited);
+    changed |= DrawGlowAndGrading(edited);
+    changed |= DrawWorld(edited);
+    changed |= DrawAntialiasing(edited);
+    changed |= DrawWater(edited);
+    changed |= DrawDebug(edited);
+    ImGui::PopItemWidth();
+    ImGui::EndChild();
+    return changed;
+}
+
+void SettingsPanel::DrawFooter(ConfigStore& store, const WaterFrameStatus& waterStatus,
+                               const MultisamplingStatus& multisampling)
+{
+    const float top = ImGui::GetCursorPosY();
+    ImGui::Separator();
+    DrawWaterStatus(waterStatus);
+    DrawMultisamplingStatus(multisampling);
+    DrawSaveRow(store);
+    m_footerHeight = ImGui::GetCursorPosY() - top;
+}
+
+void SettingsPanel::Draw(ConfigStore& store, const FogFrameStatus& fogStatus, const WaterFrameStatus& waterStatus,
+                         const MultisamplingStatus& multisampling, bool& open)
+{
+    PlaceWindow();
+    const bool expanded =
+        ImGui::Begin("CoAVolFog", &open, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNavInputs);
+    if (!expanded)
     {
         ImGui::End();
         return;
     }
-    DrawStatus(fogStatus);
+    RememberPlacement();
+    ImGui::PushTextWrapPos(0.0f);
     Config edited = store.Get();
-    bool changed = DrawQuality(edited);
-    changed |= DrawDensity(edited);
-    changed |= DrawLight(edited);
-    changed |= DrawWorld(edited);
-    changed |= DrawWater(edited);
-    changed |= DrawDebug(edited);
-    if (changed)
+    if (DrawSettings(edited, fogStatus))
         store.Apply(edited);
     if (!ImGui::IsAnyItemActive())
         store.LogSettledEdits();
-    ImGui::Separator();
-    DrawWaterStatus(waterStatus);
-    DrawSaveRow(store);
+    DrawFooter(store, waterStatus, multisampling);
+    ImGui::PopTextWrapPos();
     ImGui::End();
 }
 

@@ -1,5 +1,6 @@
 #include "water_fft.h"
 
+#include "fullscreen_triangle.h"
 #include "log.h"
 #include "water_spectrum.h"
 
@@ -28,8 +29,6 @@ constexpr UINT kLargestMapSide = kWaterFftHighResolution;
 constexpr float kLargestFoamStepSeconds = 0.1f;
 constexpr unsigned kFramesBetweenCreationAttempts = 120;
 constexpr DWORD kFirstUnusedStage = 2;
-constexpr float kFullscreenTriangle[3][4] = {
-    {-1.0f, -1.0f, 0.0f, 1.0f}, {-1.0f, 3.0f, 0.0f, 1.0f}, {3.0f, -1.0f, 0.0f, 1.0f}};
 
 struct Float4
 {
@@ -415,7 +414,7 @@ void WaterFftPasses::SetViewport(UINT x, UINT width, UINT height)
 
 void WaterFftPasses::Draw()
 {
-    m_passDevice->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 1, kFullscreenTriangle, sizeof(kFullscreenTriangle[0]));
+    DrawFullscreenTriangle(m_passDevice);
     ++m_draws;
 }
 

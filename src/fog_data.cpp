@@ -11,10 +11,14 @@
 namespace
 {
 constexpr char kFileMagic[4] = {'V', 'F', 'D', '1'};
-constexpr uint32_t kFormatVersion = 3;
+constexpr uint32_t kFormatVersion = 4;
 constexpr float kHalfMinutesPerDay = 2880.0f;
 constexpr uint32_t kMinimumOutlinePoints = 3;
 constexpr uint32_t kClientSelectedLayerFlag = 0x8;
+constexpr uint32_t kClientNoiseLayerFlag = 0x4;
+constexpr float kNoiseScaleUnitYards = 100.0f;
+constexpr uint32_t kNoGradingCurve = 0;
+constexpr float kGradingCurveCodeMax = 255.0f;
 
 struct Header
 {
@@ -26,6 +30,7 @@ struct Header
     uint32_t layerCount;
     uint32_t zoneLightCount;
     uint32_t zonePointCount;
+    uint32_t gradingCurveCount;
 };
 
 template <typename T>
@@ -77,6 +82,55 @@ void AddScaled(AuthoredLayer& acc, const AuthoredLayer& l, float w)
     acc.exponent += l.exponent * w;
 }
 
+class NoiseBlend
+{
+public:
+    void Add(const AuthoredNoise& noise, float weight)
+    {
+        const float noiseWeight = noise.presence * weight;
+        if (noiseWeight <= 0.0f)
+            return;
+        m_weight += noiseWeight;
+        for (int c = 0; c < 3; ++c)
+            m_sum.fade[c] += noise.fade[c] * noiseWeight;
+        m_sum.unmappedToggle += noise.unmappedToggle * noiseWeight;
+        for (int octave = 0; octave < kAuthoredNoiseOctaves; ++octave)
+        {
+            const float octaveWeight = noise.octaveShare[octave] * noiseWeight;
+            m_sum.octaveShare[octave] += octaveWeight;
+            m_sum.tileYards[octave] += noise.tileYards[octave] * octaveWeight;
+            for (int axis = 0; axis < 3; ++axis)
+                m_sum.velocity[octave][axis] += noise.velocity[octave][axis] * octaveWeight;
+        }
+    }
+
+    AuthoredNoise Result(float layerWeight) const
+    {
+        AuthoredNoise out = {};
+        if (m_weight <= 0.0f || layerWeight <= 0.0f)
+            return out;
+        out.presence = std::min(m_weight / layerWeight, 1.0f);
+        for (int c = 0; c < 3; ++c)
+            out.fade[c] = m_sum.fade[c] / m_weight;
+        out.unmappedToggle = m_sum.unmappedToggle / m_weight;
+        for (int octave = 0; octave < kAuthoredNoiseOctaves; ++octave)
+        {
+            const float octaveWeight = m_sum.octaveShare[octave];
+            if (octaveWeight <= 0.0f)
+                continue;
+            out.octaveShare[octave] = octaveWeight / m_weight;
+            out.tileYards[octave] = m_sum.tileYards[octave] / octaveWeight;
+            for (int axis = 0; axis < 3; ++axis)
+                out.velocity[octave][axis] = m_sum.velocity[octave][axis] / octaveWeight;
+        }
+        return out;
+    }
+
+private:
+    AuthoredNoise m_sum = {};
+    float m_weight = 0.0f;
+};
+
 class LayerBlend
 {
 public:
@@ -85,6 +139,7 @@ public:
         if (!(layer.flags & kClientSelectedLayerFlag) || layer.density <= 0.0f || weight <= 0.0f)
             return;
         AddScaled(m_sum, layer, weight);
+        m_noise.Add(layer.noise, weight);
         m_presence += weight;
         if (weight > m_dominantWeight)
         {
@@ -101,14 +156,36 @@ public:
         AddScaled(out, m_sum, 1.0f / m_presence);
         out.density = m_sum.density;
         out.flags = m_dominantFlags;
+        out.noise = m_noise.Result(m_presence);
         return out;
     }
 
 private:
     AuthoredLayer m_sum = {};
+    NoiseBlend m_noise;
     float m_presence = 0.0f;
     float m_dominantWeight = 0.0f;
     uint32_t m_dominantFlags = 0;
+};
+
+class GlowBlend
+{
+public:
+    void Add(float glow, float presence, float weight)
+    {
+        const float w = presence * weight;
+        if (w <= 0.0f)
+            return;
+        m_sum += glow * w;
+        m_presence += w;
+    }
+
+    float Presence() const { return m_presence; }
+    float Result() const { return m_presence > 0.0f ? m_sum / m_presence : 0.0f; }
+
+private:
+    float m_sum = 0.0f;
+    float m_presence = 0.0f;
 };
 
 class DirectLightBlend
@@ -154,7 +231,28 @@ bool CrossesRayToPositiveX(float px, float py, float ax, float ay, float bx, flo
 }
 }
 
-static_assert(sizeof(Header) == 32, "fogdata header");
+static_assert(sizeof(Header) == 36, "fogdata header");
+
+void FogData::GradingBlend::Add(const GradingBlend& other, float factor)
+{
+    for (int i = 0; i < kGradingCurveEntries; ++i)
+        curve[i] += other.curve[i] * factor;
+    weight += other.weight * factor;
+}
+
+void FogData::GradingBlend::AddCurve(const GradingCurve& graded, float factor)
+{
+    for (int i = 0; i < kGradingCurveEntries; ++i)
+        curve[i] += static_cast<float>(graded.entries[i]) / kGradingCurveCodeMax * factor;
+    weight += factor;
+}
+
+void FogData::GradingBlend::Result(float* out) const
+{
+    const float identityWeight = std::max(1.0f - weight, 0.0f);
+    for (int i = 0; i < kGradingCurveEntries; ++i)
+        out[i] = curve[i] + identityWeight * static_cast<float>(i) / (kGradingCurveEntries - 1);
+}
 
 void FogData::LightBlend::Add(const Light* light, float weight)
 {
@@ -184,6 +282,7 @@ bool FogData::Load(const std::string& path)
     m_layers.clear();
     m_zoneLights.clear();
     m_zonePoints.clear();
+    m_gradingCurves.clear();
     m_zonesLargestFirst.clear();
     m_mapsWithFog.clear();
     std::FILE* f = std::fopen(path.c_str(), "rb");
@@ -193,18 +292,26 @@ bool FogData::Load(const std::string& path)
         return false;
     }
     Header h = {};
-    bool ok = std::fread(&h, sizeof(h), 1, f) == 1 && std::memcmp(h.magic, kFileMagic, sizeof(kFileMagic)) == 0 &&
-              h.version == kFormatVersion;
+    bool ok = std::fread(&h, sizeof(h), 1, f) == 1 && std::memcmp(h.magic, kFileMagic, sizeof(kFileMagic)) == 0;
+    if (ok && h.version != kFormatVersion)
+    {
+        std::fclose(f);
+        VF_LOG_ERROR("Classic fog data %s is format %u, but this build reads format %u; regenerate it with "
+                     "tools/convert_classic_fog.py; derived layers only",
+                     path.c_str(), h.version, kFormatVersion);
+        return false;
+    }
     const uint64_t expectedSize = sizeof(Header) + static_cast<uint64_t>(h.lightCount) * sizeof(Light) +
                                   static_cast<uint64_t>(h.paramsCount) * sizeof(Params) +
                                   static_cast<uint64_t>(h.keyCount) * sizeof(Key) +
                                   static_cast<uint64_t>(h.layerCount) * sizeof(Layer) +
                                   static_cast<uint64_t>(h.zoneLightCount) * sizeof(ZoneLight) +
-                                  static_cast<uint64_t>(h.zonePointCount) * sizeof(ZonePoint);
+                                  static_cast<uint64_t>(h.zonePointCount) * sizeof(ZonePoint) +
+                                  static_cast<uint64_t>(h.gradingCurveCount) * sizeof(GradingCurve);
     ok = ok && FileHasSize(f, expectedSize) && ReadArray(f, m_lights, h.lightCount) &&
               ReadArray(f, m_params, h.paramsCount) && ReadArray(f, m_keys, h.keyCount) &&
               ReadArray(f, m_layers, h.layerCount) && ReadArray(f, m_zoneLights, h.zoneLightCount) &&
-              ReadArray(f, m_zonePoints, h.zonePointCount);
+              ReadArray(f, m_zonePoints, h.zonePointCount) && ReadArray(f, m_gradingCurves, h.gradingCurveCount);
     std::fclose(f);
     ok = ok && ValidateRecords() && BuildZoneOutlines();
     if (!ok)
@@ -215,8 +322,8 @@ bool FogData::Load(const std::string& path)
         return false;
     }
     CollectMapsWithFog();
-    VF_LOG_INFO("Classic fog data: %u lights, %u light params, %u keys, %u layers, %u zone lights", h.lightCount,
-                h.paramsCount, h.keyCount, h.layerCount, h.zoneLightCount);
+    VF_LOG_INFO("Classic fog data: %u lights, %u light params, %u keys, %u layers, %u zone lights, %u grading curves",
+                h.lightCount, h.paramsCount, h.keyCount, h.layerCount, h.zoneLightCount, h.gradingCurveCount);
     return true;
 }
 
@@ -227,7 +334,7 @@ bool FogData::ValidateRecords() const
             return false;
     for (const Key& key : m_keys)
         if (!ContainsRange(m_layers.size(), key.firstLayer, key.layerCount) ||
-            key.halfMinuteOfDay >= kHalfMinutesPerDay)
+            key.halfMinuteOfDay >= kHalfMinutesPerDay || key.gradingCurve > m_gradingCurves.size())
             return false;
     return true;
 }
@@ -353,6 +460,50 @@ FogData::ConditionFog FogData::InterpolateKeys(const Params& params, float halfM
     return fog;
 }
 
+FogData::GradingBlend FogData::InterpolateGrading(const Params& params, float halfMinuteOfDay) const
+{
+    GradingBlend grading = {};
+    const Key* first = nullptr;
+    const Key* last = nullptr;
+    const Key* previous = nullptr;
+    const Key* next = nullptr;
+    for (uint32_t i = 0; i < params.keyCount; ++i)
+    {
+        const Key& key = m_keys[params.firstKey + i];
+        if (key.gradingCurve == kNoGradingCurve)
+            continue;
+        first = first ? first : &key;
+        last = &key;
+        if (key.halfMinuteOfDay <= halfMinuteOfDay)
+            previous = &key;
+        else if (!next)
+            next = &key;
+    }
+    if (!first)
+        return grading;
+    const float previousTime = previous ? previous->halfMinuteOfDay : last->halfMinuteOfDay - kHalfMinutesPerDay;
+    const float nextTime = next ? next->halfMinuteOfDay : first->halfMinuteOfDay + kHalfMinutesPerDay;
+    previous = previous ? previous : last;
+    next = next ? next : first;
+    const float fraction =
+        nextTime > previousTime ? std::clamp((halfMinuteOfDay - previousTime) / (nextTime - previousTime), 0.0f, 1.0f)
+                                : 0.0f;
+    grading.AddCurve(m_gradingCurves[previous->gradingCurve - 1], 1.0f - fraction);
+    grading.AddCurve(m_gradingCurves[next->gradingCurve - 1], fraction);
+    return grading;
+}
+
+FogData::ConditionFog FogData::ParamsCondition(const Params* params, float halfMinuteOfDay) const
+{
+    if (!params)
+        return ConditionFog{};
+    ConditionFog condition = InterpolateKeys(*params, halfMinuteOfDay);
+    condition.glow = params->glow;
+    condition.glowPresence = 1.0f;
+    condition.grading = InterpolateGrading(*params, halfMinuteOfDay);
+    return condition;
+}
+
 FogData::ConditionFog FogData::BlendConditions(const ConditionFog& a, const ConditionFog& b, float bWeight)
 {
     ConditionFog blended = {};
@@ -369,6 +520,13 @@ FogData::ConditionFog FogData::BlendConditions(const ConditionFog& a, const Cond
     direct.Add(b.directLight, b.directLightPresence, bWeight);
     direct.Result(blended.directLight);
     blended.directLightPresence = direct.Presence();
+    GlowBlend glow;
+    glow.Add(a.glow, a.glowPresence, 1.0f - bWeight);
+    glow.Add(b.glow, b.glowPresence, bWeight);
+    blended.glow = glow.Result();
+    blended.glowPresence = glow.Presence();
+    blended.grading.Add(a.grading, 1.0f - bWeight);
+    blended.grading.Add(b.grading, bWeight);
     return blended;
 }
 
@@ -390,7 +548,30 @@ AuthoredLayer FogData::Unpack(const Layer& layer)
     out.strength = layer.strength;
     out.exponent = layer.exponent;
     out.flags = layer.flags;
+    out.noise = UnpackNoise(layer);
     return out;
+}
+
+AuthoredNoise FogData::UnpackNoise(const Layer& layer)
+{
+    AuthoredNoise noise = {};
+    bool anyOctave = false;
+    for (int octave = 0; octave < kAuthoredNoiseOctaves; ++octave)
+    {
+        const float scale = layer.noiseColumn27[octave];
+        const float speed = layer.noiseColumn28[octave];
+        if (scale <= 0.0f)
+            continue;
+        anyOctave = true;
+        noise.octaveShare[octave] = 1.0f;
+        noise.tileYards[octave] = scale * kNoiseScaleUnitYards;
+        for (int axis = 0; axis < 3; ++axis)
+            noise.velocity[octave][axis] = layer.noiseDirections[octave][axis] * speed;
+    }
+    noise.presence = (layer.flags & kClientNoiseLayerFlag) && anyOctave ? 1.0f : 0.0f;
+    UnpackRgb(layer.noiseFadeRgb, noise.fade);
+    noise.unmappedToggle = layer.unmappedToggle;
+    return noise;
 }
 
 FogData::ConditionFog FogData::LightConditionFog(const Light& light, float halfMinuteOfDay,
@@ -398,17 +579,12 @@ FogData::ConditionFog FogData::LightConditionFog(const Light& light, float halfM
 {
     const int effectSlot = selection.screenEffectSlot;
     if (effectSlot >= 0 && effectSlot < kLightParamsSlots && light.paramsBySlot[effectSlot] != 0)
-    {
-        const Params* effect = FindParams(light.paramsBySlot[effectSlot]);
-        return effect ? InterpolateKeys(*effect, halfMinuteOfDay) : ConditionFog{};
-    }
-    const Params* clear = FindParams(light.paramsBySlot[kClearSlot]);
-    const ConditionFog clearFog = clear ? InterpolateKeys(*clear, halfMinuteOfDay) : ConditionFog{};
+        return ParamsCondition(FindParams(light.paramsBySlot[effectSlot]), halfMinuteOfDay);
+    const ConditionFog clearFog = ParamsCondition(FindParams(light.paramsBySlot[kClearSlot]), halfMinuteOfDay);
     const float storm = std::clamp(selection.stormBlend, 0.0f, 1.0f);
     if (storm <= 0.0f || light.paramsBySlot[kStormSlot] == 0)
         return clearFog;
-    const Params* stormParams = FindParams(light.paramsBySlot[kStormSlot]);
-    const ConditionFog stormFog = stormParams ? InterpolateKeys(*stormParams, halfMinuteOfDay) : ConditionFog{};
+    const ConditionFog stormFog = ParamsCondition(FindParams(light.paramsBySlot[kStormSlot]), halfMinuteOfDay);
     return BlendConditions(clearFog, stormFog, storm);
 }
 
@@ -474,48 +650,59 @@ bool FogData::Resolve(int mapId, const float* position, float dayFraction, const
                       AuthoredFog& out) const
 {
     std::memset(&out, 0, sizeof(out));
+    GradingBlend{}.Result(out.gradingCurve);
     if (m_lights.empty() || mapId < 0)
         return false;
 
-    if (!std::binary_search(m_mapsWithFog.begin(), m_mapsWithFog.end(), mapId))
-        return false;
-
     const LightBlend blend = BlendLights(mapId, position);
-    float classicWeight = 0.0f;
     for (int i = 0; i < blend.count; ++i)
-        classicWeight += blend.lights[i].weight;
-    if (classicWeight < kMinimumClassicCoverage)
+        out.coverage += blend.lights[i].weight;
+    if (out.coverage <= 0.0f)
         return false;
+    const bool classicFog = std::binary_search(m_mapsWithFog.begin(), m_mapsWithFog.end(), mapId) &&
+                            out.coverage >= kMinimumClassicCoverage;
 
     const float halfMinuteOfDay = std::fmod(std::max(dayFraction, 0.0f), 1.0f) * kHalfMinutesPerDay;
     LayerBlend layerBlends[kMaxAuthoredLayers];
     DirectLightBlend directLight;
+    GlowBlend glow;
+    GradingBlend grading = {};
     for (int i = 0; i < blend.count; ++i)
     {
         const Light& light = *blend.lights[i].light;
-        const float weight = blend.lights[i].weight / classicWeight;
-        const ConditionFog fog = LightConditionFog(light, halfMinuteOfDay, selection);
-        for (int j = 0; j < fog.layerCount; ++j)
-            layerBlends[j].Add(fog.layers[j], weight);
-        directLight.Add(fog.directLight, fog.directLightPresence, weight);
-        out.layerCount = std::max(out.layerCount, fog.layerCount);
+        const float weight = blend.lights[i].weight / out.coverage;
+        const ConditionFog condition = LightConditionFog(light, halfMinuteOfDay, selection);
+        glow.Add(condition.glow, condition.glowPresence, weight);
+        grading.Add(condition.grading, weight);
         out.lightIds[out.lightCount] = light.id;
         out.lightWeights[out.lightCount] = weight;
         ++out.lightCount;
+        if (!classicFog)
+            continue;
+        for (int j = 0; j < condition.layerCount; ++j)
+            layerBlends[j].Add(condition.layers[j], weight);
+        directLight.Add(condition.directLight, condition.directLightPresence, weight);
+        out.layerCount = std::max(out.layerCount, condition.layerCount);
     }
     for (int j = 0; j < out.layerCount; ++j)
         out.layers[j] = layerBlends[j].Result();
     out.hasClassicDirectLight = directLight.Presence() > 0.0f;
     directLight.Result(out.classicDirectLight);
-    out.coverage = classicWeight;
-    return true;
+    out.hasGlow = glow.Presence() > 0.0f;
+    out.glow = glow.Result();
+    out.hasGradingCurve = grading.weight > 0.0f;
+    grading.Result(out.gradingCurve);
+    return classicFog;
 }
 
 bool FogData::HasFogInAnySlot(const Light& light) const
 {
-    for (uint32_t params : light.paramsBySlot)
-        if (params != 0 && FindParams(params))
+    for (uint32_t id : light.paramsBySlot)
+    {
+        const Params* params = id != 0 ? FindParams(id) : nullptr;
+        if (params && params->keyCount > 0)
             return true;
+    }
     return false;
 }
 

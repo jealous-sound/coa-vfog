@@ -1,6 +1,7 @@
 #include "overlay.h"
 
 #include "config.h"
+#include "d3d9_wrap.h"
 #include "hooks.h"
 #include "log.h"
 #include "settings_panel.h"
@@ -434,7 +435,8 @@ void BuildPanelFrame(const D3DSURFACE_DESC& backBuffer)
         ImGui::SetWindowFocus(nullptr);
     }
     bool open = true;
-    g_overlay.panel.Draw(GlobalConfig(), LastFogFrameStatus(), LastWaterFrameStatus(), open);
+    g_overlay.panel.Draw(GlobalConfig(), LastFogFrameStatus(), LastWaterFrameStatus(), CurrentMultisamplingStatus(),
+                         open);
     ImGui::Render();
     if (!open)
         SetVisible(false);
@@ -641,8 +643,10 @@ void DetachOverlay(IDirect3DDevice9* device)
     ReleaseReference(g_overlay.deviceStateWhileVisible);
     ShutDownImGui();
     const bool failed = g_overlay.failed;
+    const SettingsPanel panel = g_overlay.panel;
     g_overlay = OverlayState();
     g_overlay.failed = failed;
+    g_overlay.panel = panel;
     if (!RestoreClientWindowProc())
         VF_LOG_INFO("overlay detached; the window procedure stays chained because another hook follows it");
 }
@@ -668,4 +672,9 @@ void DrawOverlay(IDirect3DDevice9* device)
 bool OverlayVisible()
 {
     return g_overlay.visible;
+}
+
+PanelPlacement OverlayPanelPlacement()
+{
+    return g_overlay.panel.Placement();
 }

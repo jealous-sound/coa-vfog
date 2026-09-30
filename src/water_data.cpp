@@ -356,3 +356,41 @@ WaterData& GlobalWaterData()
     static WaterData data;
     return data;
 }
+
+WaterPackedMask PackWaveFoamMasks(const std::vector<WaterMaskLevels>& masks,
+                                  const int32_t (&indices)[kWaveFoamMaskSlots])
+{
+    WaterPackedMask packed;
+    const WaterMaskLevels* sources[kWaveFoamMaskSlots] = {};
+    const WaterMaskLevels* layout = nullptr;
+    for (int slot = 0; slot < kWaveFoamMaskSlots; ++slot)
+    {
+        const int32_t index = indices[slot];
+        if (index < 0 || static_cast<size_t>(index) >= masks.size())
+            continue;
+        const WaterMaskLevels& mask = masks[index];
+        if (!layout)
+            layout = &mask;
+        if (mask.info.size != layout->info.size || mask.levels.size() != layout->levels.size())
+            continue;
+        sources[slot] = &mask;
+        packed.present[slot] = true;
+    }
+    if (!layout)
+        return packed;
+    packed.size = layout->info.size;
+    for (size_t level = 0; level < layout->levels.size(); ++level)
+    {
+        std::vector<uint32_t> texels(layout->levels[level].size(), kPackedMaskOpaque);
+        for (int slot = 0; slot < kWaveFoamMaskSlots; ++slot)
+        {
+            if (!sources[slot])
+                continue;
+            const std::vector<uint8_t>& source = sources[slot]->levels[level];
+            for (size_t i = 0; i < texels.size(); ++i)
+                texels[i] |= static_cast<uint32_t>(source[i]) << kPackedMaskChannelShift[slot];
+        }
+        packed.levels.push_back(std::move(texels));
+    }
+    return packed;
+}

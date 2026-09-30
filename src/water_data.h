@@ -19,6 +19,20 @@ struct WaterMaskView
     const uint8_t* const* levels;
 };
 
+constexpr int kWaveFoamMaskSlots = 3;
+constexpr uint32_t kPackedMaskOpaque = 0xFF000000u;
+constexpr int kPackedMaskChannelShift[kWaveFoamMaskSlots] = {16, 8, 0};
+
+struct WaterPackedMask
+{
+    uint32_t size = 0;
+    std::vector<std::vector<uint32_t>> levels;
+    bool present[kWaveFoamMaskSlots] = {};
+};
+
+WaterPackedMask PackWaveFoamMasks(const std::vector<WaterMaskLevels>& masks,
+                                  const int32_t (&indices)[kWaveFoamMaskSlots]);
+
 class WaterData
 {
 public:

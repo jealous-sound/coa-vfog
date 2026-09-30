@@ -2,6 +2,9 @@
 
 #include "config.h"
 #include "engine.h"
+#include "grading_renderer.h"
+#include "msaa_depth.h"
+#include "transparent_fog.h"
 #include "water_types.h"
 
 #include <d3d9.h>
@@ -15,13 +18,22 @@ void AllowFogOnNewDevices(bool allowedOnNewDevices);
 
 class FogDevice;
 FogDevice* LatestFogDevice();
+MultisamplingStatus CurrentMultisamplingStatus();
+bool ReadSceneDepth(FogDevice* device, const DepthTexel* texels, int count, float* values);
 FogDevice* WrapperOrLatestFogDevice(void* gameDevice);
 bool IsWrapperOf(FogDevice* device, void* gameDevice);
 IDirect3DDevice9* RealDevice(FogDevice* device);
 void ForceDepthWrite(FogDevice* device, bool force);
 void SuppressDepthWrite(FogDevice* device, bool suppress);
 bool RenderFog(FogDevice* device, const FrameInputs& in, const Config& cfg, const char** skipReason);
+bool RenderFog(FogDevice* device, const FrameInputs& in, const Config& cfg, FogPass pass, const char** skipReason);
+bool FogReadyToRender(FogDevice* device, const D3DVIEWPORT9& vp, const char** skipReason);
+bool RenderGodRaysAfterWorld(FogDevice* device, const char** skipReason);
+StockFogFit LastStockFogFit(FogDevice* device);
 bool AdaptiveLightingHistory(FogDevice* device);
+void DrawnFogShaders(FogDevice* device, IDirect3DPixelShader9** march, IDirect3DPixelShader9** composite,
+                     IDirect3DPixelShader9** splitComposite);
+float DrawnFogGlowCompensation(FogDevice* device);
 bool BeginWaterPass(FogDevice* device, const FrameInputs& in, const WaterInputs& water, const Config& cfg,
                     const char** skipReason);
 void TagWaterDraw(FogDevice* device, WaterClass waterClass);
@@ -33,6 +45,7 @@ struct WaterPassEnd
     const char* skipReason = "no fog device";
     bool flatWaves = false;
     unsigned shadedClasses = 0;
+    bool ripplesAvailable = false;
 };
 
 WaterPassEnd EndWaterPass(FogDevice* device);
@@ -42,4 +55,14 @@ unsigned HeldWaterResources(FogDevice* device);
 bool WaterPassArmed(FogDevice* device);
 int WaterFoamMaskPool(FogDevice* device);
 int UploadedWaterMasks(FogDevice* device);
+int RequiredWaterMasks(FogDevice* device);
 int LastWaterShadingVariant(FogDevice* device);
+
+struct WaterRippleStats;
+struct WaterRippleShading;
+void ReadWaterRippleStats(FogDevice* device, WaterRippleStats& out);
+void ReadWaterRippleShading(FogDevice* device, WaterRippleShading& out);
+bool GradeWorld(FogDevice* device, const D3DVIEWPORT9& world, const float* curve, float strength,
+                const char** skipReason);
+void ReleaseGrading(FogDevice* device);
+GradingStats GradingStatsOf(FogDevice* device);

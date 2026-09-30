@@ -84,6 +84,7 @@ constexpr unsigned kAllWaterResources = 0x7;
 constexpr int kFoamClockSteps = 20;
 constexpr double kFoamClockStep = 0.1;
 constexpr int kFoamCoverageDebugView = 2;
+constexpr int32_t kSolidFoamMask = 0;
 constexpr float kWhitecapWind = 8.0f;
 constexpr float kBeachWaterlineX = kBasinFarX - (kLandZ - kWaterSurfaceZ) * (kBasinFarX - kBeachStartX) /
                                                     (kLandZ - kBasinFloorZ);
@@ -118,6 +119,7 @@ constexpr int kFogRadianceDebugView = 1;
 constexpr float kSkyFogElevationsDegrees[] = {1.0f, 2.0f, 4.0f, 8.0f, 16.0f};
 constexpr float kMaxSkyReflectionFogMismatch = 0.05f;
 constexpr float kMinComparedFogRadiance = 1e-4f;
+constexpr int kMaxFirstColumnDifference = 2;
 
 const D3DRENDERSTATETYPE kSentinelRenderStates[] = {
     D3DRS_ZENABLE,           D3DRS_ZWRITEENABLE,     D3DRS_ZFUNC,
@@ -464,6 +466,7 @@ struct WaterFrame
     bool fogDepthView = false;
     int fault = kNoWaterFault;
     IDirect3DSurface9* depthAtEnd = nullptr;
+    bool otherPass = true;
 };
 
 struct WaterFrameResult
@@ -551,8 +554,9 @@ public:
             DrawStrip(frame.hiddenTaggedStrips[i], true, hooked, false, result);
         for (int i = 0; i < frame.coverCount; ++i)
             DrawStrip(frame.covers[i], tagged, hooked, frame.opaqueMask, result);
-        m_h.DrawPretransformedQuadAtRawDepth(kOtherPassLeft, kOtherPassTop, kOtherPassRight, kOtherPassBottom,
-                                             kOtherPassRawDepth, kOtherPassColour);
+        if (frame.otherPass)
+            m_h.DrawPretransformedQuadAtRawDepth(kOtherPassLeft, kOtherPassTop, kOtherPassRight, kOtherPassBottom,
+                                                 kOtherPassRawDepth, kOtherPassColour);
         ApplyClientDrawState();
         IDirect3DSurface9* clientDepth = nullptr;
         if (frame.depthAtEnd)
@@ -589,6 +593,8 @@ public:
     }
 
     const WaterView& View() const { return m_v; }
+    void UseView(const WaterView& view) { m_v = view; }
+    void UseScene(std::vector<SceneVertex> scene) { m_scene = std::move(scene); }
 
 private:
     void BeginClientFrame()
@@ -971,6 +977,59 @@ MaskComparison CompareByMask(const Image& mask, const Image& a, const Image& b)
 void SaveImage(const std::wstring& outDir, const wchar_t* name, const Image& image)
 {
     SavePng(outDir + L"\\" + name + L".png", image.w, image.h, image.bgra);
+}
+
+bool FullWaterRow(const Image& mask, const D3DVIEWPORT9& world, UINT y)
+{
+    for (UINT x = world.X; x < world.X + world.Width; ++x)
+        if (!IsMaskPixel(mask, x, y))
+            return false;
+    return true;
+}
+
+int ChannelDifference(const unsigned char* a, const unsigned char* b)
+{
+    int largest = 0;
+    for (int c = 0; c < 3; ++c)
+        largest = std::max(largest, std::abs(a[c] - b[c]));
+    return largest;
+}
+
+struct FirstColumnShading
+{
+    size_t rows = 0;
+    size_t reshaded = 0;
+    int largestFromSecond = 0;
+};
+
+FirstColumnShading CompareFirstColumn(const Image& mask, const Image& stock, const Image& shaded,
+                                      const D3DVIEWPORT9& world)
+{
+    FirstColumnShading s;
+    const UINT first = world.X;
+    for (UINT y = world.Y; y < world.Y + world.Height; ++y)
+    {
+        if (!FullWaterRow(mask, world, y))
+            continue;
+        ++s.rows;
+        s.reshaded += std::memcmp(shaded.At(first, y), stock.At(first, y), 3) != 0 ? 1 : 0;
+        s.largestFromSecond =
+            std::max(s.largestFromSecond, ChannelDifference(shaded.At(first, y), shaded.At(first + 1, y)));
+    }
+    return s;
+}
+
+void CheckFirstColumnReshaded(const char* device, const Image& mask, const Image& stock, const Image& shaded,
+                              const D3DVIEWPORT9& world)
+{
+    const FirstColumnShading s = CompareFirstColumn(mask, stock, shaded, world);
+    std::printf("     %s: %zu fully water-covered rows, the viewport's first column reshaded in %zu, at most %d/255 "
+                "from the second column\n",
+                device, s.rows, s.reshaded, s.largestFromSecond);
+    const std::string check = std::string("on the ") + device +
+                              " the water shading pass reshades the viewport's first column of every fully "
+                              "water-covered row like the second instead of keeping the client's water colour";
+    Check(s.rows > 0 && s.reshaded == s.rows && s.largestFromSecond <= kMaxFirstColumnDifference, check.c_str());
 }
 
 float Decode(unsigned char encoded)
@@ -1440,8 +1499,9 @@ void CheckWaterGpuTimeSummary(BasinClient& client, const Config& base)
         at != std::string::npos && std::sscanf(text.c_str() + at, format, &medianMs, &frames, &skipped, details) == 4;
     std::printf("     water summary: %.3f ms over %u frames, %u skipped, %s\n", medianMs, frames, skipped, details);
     Check(began && parsed && frames > 0 && medianMs > 0.0f &&
-              std::strcmp(details, "classes lake, waves 256 (3 tiles)") == 0,
-          "the water summary reports the water pass's GPU time, the classes shaded and the wave simulation");
+              std::strcmp(details, "classes lake, waves 256 (3 tiles), ripples idle, up to 0 contacts") == 0,
+          "the water summary reports the water pass's GPU time, the classes shaded, the wave simulation and the idle "
+          "ripples");
     const Config on = WaterConfig(base);
     vf_test_set_config(&on);
 }
@@ -1557,19 +1617,19 @@ void CheckFailedFoamMaskUploadsRetry(BasinClient& client, const Config& base)
     const Config on = WaterConfig(base);
     vf_test_set_config(&on);
     const SyntheticWaterData data = MakeSyntheticWaterData();
-    const int maskCount = static_cast<int>(data.maskInfo.size());
     const bool assigned = AssignWaterData(data);
     vf_test_fail_water_mask_uploads(1);
     WaterFrame frame;
     const WaterFrameResult failed = client.Render(frame);
-    const int afterFailure = vf_test_water_masks_uploaded();
+    int maskCount = 0;
+    const int afterFailure = vf_test_water_masks_uploaded(&maskCount);
     int passes = 0;
     int uploaded = afterFailure;
     while (uploaded < maskCount && passes < kMaxMaskRetryPasses)
     {
         client.Render(frame);
         ++passes;
-        uploaded = vf_test_water_masks_uploaded();
+        uploaded = vf_test_water_masks_uploaded(&maskCount);
     }
     vf_test_fail_water_mask_uploads(0);
     std::printf("     foam masks: %d of %d after a failed upload, %d after %d more water passes\n", afterFailure,
@@ -2237,6 +2297,44 @@ void CheckCrestFoamAccumulates(BasinClient& client, const Config& base, const Im
     AssignWaterData(MakeSyntheticWaterData());
 }
 
+SyntheticWaterData SingleWaveFoamMask(int slot)
+{
+    SyntheticWaterData data = WaveFoamOnlyLake();
+    for (WaterPreset& preset : data.presets)
+    {
+        const bool waveFoam =
+            std::any_of(preset.masks, preset.masks + kWaveFoamMaskSlots, [](int32_t mask) { return mask >= 0; });
+        for (int wave = 0; waveFoam && wave < kWaveFoamMaskSlots; ++wave)
+            preset.masks[wave] = wave == slot ? kSolidFoamMask : kWaterNoIndex;
+    }
+    return data;
+}
+
+void CheckEachWaveFoamLayerReadsItsChannel(BasinClient& client, const Config& base, const Image& mask)
+{
+    bool rendered = true;
+    double coverage[kWaveFoamMaskSlots] = {};
+    for (int slot = 0; slot < kWaveFoamMaskSlots; ++slot)
+    {
+        rendered = AssignWaterData(SingleWaveFoamMask(slot)) && rendered;
+        WaterFrame frame;
+        const CrestFoamResult foam = AccumulateCrestFoam(client, WaterConfig(base), frame, mask);
+        rendered = rendered && foam.rendered;
+        coverage[slot] = foam.coverageAfter;
+    }
+    const double high = coverage[static_cast<int>(WaterMaskSlot::HighFoam)];
+    const double mid = coverage[static_cast<int>(WaterMaskSlot::MidFoam)];
+    const double low = coverage[static_cast<int>(WaterMaskSlot::LowFoam)];
+    std::printf("     crest foam coverage with only the high, mid or low wave-foam mask: %.0f, %.0f, %.0f\n", high,
+                mid, low);
+    Check(rendered && high > 0.0 && mid > high && low > mid,
+          "each wave-foam layer reads its own channel of the packed mask texture: a preset with only the high, mid or "
+          "low mask shades crest foam, weighted by f^4.5, f^1.5 and f^0.5");
+    const Config on = WaterConfig(base);
+    vf_test_set_config(&on);
+    AssignWaterData(MakeSyntheticWaterData());
+}
+
 void CheckRealDataViews(Harness& h, const Config& base, const std::string& waterDataPath, const std::wstring& outDir)
 {
     const bool loaded = vf_test_load_water_data(waterDataPath.c_str()) != 0;
@@ -2336,6 +2434,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     Check(changes.waterPixels > 0 && changes.changedElsewhere == 0,
           "only tagged water pixels change; the other pass and all non-water pixels are bit-identical");
     Check(changes.changedWater >= kMinShadedFraction * changes.waterPixels, "the tagged water pixels are reshaded");
+    CheckFirstColumnReshaded("single-sampled device", waterMask.image, stock.image, shaded.image, client.View().world);
 
     for (int view = 1; view <= 5; ++view)
     {
@@ -2377,6 +2476,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     CheckReflectionsCarryTheirSourcesFog(h, base);
     CheckSkyReflectionsCarryTheSkysFog(h, base);
     CheckCrestFoamAccumulates(client, base, waterMask.image);
+    CheckEachWaveFoamLayerReadsItsChannel(client, base, waterMask.image);
     CheckResetKeepsWater(h, client, base);
     CheckRealDataViews(h, base, waterDataPath, outDir);
 

@@ -41,11 +41,20 @@ const IntSetting kIntSettings[] = {
     {"Quality", &Config::quality, 1, 3},     {"StockFog", &Config::stockFog, 0, 1},
     {"DataMode", &Config::dataMode, 0, 1},   {"ColorSpace", &Config::colorSpace, 0, 1},
     {"DebugView", &Config::debugView, 0, 3}, {"LogLevel", &Config::logLevel, 0, 2},
+    {"ClassicPhase", &Config::classicPhase, 0, 1},
+};
+
+const IntSetting kLookIntSettings[] = {
+    {"ForeverGlow", &Config::foreverGlow, 0, 1},
+};
+
+const FloatSetting kLookFloatSettings[] = {
+    {"ColorGrading", &Config::colorGrading, 0.0f, 1.0f},
 };
 
 const IntSetting kWaterIntSettings[] = {
     {"WaterQuality", &Config::waterQuality, 1, 3},
-    {"WaterDebugView", &Config::waterDebugView, 0, 5},
+    {"WaterDebugView", &Config::waterDebugView, 0, 6},
 };
 
 const FloatSetting kFloatSettings[] = {
@@ -58,6 +67,7 @@ const FloatSetting kFloatSettings[] = {
     {"Exposure", &Config::exposure, 0.0f, 10.0f},
     {"ClassicExposure", &Config::classicExposure, 0.0f, 10.0f},
     {"LocalLightIntensity", &Config::localLightIntensity, 0.0f, 8.0f},
+    {"LocalLightPhase", &Config::localLightPhase, -0.9f, 0.9f},
     {"InteriorDensity", &Config::interiorDensity, 0.0f, 1.0f},
     {"NoiseAmount", &Config::noiseAmount, 0.0f, 1.0f},
     {"NoiseScale", &Config::noiseScale, 0.001f, 1.0f},
@@ -76,19 +86,27 @@ const FloatSetting kWaterFloatSettings[] = {
     {"WaterSpecular", &Config::waterSpecular, 0.0f, 4.0f},
     {"WaterClarity", &Config::waterClarity, 0.25f, 4.0f},
     {"WaterZoneColors", &Config::waterZoneColors, 0.0f, 1.0f},
+    {"WaterRipples", &Config::waterRipples, 0.0f, 2.0f},
 };
 
 const BoolSetting kBoolSettings[] = {
     {"GlowCompensation", &Config::glowCompensation}, {"LocalLights", &Config::localLights},
     {"InteriorAware", &Config::interiorAware},       {"Underwater", &Config::underwater},
     {"LiquidDepth", &Config::liquidDepth},           {"SunMarker", &Config::sunMarker},
-    {"Water", &Config::water},
+    {"Water", &Config::water},                       {"Multisampling", &Config::multisampling},
+    {"ClassicNoise", &Config::classicNoise},       {"TransparentFog", &Config::transparentFog},
+};
+
+const BoolSetting kWaterBoolSettings[] = {
+    {"WaterClientSplashes", &Config::waterClientSplashes},
 };
 
 template <typename Visit>
 void ForEachIntSetting(Visit visit)
 {
     for (const IntSetting& s : kIntSettings)
+        visit(s);
+    for (const IntSetting& s : kLookIntSettings)
         visit(s);
     for (const IntSetting& s : kWaterIntSettings)
         visit(s);
@@ -99,7 +117,18 @@ void ForEachFloatSetting(Visit visit)
 {
     for (const FloatSetting& s : kFloatSettings)
         visit(s);
+    for (const FloatSetting& s : kLookFloatSettings)
+        visit(s);
     for (const FloatSetting& s : kWaterFloatSettings)
+        visit(s);
+}
+
+template <typename Visit>
+void ForEachBoolSetting(Visit visit)
+{
+    for (const BoolSetting& s : kBoolSettings)
+        visit(s);
+    for (const BoolSetting& s : kWaterBoolSettings)
         visit(s);
 }
 
@@ -311,7 +340,9 @@ bool SameFogSettings(const Config& a, const Config& b)
 
 bool SameLiveSettings(const Config& a, const Config& b)
 {
-    return SameFogSettings(a, b) && SameValues(kWaterIntSettings, a, b) && SameValues(kWaterFloatSettings, a, b);
+    return SameFogSettings(a, b) && SameValues(kLookIntSettings, a, b) && SameValues(kLookFloatSettings, a, b) &&
+           SameValues(kWaterIntSettings, a, b) && SameValues(kWaterFloatSettings, a, b) &&
+           SameValues(kWaterBoolSettings, a, b);
 }
 
 std::string SettingChanges(const Config& before, const Config& after)
@@ -336,9 +367,10 @@ std::string SettingChanges(const Config& before, const Config& after)
         if (from != to)
             add(s.key, from, to);
     });
-    for (const BoolSetting& s : kBoolSettings)
+    ForEachBoolSetting([&](const BoolSetting& s) {
         if (before.*s.value != after.*s.value)
             add(s.key, before.*s.value ? "1" : "0", after.*s.value ? "1" : "0");
+    });
     return changes;
 }
 
@@ -418,13 +450,12 @@ bool ConfigStore::Save()
         if (merged.*s.value != onDisk.*s.value)
             written = WriteSetting(m_path, s.key, text) && written;
     });
-    for (const BoolSetting& s : kBoolSettings)
-    {
+    ForEachBoolSetting([&](const BoolSetting& s) {
         if (m_config.*s.value == m_saved.*s.value)
             merged.*s.value = onDisk.*s.value;
         else if (m_config.*s.value != onDisk.*s.value)
             written = WriteSetting(m_path, s.key, m_config.*s.value ? "1" : "0") && written;
-    }
+    });
     m_stamp = FileStamp(m_path);
     if (!written)
     {
@@ -474,8 +505,7 @@ Config ConfigStore::ReadFile() const
     c.overlayKey = ReadHotkey(p, "OverlayKey", c.overlayKey);
     ForEachIntSetting([&](const IntSetting& s) { c.*s.value = ReadInt(p, s.key, c.*s.value, s.lo, s.hi); });
     ForEachFloatSetting([&](const FloatSetting& s) { c.*s.value = ReadFloat(p, s.key, c.*s.value, s.lo, s.hi); });
-    for (const BoolSetting& s : kBoolSettings)
-        c.*s.value = ReadInt(p, s.key, c.*s.value ? 1 : 0, 0, 1) != 0;
+    ForEachBoolSetting([&](const BoolSetting& s) { c.*s.value = ReadInt(p, s.key, c.*s.value ? 1 : 0, 0, 1) != 0; });
     ClampLiveSettings(c);
     return c;
 }
