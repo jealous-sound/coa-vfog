@@ -90,7 +90,6 @@ ForeverLookFrame GameForeverLookFrame(const Config& cfg)
     ForeverLookFrame frame;
     frame.effects = engine::ReadScreenEffects();
     frame.cameraInLiquid = engine::CameraInLiquid();
-    frame.hasWorldViewport = engine::OpaqueViewport(frame.worldViewport);
     if (LookNeeded(cfg))
         frame.look = ResolveForeverLook();
     return frame;
@@ -212,7 +211,8 @@ GradingFrame PrepareGrading(const ForeverLookFrame& frame, const Config& cfg)
         return NotGraded(GradingState::Idle, kGhostEffect);
     if (frame.cameraInLiquid)
         return NotGraded(GradingState::Idle, kCameraUnderWater);
-    if (!frame.hasWorldViewport)
+    D3DVIEWPORT9 world = {};
+    if (!engine::OpaqueViewport(world))
         return NotGraded(GradingState::Skipped, "no world viewport");
     if (!frame.look.valid)
         return NotGraded(GradingState::Skipped, "no Classic light data or camera inputs");
@@ -222,7 +222,7 @@ GradingFrame PrepareGrading(const ForeverLookFrame& frame, const Config& cfg)
     if (!frame.look.hasGradingCurve)
         return NotGraded(GradingState::Idle, kNoGradedClassicLight);
     GradingFrame grading = NotGraded(GradingState::Ready, "");
-    grading.viewport = frame.worldViewport;
+    grading.viewport = world;
     std::memcpy(grading.curve, frame.look.gradingCurve, sizeof(grading.curve));
     grading.strength = strength;
     return grading;

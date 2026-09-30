@@ -28,6 +28,7 @@ bool RenderFog(FogDevice* device, const FrameInputs& in, const Config& cfg, cons
 bool AdaptiveLightingHistory(FogDevice* device);
 void DrawnFogShaders(FogDevice* device, IDirect3DPixelShader9** march, IDirect3DPixelShader9** composite,
                      IDirect3DPixelShader9** splitComposite);
+float DrawnFogGlowCompensation(FogDevice* device);
 bool BeginWaterPass(FogDevice* device, const FrameInputs& in, const WaterInputs& water, const Config& cfg,
                     const char** skipReason);
 void TagWaterDraw(FogDevice* device, WaterClass waterClass);

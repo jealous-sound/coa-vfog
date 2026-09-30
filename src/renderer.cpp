@@ -1227,12 +1227,12 @@ bool Renderer::RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDir
     dev->SetPixelShaderConstantF(11, &march.x, 1);
     const FogParams compositeMarchFog = marchesLocalLights ? WithMeanNoise(fog) : fog;
     dev->SetPixelShaderConstantF(12, &compositeMarchFog.layers[0].start, 6 * kFogLayers);
+    m_drawnGlowCompensation = cfg.glowCompensation && sceneBlend ? in.clientGlowAmount : 0.0f;
     const Float4 composite[3] = {
         {fog.authored ? cfg.classicExposure : cfg.exposure, rays && sceneBlend ? rayStrength : 0.0f,
          static_cast<float>(cfg.debugView), blendMode},
         {fog.rayColor[0], fog.rayColor[1], fog.rayColor[2], 0.0f},
-        {sunPx[0], sunPx[1], cfg.sunMarker && sunInFront ? 1.0f : 0.0f,
-         cfg.glowCompensation && sceneBlend ? in.clientGlowAmount : 0.0f},
+        {sunPx[0], sunPx[1], cfg.sunMarker && sunInFront ? 1.0f : 0.0f, m_drawnGlowCompensation},
     };
     dev->SetPixelShaderConstantF(96, &composite[0].x, 3);
     BindTexture(dev, 0, depthTexture, false);

@@ -91,6 +91,11 @@ extern "C" __declspec(dllimport) int __cdecl vf_test_delivered_glow(float*);
 extern "C" __declspec(dllimport) void __cdecl vf_test_grading_stats(GradingStats*);
 extern "C" __declspec(dllimport) int __cdecl vf_test_forever_look_guards(engine::CodeRange*, int);
 extern "C" __declspec(dllimport) void __cdecl vf_test_forever_look_status(ForeverLookStatus*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_use_world_hook_client(const FrameInputs*, int);
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_opaque_done();
+extern "C" __declspec(dllimport) void __cdecl vf_test_hook_world_done();
+extern "C" __declspec(dllimport) void __cdecl vf_test_simulate_fog_hook_failure(int);
+extern "C" __declspec(dllimport) float __cdecl vf_test_drawn_glow_compensation();
 
 namespace
 {
@@ -1904,6 +1909,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckLinearComposite(h, cfg, eye, at, proj, world);
     CheckDisabledTemporalIsStable(h, cfg, eye, at, proj, world);
     forever_look_checks::CheckColourGrading(h, world, classic);
+    forever_look_checks::CheckFogCompensatesTheDeliveredGlow(h, cfg, world);
     vf_test_set_config(&cfg);
 
     auto renderDebugIn = [&](int mode, float maxDist, const D3DVIEWPORT9& vp, float wdlPatchRawDepth) {

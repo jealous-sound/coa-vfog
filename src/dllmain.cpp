@@ -248,6 +248,31 @@ extern "C" void __cdecl vf_test_hook_frame_end()
     vf_on_frame_end();
 }
 
+extern "C" void __cdecl vf_test_use_world_hook_client(const FrameInputs* in, int glowScreenEffectRuns)
+{
+    UseTestWorldClient(*in, glowScreenEffectRuns != 0);
+}
+
+extern "C" void __cdecl vf_test_hook_opaque_done()
+{
+    vf_on_opaque_done();
+}
+
+extern "C" void __cdecl vf_test_hook_world_done()
+{
+    vf_on_world_done();
+}
+
+extern "C" void __cdecl vf_test_simulate_fog_hook_failure(int failed)
+{
+    SimulateFogHookFailure(failed != 0);
+}
+
+extern "C" float __cdecl vf_test_drawn_glow_compensation()
+{
+    return DrawnFogGlowCompensation(LatestFogDevice());
+}
+
 extern "C" int __cdecl vf_test_water_armed()
 {
     return WaterPassArmed(LatestFogDevice()) ? 1 : 0;

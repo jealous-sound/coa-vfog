@@ -48,6 +48,8 @@ constexpr UINT kStandInGlowSampleRow = 650;
 constexpr int kStandInGlowCode = 128;
 constexpr float kUnormConversionTolerance = 0.6f;
 constexpr float kDeliveredGlowTolerance = 1e-6f;
+constexpr float kClampedDayNightGlow = 1.0f;
+constexpr float kPrimedGlowCompensation = 0.5f;
 constexpr float kHalfStrength = 0.5f;
 constexpr float kSyntheticCurveGamma = 0.8f;
 constexpr D3DVIEWPORT9 kGradedSubRect = {100, 50, 800, 400, 0.0f, 0.94f};
@@ -585,17 +587,17 @@ struct GradedFrame
 struct GradedFrameRequest
 {
     D3DVIEWPORT9 filled;
+    D3DVIEWPORT9 world;
     ForeverLookFrame frame;
     float colorGrading = 1.0f;
     bool worldDone = true;
+    bool throughTheWorldDoneHook = false;
     bool standInGlow = false;
 };
 
-ForeverLookFrame GradingFrame(const D3DVIEWPORT9& world, float coverage, const float* curve)
+ForeverLookFrame GradingFrame(float coverage, const float* curve)
 {
     ForeverLookFrame frame;
-    frame.hasWorldViewport = true;
-    frame.worldViewport = world;
     frame.look = LookAt(coverage, kForeverContinentGlow, curve);
     return frame;
 }
@@ -604,9 +606,50 @@ GradedFrameRequest Request(const D3DVIEWPORT9& world, float colorGrading, const 
 {
     GradedFrameRequest request;
     request.filled = world;
-    request.frame = GradingFrame(world, kFullCoverage, curve);
+    request.world = world;
+    request.frame = GradingFrame(kFullCoverage, curve);
     request.colorGrading = colorGrading;
     return request;
+}
+
+struct HookedCamera
+{
+    Vec3 eye;
+    Vec3 at;
+    float view[16];
+    float projection[16];
+};
+
+HookedCamera CameraOver(const D3DVIEWPORT9& world)
+{
+    HookedCamera camera = {Add({0, 0, 9}, kGameLikeWorldOffset), Add({100, 2, 4}, kGameLikeWorldOffset)};
+    CameraRelativeLookAt(camera.eye, camera.at, camera.view);
+    EngineProjection(static_cast<float>(world.Width) / world.Height, camera.projection);
+    return camera;
+}
+
+FrameInputs HookedInputs(const HookedCamera& camera, const D3DVIEWPORT9& world)
+{
+    return MakeInputs(camera.view, camera.projection, camera.eye, camera.at, world);
+}
+
+void CaptureWorldViewport(IDirect3DDevice9* dev, const D3DVIEWPORT9& world)
+{
+    const FrameInputs inputs = HookedInputs(CameraOver(world), world);
+    vf_test_use_world_hook_client(&inputs, 1);
+    D3DVIEWPORT9 current = {};
+    dev->GetViewport(&current);
+    dev->SetViewport(&world);
+    vf_test_hook_opaque_done();
+    dev->SetViewport(&current);
+}
+
+void RunWorldDone(bool throughTheHook)
+{
+    if (throughTheHook)
+        vf_test_hook_world_done();
+    else
+        vf_test_forever_look_world_done();
 }
 
 GradedFrame RenderGradedFrame(Harness& h, const GradedFrameRequest& request)
@@ -619,9 +662,10 @@ GradedFrame RenderGradedFrame(Harness& h, const GradedFrameRequest& request)
     h.BeginFrame();
     PrepareClearableTarget(h.dev);
     FillStripes(h.dev, request.filled);
+    CaptureWorldViewport(h.dev, request.world);
     vf_test_grading_stats(&result.before);
     if (request.worldDone)
-        vf_test_forever_look_world_done();
+        RunWorldDone(request.throughTheWorldDoneHook);
     if (request.standInGlow)
         ClearRect(h.dev, static_cast<LONG>(request.filled.X), kStandInGlowTop,
                   static_cast<LONG>(request.filled.X + request.filled.Width), kStandInGlowBottom,
@@ -742,7 +786,7 @@ bool OutsideRect(UINT x, UINT y, const D3DVIEWPORT9& rect)
 void CheckGradedSubRect(Harness& h, const D3DVIEWPORT9& world, const float* shipped)
 {
     GradedFrameRequest request = Request(world, 1.0f, shipped);
-    request.frame.worldViewport = kGradedSubRect;
+    request.world = kGradedSubRect;
     const GradedFrame graded = RenderGradedFrame(h, request);
     float identity[kGradingCurveEntries];
     IdentityCurve(identity);
@@ -797,6 +841,23 @@ bool ResolveShippedCurve(const FogData& data)
     return resolved && Near(g_shippedCurve[authored_fog::kCurveMidInput], authored_fog::kCurve8286666Mid);
 }
 
+void CheckGradingAfterAFogException(Harness& h, const D3DVIEWPORT9& world)
+{
+    GradedFrameRequest request = Request(world, 1.0f, g_shippedCurve);
+    request.throughTheWorldDoneHook = true;
+    vf_test_simulate_fog_hook_failure(1);
+    const GradedFrame first = RenderGradedFrame(h, request);
+    const GradedFrame second = RenderGradedFrame(h, request);
+    vf_test_simulate_fog_hook_failure(0);
+    const CurveMatch match = CompareStripes(second.image, world, kStripeSampleRow, g_shippedCurve, 1.0f);
+    PrintCurveMatch("the second hooked frame after a fog exception", match);
+    std::printf("     grading after the fog stopped: %u and %u draws, state \"%s\"\n", first.Draws(), second.Draws(),
+                second.status.grading);
+    Check(first.Draws() == 1 && second.Draws() == 1 && match.WithinConversion(),
+          "after a fog exception the opaque hook still captures the world viewport every frame, so the grading "
+          "still draws through the world-done and frame-end hooks");
+}
+
 void CheckColourGrading(Harness& h, const D3DVIEWPORT9& world, const FogData& data)
 {
     Check(ResolveShippedCurve(data), "the Stormwind noon grading curve (8286666) resolves for the grading checks");
@@ -804,8 +865,77 @@ void CheckColourGrading(Harness& h, const D3DVIEWPORT9& world, const FogData& da
     CheckUngradedFrames(h, world, g_shippedCurve);
     CheckGradedSubRect(h, world, g_shippedCurve);
     CheckCurveUploadedOnChange(h, world, g_shippedCurve);
+    CheckGradingAfterAFogException(h, world);
     Config defaults = {};
     vf_test_set_config(&defaults);
+}
+
+struct GlowHandOff
+{
+    const char* what;
+    uint8_t clientByte;
+    bool foreverGlow;
+    bool glowEffectRuns;
+    uint8_t compensatedByte;
+};
+
+const GlowHandOff kGlowHandOffs[] = {
+    {"ForeverGlow=1 under full coverage (client byte 102, Forever glow 0)", kClientGlowByte, true, true, 0},
+    {"ForeverGlow=0 with a client glow of 1.1 (byte 24)", kWrappedClientGlowByte, false, true,
+     kWrappedClientGlowByte},
+    {"ForeverGlow=0 with the ffx CVar off", kWrappedClientGlowByte, false, false, 0},
+};
+
+void PrimeDrawnGlowCompensation(Harness& h, const HookedCamera& camera, const D3DVIEWPORT9& world)
+{
+    FrameInputs primed = HookedInputs(camera, world);
+    primed.clientGlowAmount = kPrimedGlowCompensation;
+    const char* skip = "";
+    h.BeginFrame();
+    h.DrawScene(camera.eye, camera.view, camera.projection, world);
+    vf_test_render(&primed, &skip);
+    h.dev->EndScene();
+}
+
+float FogGlowThroughTheHooks(Harness& h, const Config& fog, const D3DVIEWPORT9& world, const GlowHandOff& handOff)
+{
+    const HookedCamera camera = CameraOver(world);
+    Config cfg = fog;
+    cfg.foreverGlow = handOff.foreverGlow ? 1 : 0;
+    vf_test_set_config(&cfg);
+    PrimeDrawnGlowCompensation(h, camera, world);
+    FakeGlowGraph graph(handOff.clientByte);
+    const ForeverLookFrame frame = GlowFrame(graph, kFullCoverage, kForeverContinentGlow);
+    vf_test_use_forever_look_frame(&frame);
+    FrameInputs inputs = HookedInputs(camera, world);
+    inputs.clientGlowAmount = handOff.glowEffectRuns ? kClampedDayNightGlow : 0.0f;
+    vf_test_use_world_hook_client(&inputs, handOff.glowEffectRuns ? 1 : 0);
+    h.BeginFrame();
+    h.DrawScene(camera.eye, camera.view, camera.projection, world);
+    vf_test_hook_opaque_done();
+    h.SetEngineState(world);
+    vf_test_hook_world_done();
+    const float drawn = vf_test_drawn_glow_compensation();
+    vf_test_hook_frame_end();
+    h.dev->EndScene();
+    return drawn;
+}
+
+void CheckFogCompensatesTheDeliveredGlow(Harness& h, const Config& fog, const D3DVIEWPORT9& world)
+{
+    bool compensated = true;
+    for (const GlowHandOff& handOff : kGlowHandOffs)
+    {
+        const float drawn = FogGlowThroughTheHooks(h, fog, world, handOff);
+        const float expected = handOff.compensatedByte / kGlowByteScale;
+        std::printf("     %s: the fog composite's glow (c98.w) %.4f, expected %.4f\n", handOff.what, drawn, expected);
+        compensated = compensated && std::fabs(drawn - expected) < kDeliveredGlowTolerance;
+    }
+    vf_test_set_config(&fog);
+    Check(compensated,
+          "through the world-done hook the fog is compensated for the glow byte the composite receives (0 when "
+          "ForeverGlow feeds Forever's 0, 24/255 when a client glow of 1.1 wraps, 0 with the ffx CVar off), never "
+          "for the clamped DayNight glow 1.0");
 }
 
 void CheckColourGradingAfterReset(Harness& h, const D3DVIEWPORT9& world, unsigned uploadsBeforeReset)

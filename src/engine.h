@@ -131,6 +131,7 @@ StockFog ReadStockFog();
 void WriteStockFog(const StockFog& fog);
 
 void CaptureOpaqueState(IDirect3DDevice9* device);
+void CaptureOpaqueState(IDirect3DDevice9* device, const float* cameraRelativeView, const float* glProjection);
 bool HasOpaqueState();
 bool OpaqueViewport(D3DVIEWPORT9& out);
 void ClearOpaqueState();

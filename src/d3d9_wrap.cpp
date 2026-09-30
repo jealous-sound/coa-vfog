@@ -131,6 +131,7 @@ public:
     IDirect3DPixelShader9* DrawnFogMarch() const { return m_renderer.DrawnMarch(); }
     IDirect3DPixelShader9* DrawnFogComposite() const { return m_renderer.DrawnComposite(); }
     IDirect3DPixelShader9* DrawnFogSplitComposite() const { return m_renderer.DrawnSplitComposite(); }
+    float DrawnFogGlowCompensation() const { return m_renderer.DrawnGlowCompensation(); }
     void ForceDepthWrite(bool force) { OverrideDepthWrite(m_forceDepthWrite, force); }
     void SuppressDepthWrite(bool suppress) { OverrideDepthWrite(m_suppressDepthWrite, suppress); }
     bool BeginWater(const FrameInputs& in, const WaterInputs& water, const Config& cfg, const char** skip);
@@ -1239,6 +1240,11 @@ void DrawnFogShaders(FogDevice* device, IDirect3DPixelShader9** march, IDirect3D
     *march = device ? device->DrawnFogMarch() : nullptr;
     *composite = device ? device->DrawnFogComposite() : nullptr;
     *splitComposite = device ? device->DrawnFogSplitComposite() : nullptr;
+}
+
+float DrawnFogGlowCompensation(FogDevice* device)
+{
+    return device ? device->DrawnFogGlowCompensation() : 0.0f;
 }
 
 bool BeginWaterPass(FogDevice* device, const FrameInputs& in, const WaterInputs& water, const Config& cfg,

@@ -170,11 +170,54 @@ void UseClientFogRangeInsteadOfPushed(FrameInputs& in)
     in.fogEnd = g_savedStockFog.end[engine::kFrameInputsFogGroup];
 }
 
+struct WorldClient
+{
+    FogDevice* (*device)();
+    void (*captureOpaqueState)(IDirect3DDevice9* device);
+    bool (*frameInputs)(FrameInputs& in, bool withPointLights);
+    bool (*glowScreenEffectRuns)();
+};
+
+void CaptureGameOpaqueState(IDirect3DDevice9* device)
+{
+    engine::CaptureOpaqueState(device);
+}
+
+const WorldClient kGameWorldClient = {&GameFogDevice, &CaptureGameOpaqueState, &engine::BuildFrameInputs,
+                                      &engine::GlowScreenEffectRuns};
+
+FrameInputs g_testWorldFrame = {};
+bool g_testGlowScreenEffectRuns = false;
+
+void CaptureTestOpaqueState(IDirect3DDevice9* device)
+{
+    engine::CaptureOpaqueState(device, g_testWorldFrame.cameraRelativeView, g_testWorldFrame.glProjection);
+}
+
+bool TestWorldFrameInputs(FrameInputs& in, bool)
+{
+    D3DVIEWPORT9 viewport = {};
+    if (!engine::OpaqueViewport(viewport))
+        return false;
+    in = g_testWorldFrame;
+    in.viewport = viewport;
+    return true;
+}
+
+bool TestGlowScreenEffectRuns()
+{
+    return g_testGlowScreenEffectRuns;
+}
+
+const WorldClient kTestWorldClient = {&LatestFogDevice, &CaptureTestOpaqueState, &TestWorldFrameInputs,
+                                      &TestGlowScreenEffectRuns};
+const WorldClient* g_worldClient = &kGameWorldClient;
+
 void UseDeliveredGlow(FrameInputs& in)
 {
     float delivered = 0.0f;
     if (DeliveredGlowThisFrame(delivered))
-        in.clientGlowAmount = !in.inLiquid && engine::GlowScreenEffectRuns() ? delivered : 0.0f;
+        in.clientGlowAmount = !in.inLiquid && g_worldClient->glowScreenEffectRuns() ? delivered : 0.0f;
 }
 
 struct WaterClient
@@ -286,7 +329,7 @@ bool RenderCurrentWorldFog(FogDevice* device)
 
     const Config& cfg = GlobalConfig().Get();
     FrameInputs in = {};
-    bool valid = engine::BuildFrameInputs(in, cfg.localLights);
+    bool valid = g_worldClient->frameInputs(in, cfg.localLights);
     if (g_stockFogPushed)
         UseClientFogRangeInsteadOfPushed(in);
     UseDeliveredGlow(in);
@@ -300,16 +343,16 @@ bool RenderCurrentWorldFog(FogDevice* device)
 
 void OnOpaqueDone()
 {
-    FogDevice* device = GameFogDevice();
+    FogDevice* device = g_worldClient->device();
     if (!device)
         return;
-    engine::CaptureOpaqueState(RealDevice(device));
+    g_worldClient->captureOpaqueState(RealDevice(device));
 }
 
 void OnWorldDone()
 {
     if (!g_failed)
-        RenderCurrentWorldFog(GameFogDevice());
+        RenderCurrentWorldFog(g_worldClient->device());
     engine::ClearOpaqueState();
 }
 
@@ -1086,6 +1129,18 @@ bool InstallWaterHooks()
 void RecordHookedFogFrame(bool rendered, bool cameraUnderLiquid, const char* skip)
 {
     RecordFogFrame(rendered, cameraUnderLiquid, skip);
+}
+
+void UseTestWorldClient(const FrameInputs& in, bool glowScreenEffectRuns)
+{
+    g_testWorldFrame = in;
+    g_testGlowScreenEffectRuns = glowScreenEffectRuns;
+    g_worldClient = &kTestWorldClient;
+}
+
+void SimulateFogHookFailure(bool failed)
+{
+    g_failed = failed;
 }
 
 void UseTestWaterClient(const FrameInputs& in, const WaterInputs& water)

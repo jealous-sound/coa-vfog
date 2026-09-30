@@ -346,7 +346,7 @@ bool MeasureGrading(Harness& h, Timer& timer, const Street& street, const float*
 {
     float curve[kGradingCurveEntries];
     forever_look_checks::SyntheticCurve(curve);
-    const ForeverLookFrame look = forever_look_checks::GradingFrame(viewport, 1.0f, curve);
+    const ForeverLookFrame look = forever_look_checks::GradingFrame(1.0f, curve);
     Config config;
     config.overlay = false;
     config.logLevel = kErrorLogLevel;
@@ -362,6 +362,7 @@ bool MeasureGrading(Harness& h, Timer& timer, const Street& street, const float*
         GradingStats after;
         h.BeginFrame();
         h.DrawScene(street.eye, inputs.cameraRelativeView, inputs.glProjection, inputs.viewport);
+        forever_look_checks::CaptureWorldViewport(h.dev, inputs.viewport);
         vf_test_forever_look_world_done();
         vf_test_grading_stats(&before);
         const bool started = timer.Begin();

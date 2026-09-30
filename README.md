@@ -755,13 +755,17 @@ normals are compared with the 7552035 slope evaluated on the CPU (within the dep
 shaded water with the real data, and the hold on the client's sprite value, driven through the hooks on a synthetic
 value and code image, with the unit walk refused and the ripple map unsupported or failing.
 The glow suite drives the world-done and frame-end entries against a fake glow effect graph that holds the client's
-vtable values as plain integers the DLL only compares: the write to both pass lists and its restore, a foreign byte that survives, no write
-for the ghost effect or a graph that differs, the fade with Classic coverage, the clamp above 1, the compensation
-taking the delivered byte (24 for a wrapped 1.1), and guards that avoid every patched byte. The grading suite fills
-the back buffer with every 8-bit code per channel and checks the identity curve bit-exact, the Stormwind noon curve
-and half strength within D3D's float-to-8-bit tolerance of a CPU reference, the grading of what the glow drew after
-the world was done, a sub-rectangle world viewport, state restoration with c0/c1, the skips (off, no world done,
-ghost, under water, half coverage, lights without a grading key), curve uploads only on change and after `Reset`, and the INI keys.
+vtable values as plain integers the DLL only compares: the write to both pass lists and its restore, a foreign byte
+that survives, no write for the ghost effect or a graph that differs, the fade with Classic coverage, the clamp above
+1, the delivered byte (24 for a wrapped 1.1), a frame end without a world done, and guards that avoid every patched
+byte. Through the opaque, world-done and frame-end hooks, with a harness world client standing in for the client's
+memory, it checks that the fog composite's glow constant is the delivered byte (0 under `ForeverGlow`, 24/255 for a
+wrapped 1.1, 0 with the `ffx` CVar off). The grading suite fills the back buffer with every 8-bit code per channel and
+checks the identity curve bit-exact, the Stormwind noon curve and half strength within D3D's float-to-8-bit tolerance
+of a CPU reference, the grading of what the glow drew after the world was done, a sub-rectangle world viewport, state
+restoration with c0/c1, the skips (off, no world done, ghost, under water, half coverage, lights without a grading
+key), the grading through the hooks after a fog exception, curve uploads only on change and after `Reset`, and the
+INI keys.
 The multisampling suite creates a 4x device through the wrapper with the client's D24X8 depth (and D16) and its
 target-and-depth clear: the sample counts offered to the game, the kept back buffer and the D24S8 depth that replaces
 the stencil-less one, the fog and water on the copied depth against the drawn depth and a single-sampled frame, a wading

@@ -238,6 +238,12 @@ void ApplyPendingGxViewportDepthRange(D3DVIEWPORT9& viewport)
     }
 }
 
+bool UsableOpaqueState(const OpaqueState& state)
+{
+    return state.viewport.Width > 0 && state.viewport.Height > 0 && IsPerspective(state.glProjection) &&
+           Finite(state.cameraRelativeView, 16);
+}
+
 bool CaptureOpaqueStateUnsafe(IDirect3DDevice9* device, OpaqueState& state)
 {
     if (FAILED(device->GetViewport(&state.viewport)))
@@ -248,8 +254,7 @@ bool CaptureOpaqueStateUnsafe(IDirect3DDevice9* device, OpaqueState& state)
         ReadFloats(kViewGlobal, state.cameraRelativeView, 16);
         ReadFloats(kProjectionGlobal, state.glProjection, 16);
     }
-    return state.viewport.Width > 0 && state.viewport.Height > 0 && IsPerspective(state.glProjection) &&
-           Finite(state.cameraRelativeView, 16);
+    return UsableOpaqueState(state);
 }
 
 void Normalize(float* v)
@@ -807,6 +812,15 @@ void CaptureOpaqueState(IDirect3DDevice9* device)
         ok = false;
     }
     state.valid = ok;
+    g_opaque = state;
+}
+
+void CaptureOpaqueState(IDirect3DDevice9* device, const float* cameraRelativeView, const float* glProjection)
+{
+    OpaqueState state = {};
+    std::memcpy(state.cameraRelativeView, cameraRelativeView, sizeof(state.cameraRelativeView));
+    std::memcpy(state.glProjection, glProjection, sizeof(state.glProjection));
+    state.valid = SUCCEEDED(device->GetViewport(&state.viewport)) && UsableOpaqueState(state);
     g_opaque = state;
 }
 

@@ -59,3 +59,8 @@ EXPORTS
     vf_test_grading_stats
     vf_test_forever_look_guards
     vf_test_forever_look_status
+    vf_test_use_world_hook_client
+    vf_test_hook_opaque_done
+    vf_test_hook_world_done
+    vf_test_simulate_fog_hook_failure
+    vf_test_drawn_glow_compensation

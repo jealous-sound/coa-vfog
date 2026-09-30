@@ -3,8 +3,6 @@
 #include "engine.h"
 #include "fog_data.h"
 
-#include <d3d9.h>
-
 #include <cstdint>
 
 class FogDevice;
@@ -23,8 +21,6 @@ struct ForeverLookFrame
 {
     engine::ScreenEffects effects;
     bool cameraInLiquid = false;
-    bool hasWorldViewport = false;
-    D3DVIEWPORT9 worldViewport = {};
     ForeverLook look;
 };
 
