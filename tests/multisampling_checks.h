@@ -595,21 +595,73 @@ struct CopiedSurfaceDepths
 {
     std::vector<float> rows;
     bool read = false;
+    size_t rowsRead = 0;
+    size_t rowsInsidePixels = 0;
+    float largestRowSpread = 0.0f;
     float largestCentreOffset = 0.0f;
 };
+
+struct FullWaterRowEnds
+{
+    DepthTexel first;
+    DepthTexel last;
+};
+
+std::vector<FullWaterRowEnds> FindFullWaterRowEnds(const Image& mask)
+{
+    std::vector<FullWaterRowEnds> rows;
+    for (UINT y = 0; y < mask.h; ++y)
+    {
+        FullWaterRowEnds ends = {{mask.w, y}, {mask.w, y}};
+        for (UINT x = 0; x < mask.w; ++x)
+            if (IsFullWater(mask, x, y))
+            {
+                ends.first.x = std::min(ends.first.x, x);
+                ends.last.x = x;
+            }
+        if (ends.first.x < mask.w)
+            rows.push_back(ends);
+    }
+    return rows;
+}
+
+float SurfaceDepthAt(const water_checks::WaterView& v, float px, float py)
+{
+    return water_checks::ViewDepthOfPlane(v, water_checks::PixelRay(v, px, py), water_checks::kWaterSurfaceZ);
+}
+
+bool InsidePixelDepths(const water_checks::WaterView& v, DepthTexel t, float depth)
+{
+    const float left = static_cast<float>(t.x);
+    const float top = static_cast<float>(t.y);
+    const auto [nearest, farthest] =
+        std::minmax({SurfaceDepthAt(v, left, top), SurfaceDepthAt(v, left + 1.0f, top),
+                     SurfaceDepthAt(v, left, top + 1.0f), SurfaceDepthAt(v, left + 1.0f, top + 1.0f)});
+    return depth >= nearest * (1.0f - water_checks::kDepthCopyPrecision) &&
+           depth <= farthest * (1.0f + water_checks::kDepthCopyPrecision);
+}
+
+float CopiedViewDepth(const float* d3dProj, float stored)
+{
+    return d3dProj[14] / (stored - d3dProj[10]);
+}
+
+float CentreOffset(const water_checks::WaterView& v, DepthTexel t, float depth)
+{
+    return std::fabs(depth / water_checks::PixelCentreSurfaceDepth(v, t.x, t.y) - 1.0f);
+}
 
 CopiedSurfaceDepths ReadCopiedWaterRows(const water_checks::WaterView& v, const Image& mask)
 {
     CopiedSurfaceDepths depths;
     depths.rows.assign(mask.h, 0.0f);
+    const std::vector<FullWaterRowEnds> ends = FindFullWaterRowEnds(mask);
     std::vector<DepthTexel> texels;
-    for (UINT y = 0; y < mask.h; ++y)
-        for (UINT x = 0; x < mask.w; ++x)
-            if (IsFullWater(mask, x, y))
-            {
-                texels.push_back({x, y});
-                break;
-            }
+    for (const FullWaterRowEnds& row : ends)
+    {
+        texels.push_back(row.first);
+        texels.push_back(row.last);
+    }
     std::vector<float> raw(texels.size());
     depths.read = !texels.empty() &&
                   vf_test_read_scene_depth(texels.data(), static_cast<int>(texels.size()), raw.data()) != 0;
@@ -617,14 +669,26 @@ CopiedSurfaceDepths ReadCopiedWaterRows(const water_checks::WaterView& v, const 
         return depths;
     float d3dProj[16];
     RemapToD3DDepthRange(v.proj, d3dProj);
-    for (size_t i = 0; i < texels.size(); ++i)
+    for (size_t i = 0; i < ends.size(); ++i)
     {
-        const float copied = d3dProj[14] / (raw[i] - d3dProj[10]);
-        const float centre = water_checks::PixelCentreSurfaceDepth(v, texels[i].x, texels[i].y);
-        depths.rows[texels[i].y] = copied;
-        depths.largestCentreOffset = std::max(depths.largestCentreOffset, std::fabs(copied / centre - 1.0f));
+        const FullWaterRowEnds& row = ends[i];
+        const float first = CopiedViewDepth(d3dProj, raw[2 * i]);
+        const float last = CopiedViewDepth(d3dProj, raw[2 * i + 1]);
+        depths.rows[row.first.y] = first;
+        ++depths.rowsRead;
+        depths.rowsInsidePixels +=
+            InsidePixelDepths(v, row.first, first) && InsidePixelDepths(v, row.last, last) ? 1 : 0;
+        depths.largestRowSpread = std::max(depths.largestRowSpread, std::fabs(last / first - 1.0f));
+        depths.largestCentreOffset = std::max(
+            {depths.largestCentreOffset, CentreOffset(v, row.first, first), CentreOffset(v, row.last, last)});
     }
     return depths;
+}
+
+bool CopiedDepthFillsEachRow(const CopiedSurfaceDepths& d)
+{
+    return d.read && d.rowsRead > 0 && d.rowsInsidePixels == d.rowsRead &&
+           d.largestRowSpread <= water_checks::kDepthCopyPrecision;
 }
 
 struct RippledWaterFrames
@@ -715,17 +779,24 @@ void CheckRippledWaterOnMultisampledTargets(Harness& m, const std::wstring& outD
         water_checks::CompareAroundPath(view, frames.rippledShading.image, frames.calmShading.image);
     const ReshadedCoverage coverage =
         CountReshaded(frames.mask.image, frames.stock.image, frames.rippledShading.image);
-    std::printf("     4x wading unit: %llu ripple steps; the depth copy holds one sample per pixel, up to %.2f%% off "
-                "the water depth at the pixel centre; at that depth the normals of %zu water pixels near the path "
+    const CopiedSurfaceDepths& surface = frames.surface;
+    std::printf("     4x wading unit: %llu ripple steps; the depth copy holds one sample per pixel: at both ends of "
+                "%zu water rows, %zu inside their pixels, ends %.4f%% apart at most, up to %.2f%% off the water "
+                "depth at the pixel centre; at the row's depth the normals of %zu water pixels near the path "
                 "against the 7552035 slope: %zu tilted, %zu outside it, worst %.2f/255; shading changed at %zu of %zu "
                 "pixels near the path, %zu elsewhere\n",
-                static_cast<unsigned long long>(frames.stats.steps), frames.surface.largestCentreOffset * 100.0f,
-                normals.compared, normals.tilted, normals.outliers, normals.worst, path.changedNearPath,
-                path.nearPath, path.changedElsewhere);
+                static_cast<unsigned long long>(frames.stats.steps), surface.rowsRead, surface.rowsInsidePixels,
+                surface.largestRowSpread * 100.0f, surface.largestCentreOffset * 100.0f, normals.compared,
+                normals.tilted, normals.outliers, normals.worst, path.changedNearPath, path.nearPath,
+                path.changedElsewhere);
     PrintReshaded("4x rippled water", coverage);
+    Check(CopiedDepthFillsEachRow(surface),
+          "on a 4x device the copied water depth at both ends of every water row lies inside its pixel and the two "
+          "ends match within the depth copy's precision, so on the level, unrolled water one read per row gives "
+          "every pixel of the row its copied surface depth");
     Check(TaggedAndRestored(frames.rippledNormals) && TaggedAndRestored(frames.rippledShading) &&
               frames.calmNormals.began && frames.calmShading.began && frames.stats.shaded && frames.mapRead &&
-              frames.surface.read && FollowsForeverSlope(normals) && OnlyAroundThePath(path) &&
+              surface.read && FollowsForeverSlope(normals) && OnlyAroundThePath(path) &&
               EdgesBlendByCoverage(coverage),
           "on a 4x device a wading unit's ripples reach the shaded water: at the surface depth the copy holds, its "
           "normals follow the 7552035 slope within the single-sampled tolerances, the shading changes around its "

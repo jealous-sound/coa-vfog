@@ -679,13 +679,14 @@ value and code image, with the unit walk refused and the ripple map unsupported 
 creates a 4x device through the wrapper with the client's D24X8 depth (and D16) and its target-and-depth clear: the
 sample counts offered to the game, the kept back buffer and the D24S8 depth that replaces the stencil-less one, the
 fog and water on the copied depth against the drawn depth and a single-sampled frame, a wading unit's ripples in the
-4x water (the normals against the same slope at the surface depth the copy holds, one sample per pixel and up to 1%
-off the pixel centre's, the shading changed only around the path, and the tagged edges still blended by coverage),
-the fog blended by coverage at a silhouette in both blend modes and with a Classic layer's authored noise, `Reset`
-4x→1x→4x, the cost of the game's multisample list, and the fallbacks (`Multisampling=0`, no copy method, a failing
-self-test). It expects the copy method the DLL's own probe finds; without one it prints a `SKIP` line with the
-probe's reason instead of the 4x device checks. They do not establish in-game appearance or performance. It writes
-`before.png`, `after.png`, `overlay.png` and the debug views to `build/harness-out`.
+4x water (the copied surface depth inside its pixel and the same at both ends of each water row, so one read per row
+serves the level water in the unrolled view; the normals against the same slope at that depth, one sample per pixel
+and up to 1% off the pixel centre's; the shading changed only around the path; and the tagged edges still blended by
+coverage), the fog blended by coverage at a silhouette in both blend modes and with a Classic layer's authored
+noise, `Reset` 4x→1x→4x, the cost of the game's multisample list, and the fallbacks (`Multisampling=0`, no copy
+method, a failing self-test). It expects the copy method the DLL's own probe finds; without one it prints a `SKIP`
+line with the probe's reason instead of the 4x device checks. They do not establish in-game appearance or
+performance. It writes `before.png`, `after.png`, `overlay.png` and the debug views to `build/harness-out`.
 
 `vfog_harness --scene harbour <dir> --data data/fogdata.bin` renders the logged in-game frame at the
 Stormwind harbour (sunset, far clip 791.6 yd) with ideal depth and with the client's depth range, and
