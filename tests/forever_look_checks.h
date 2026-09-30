@@ -356,15 +356,32 @@ void CheckCompensationTakesTheDeliveredByte()
           "when a client glow of 1.1 wraps), not the clamped DayNight glow 1.0");
 }
 
+bool Delivered()
+{
+    float amount = -1.0f;
+    return vf_test_delivered_glow(&amount) != 0;
+}
+
 void CheckFrameEndWithoutWorldDone()
 {
     FakeGlowGraph graph(kUntouchedGlowByte);
     UseForeverGlow(true);
+    const ForeverLookFrame frame = GlowFrame(graph, kFullCoverage, kForeverContinentGlow);
+    vf_test_use_forever_look_frame(&frame);
     vf_test_hook_frame_end();
-    float amount = -1.0f;
-    const bool delivered = vf_test_delivered_glow(&amount) != 0;
-    Check(graph.BothLists(kUntouchedGlowByte) && !delivered,
-          "a frame end without a world done writes no glow byte and reports no delivered glow");
+    const bool untouchedWithoutWorldDone = graph.BothLists(kUntouchedGlowByte);
+    const bool deliveredWithoutWorldDone = Delivered();
+    vf_test_forever_look_world_done();
+    const bool fedAtWorldDone = graph.BothLists(0);
+    vf_test_hook_frame_end();
+    vf_test_hook_frame_end();
+    std::printf("     frame end alone: glow bytes %s; after world done, frame end and another frame end: %u/%u\n",
+                untouchedWithoutWorldDone ? "untouched" : "written", graph.GlowByte(kClearViewList),
+                graph.GlowByte(kUnderwaterList));
+    Check(untouchedWithoutWorldDone && !deliveredWithoutWorldDone && fedAtWorldDone &&
+              graph.BothLists(kUntouchedGlowByte) && !Delivered(),
+          "a frame end without a world done writes no glow byte into a graph the DLL could feed and reports no "
+          "delivered glow, and a second frame end after a fed frame changes nothing");
 }
 
 struct PatchedRange
