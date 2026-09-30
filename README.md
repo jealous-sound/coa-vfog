@@ -204,9 +204,10 @@ starting and stopping each stir it once:
   floor near the unit, while a raised footprint's arms are crests that light up from the unit backwards (checked on
   the `--scene ripples` renders, where the lowered one also looked darker at the unit's feet). A new footprint fades
   in smoothly over 1 s, and a unit no longer seen keeps its footprint where it was last seen while it fades out over
-  the 0.5 s its track is kept, so neither makes a ring. A unit that moves farther in a frame than 40 yd/s plus 0.5 yd
-  allows (a blink, a teleport, a summon) drags nothing across the jump: its footprint starts again where it landed
-  and fades in, and the one it left is released at once. When the ripple map starts again (first use, a
+  the 0.5 s its track is kept, so neither fade makes a ring of its own; a unit that vanishes while moving has still
+  stopped where it was last seen and leaves the one ring of a stop. A unit that moves farther in a frame than 40 yd/s
+  plus 0.5 yd allows (a blink, a teleport, a summon) drags nothing across the jump: its footprint starts again where
+  it landed and fades in, and the one it left is released at once. When the ripple map starts again (first use, a
   `WaterQuality` change, 15 s without anything in the window), every footprint is placed anew and fades in.
 - *Wakes.* The recurrence below carries a disturbance at 1/√2 texel a step, 2.65 yd/s, fading by √0.97 a step
   (2.2 s amplitude e-folding at 30 Hz). A standing footprint settles into a still mound with a skirt that falls off
