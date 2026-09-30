@@ -28,6 +28,13 @@ constexpr float kGroundFogFalloff = 1.0f / 18.0f;
 constexpr float kGroundFogBelowEye = 4.0f;
 constexpr FitErrorLimits kGroundFogLimits = {0.03f, 0.06f};
 constexpr FitErrorLimits kHarbourLimits = {0.03f, 0.04f};
+constexpr float kDistantFogDensity = 0.004f;
+constexpr float kDistantFogStart = 150.0f;
+constexpr float kDistantFogLimit = 0.2f;
+constexpr float kFarCheckDepth = 600.0f;
+constexpr float kFarCheckDepthStep = 5.0f;
+constexpr float kFarReportDepths[] = {200.0f, 400.0f, 600.0f};
+constexpr float kStatedFarDeparture = 0.45f;
 constexpr float kEmissiveFog = 0.3f;
 constexpr float kFitExposure = 1.2f;
 constexpr float kFitGlow = 0.5f;
@@ -298,6 +305,74 @@ void CheckFittedColour()
           "gamma-encoded and glow-compensated in linear light, with the lighting colour's alpha");
 }
 
+float AxisDeparture(const FogParams& fog, const FrameInputs& in, const StockFogFit& fit, float viewDepth)
+{
+    return FittedClientFactor(fit, viewDepth) -
+           ReferenceTransmittance(fog, in.camPos[2], in.cameraRelativeView[10], viewDepth);
+}
+
+float LargestAxisDeparture(const FogParams& drawn, const FrameInputs& in, const StockFogFit& fit, float from,
+                           float to)
+{
+    const FogParams fog = WithMeanNoise(drawn);
+    float largest = 0.0f;
+    for (float z = from; z <= to; z += kFarCheckDepthStep)
+        largest = std::fmax(largest, std::fabs(AxisDeparture(fog, in, fit, z)));
+    return largest;
+}
+
+void CheckFogBeyondTheNearRange(const View& v)
+{
+    FogParams fog = HomogeneousFog(kDistantFogDensity, kEmissiveFog);
+    fog.layers[0].start = kDistantFogStart;
+    const StockFogFit fit = FitStockFog(fog, v.in, {1.0f, 0.0f});
+    const float largest = LargestAxisDeparture(fog, v.in, fit, 0.0f, kFarCheckDepth);
+    std::printf("     fog from %.0f yd at %.3f/yd: fitted stock fog %s start %.1f end %.1f; largest |f - T| over "
+                "0..%.0f yd %.3f\n",
+                kDistantFogStart, kDistantFogDensity, fit.fogs ? "on," : "off,", fit.start, fit.end, kFarCheckDepth,
+                largest);
+    Check(fit.fogs && largest < kDistantFogLimit,
+          "fog that starts beyond 100 yd still fits a stock fog, over a range reaching to where the volumetric "
+          "transmittance halves, instead of leaving see-through models unfogged at every distance");
+}
+
+void PrintFarDeparture(const char* name, const FogParams& drawn, const FrameInputs& in, const StockFogFit& fit,
+                       float largest)
+{
+    const FogParams fog = WithMeanNoise(drawn);
+    std::printf("     %s: fitted end %.0f yd; f/T", name, fit.end);
+    for (float z : kFarReportDepths)
+        std::printf(" %.0f yd %.3f/%.3f", z, FittedClientFactor(fit, z),
+                    ReferenceTransmittance(fog, in.camPos[2], in.cameraRelativeView[10], z));
+    std::printf("; largest |f - T| over %.0f..%.0f yd %.3f\n", kStockFogFitDepth, kFarCheckDepth, largest);
+}
+
+void CheckFarDepartures(const View& v, const FogParams& harbourFog, const FrameInputs& harbour)
+{
+    struct FarCase
+    {
+        const char* name;
+        FogParams fog;
+        const FrameInputs* in;
+    };
+    const FarCase cases[] = {
+        {"homogeneous 0.002/yd", HomogeneousFog(kThinHomogeneousDensity, kEmissiveFog), &v.in},
+        {"Classic harbour sunset layers", harbourFog, &harbour},
+        {"derived layers", BuildFogParams(v.in, Config(), nullptr), &v.in},
+    };
+    bool withinStated = true;
+    for (const FarCase& c : cases)
+    {
+        const StockFogFit fit = FitStockFog(c.fog, *c.in, {1.0f, 0.0f});
+        const float largest = LargestAxisDeparture(c.fog, *c.in, fit, kStockFogFitDepth, kFarCheckDepth);
+        PrintFarDeparture(c.name, c.fog, *c.in, fit, largest);
+        withinStated = withinStated && fit.fogs && largest <= kStatedFarDeparture;
+    }
+    Check(withinStated,
+          "beyond 100 yd the line fitted to the first 100 yd departs from the volumetric transmittance by the "
+          "amounts the README and the INI state, within 0.45");
+}
+
 void CheckFitAgainstTheVolumetricFog(const FogData& classic)
 {
     const View v;
@@ -321,6 +396,8 @@ void CheckFitAgainstTheVolumetricFog(const FogData& classic)
     const StockFogFit none = FitStockFog(EmptyFog(), v.in, {1.0f, 0.0f});
     Check(!none.fogs, "fog-free parameters fit no stock fog");
     CheckFittedColour();
+    CheckFogBeyondTheNearRange(v);
+    CheckFarDepartures(v, harbourFog, harbour);
 }
 
 bool SameArgs(const M2BatchFogArgs& a, const M2BatchFogArgs& b)

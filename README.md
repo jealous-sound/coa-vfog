@@ -71,7 +71,10 @@ fog, its exponent 1, and its colour the fitted fog colour when the client passes
 the stock form of the modern client's per-material fog modes. The fit samples the volumetric transmittance and
 in-scatter within 100 yd along 15 rays across the view (weighted toward the centre, rise clamped to ±0.26) with the
 march's layer terms at the layers' mean noise, and solves the least-squares line in planar view depth, the depth
-the client's M2 shaders fog by; samples clamped to zero by the shader are refitted without. The colour is the
+the client's M2 shaders fog by; samples clamped to zero by the shader are refitted without. When the fog within
+100 yd is thin (weighted transmittance at 100 yd above 0.9, for example fog that begins farther out), the fitted range
+grows smoothly toward the depth where the transmittance along the view axis halves, which it reaches when the first
+100 yd are clear (above 0.995); only a view clear of fog to the far clip fits no fog. The colour is the
 in-scatter over the opacity, exposed, rolled off, gamma-encoded and glow-compensated as the composite shows it. God
 rays are traced from the scene copied just before the early composite, the unfogged image the single composite traces
 them from, and added over the finished world at the end of the world render, over a new scene copy. Under water,

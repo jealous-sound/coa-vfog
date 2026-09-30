@@ -11,9 +11,11 @@ constexpr float kFitNdcRows[] = {-0.6f, 0.0f, 0.6f};
 constexpr int kFitRays = static_cast<int>(std::size(kFitNdcColumns) * std::size(kFitNdcRows));
 constexpr float kCentreWeightFalloff = 1.5f;
 constexpr int kFitDepthSteps = 25;
-constexpr float kFitStepDepth = kStockFogFitDepth / kFitDepthSteps;
+constexpr int kProfileSteps = 32;
 constexpr float kMaxFitRise = 0.26f;
+constexpr float kThinNearFogTransmittance = 0.9f;
 constexpr float kFogFreeTransmittance = 0.995f;
+constexpr float kExtendedFitTransmittance = 0.5f;
 constexpr double kMinFogSlope = -1.0e-6;
 constexpr float kClampedTransmittance = 0.02f;
 constexpr float kMinFogOpacity = 1.0e-4f;
@@ -40,6 +42,12 @@ struct DepthSample
 };
 
 using RaySamples = DepthSample[kFitDepthSteps + 1];
+
+struct TransmittanceProfile
+{
+    float stepDepth;
+    float transmittance[kProfileSteps + 1];
+};
 
 struct WeightedLine
 {
@@ -83,9 +91,15 @@ void Normalize3(float* v)
         v[i] /= length;
 }
 
-float SampleDepth(int step)
+float SampleDepth(int step, float stepDepth)
 {
-    return static_cast<float>(step) * kFitStepDepth;
+    return static_cast<float>(step) * stepDepth;
+}
+
+float SmoothStep(float edge0, float edge1, float x)
+{
+    const float t = std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
 }
 
 float PhaseHG(float g, float cosAngle)
@@ -150,17 +164,18 @@ float StepOpacity(float opticalDepth)
                : 1.0f - std::exp(-opticalDepth);
 }
 
-void IntegrateRay(const FogParams& fog, const FitRay& fitRay, const FrameInputs& in, RaySamples& samples)
+void IntegrateRay(const FogParams& fog, const FitRay& fitRay, const FrameInputs& in, float stepDepth, int steps,
+                  DepthSample* samples)
 {
     const RayLight ray = {Dot3(in.toLight, fitRay.world), fog.lightAboveHorizon, in.camPos[2],
                           std::clamp(fitRay.world[2], -kMaxFitRise, kMaxFitRise), fog.maxDistance};
     float transmittance = 1.0f;
     float inScatter[3] = {};
     samples[0] = {1.0f, {0.0f, 0.0f, 0.0f}};
-    for (int step = 0; step < kFitDepthSteps; ++step)
+    for (int step = 0; step < steps; ++step)
     {
-        const float stepStart = SampleDepth(step) * fitRay.distancePerViewDepth;
-        const float stepEnd = SampleDepth(step + 1) * fitRay.distancePerViewDepth;
+        const float stepStart = SampleDepth(step, stepDepth) * fitRay.distancePerViewDepth;
+        const float stepEnd = SampleDepth(step + 1, stepDepth) * fitRay.distancePerViewDepth;
         float radiance[3] = {};
         float opticalDepth = 0.0f;
         for (const FogLayer& layer : fog.layers)
@@ -198,25 +213,35 @@ int BuildFitRays(const FrameInputs& in, FitRay* rays)
     return count;
 }
 
-bool Clamped(double slope, double intercept, int step, float transmittance)
+void IntegrateRays(const FogParams& fog, const FitRay* rays, int rayCount, const FrameInputs& in, float stepDepth,
+                   RaySamples* samples)
 {
-    return slope * SampleDepth(step) + intercept <= 0.0 && transmittance < kClampedTransmittance;
+    for (int r = 0; r < rayCount; ++r)
+        IntegrateRay(fog, rays[r], in, stepDepth, kFitDepthSteps, samples[r]);
 }
 
-bool FitTransmittanceLine(const FitRay* rays, const RaySamples* samples, int rayCount, double& slope,
-                          double& intercept)
+bool Clamped(double slope, double intercept, float depth, float transmittance)
+{
+    return slope * depth + intercept <= 0.0 && transmittance < kClampedTransmittance;
+}
+
+bool FitTransmittanceLine(const FitRay* rays, const RaySamples* samples, int rayCount, float stepDepth,
+                          double& slope, double& intercept)
 {
     WeightedLine all;
     for (int r = 0; r < rayCount; ++r)
         for (int step = 0; step <= kFitDepthSteps; ++step)
-            all.Add(SampleDepth(step), samples[r][step].transmittance, rays[r].weight);
+            all.Add(SampleDepth(step, stepDepth), samples[r][step].transmittance, rays[r].weight);
     if (!all.Solve(slope, intercept))
         return false;
     WeightedLine unclamped;
     for (int r = 0; r < rayCount; ++r)
         for (int step = 0; step <= kFitDepthSteps; ++step)
-            if (!Clamped(slope, intercept, step, samples[r][step].transmittance))
-                unclamped.Add(SampleDepth(step), samples[r][step].transmittance, rays[r].weight);
+        {
+            const float depth = SampleDepth(step, stepDepth);
+            if (!Clamped(slope, intercept, depth, samples[r][step].transmittance))
+                unclamped.Add(depth, samples[r][step].transmittance, rays[r].weight);
+        }
     double refinedSlope = 0.0;
     double refinedIntercept = 0.0;
     if (unclamped.Solve(refinedSlope, refinedIntercept))
@@ -227,7 +252,7 @@ bool FitTransmittanceLine(const FitRay* rays, const RaySamples* samples, int ray
     return true;
 }
 
-float FarTransmittance(const FitRay* rays, const RaySamples* samples, int rayCount)
+float WindowEndTransmittance(const FitRay* rays, const RaySamples* samples, int rayCount)
 {
     float weighted = 0.0f;
     float weights = 0.0f;
@@ -237,6 +262,45 @@ float FarTransmittance(const FitRay* rays, const RaySamples* samples, int rayCou
         weights += rays[r].weight;
     }
     return weights > 0.0f ? weighted / weights : 1.0f;
+}
+
+const FitRay& ViewAxisRay(const FitRay* rays, int rayCount)
+{
+    return *std::max_element(rays, rays + rayCount,
+                             [](const FitRay& a, const FitRay& b) { return a.weight < b.weight; });
+}
+
+TransmittanceProfile ProfileToTheFarClip(const FogParams& fog, const FitRay& ray, const FrameInputs& in)
+{
+    TransmittanceProfile profile = {};
+    profile.stepDepth = std::max(kStockFogFitDepth, fog.farClip) / kProfileSteps;
+    DepthSample samples[kProfileSteps + 1];
+    IntegrateRay(fog, ray, in, profile.stepDepth, kProfileSteps, samples);
+    for (int step = 0; step <= kProfileSteps; ++step)
+        profile.transmittance[step] = samples[step].transmittance;
+    return profile;
+}
+
+float DepthWhereTransmittanceFalls(const TransmittanceProfile& profile, float level)
+{
+    for (int step = 1; step <= kProfileSteps; ++step)
+    {
+        const float before = profile.transmittance[step - 1];
+        const float after = profile.transmittance[step];
+        if (after > level)
+            continue;
+        const float along = before > after ? (before - level) / (before - after) : 0.0f;
+        return SampleDepth(step - 1, profile.stepDepth) + along * profile.stepDepth;
+    }
+    return SampleDepth(kProfileSteps, profile.stepDepth);
+}
+
+float ExtendedWindowDepth(const TransmittanceProfile& profile, float nearTransmittance)
+{
+    const float reach = SmoothStep(kThinNearFogTransmittance, kFogFreeTransmittance, nearTransmittance);
+    const float extended =
+        std::max(DepthWhereTransmittanceFalls(profile, kExtendedFitTransmittance), kStockFogFitDepth);
+    return kStockFogFitDepth + reach * (extended - kStockFogFitDepth);
 }
 
 float RollOffHighlight(float colour)
@@ -295,12 +359,20 @@ StockFogFit FitStockFog(const FogParams& drawn, const FrameInputs& in, const Sto
     if (rayCount == 0)
         return {};
     RaySamples samples[kFitRays];
-    for (int r = 0; r < rayCount; ++r)
-        IntegrateRay(fog, rays[r], in, samples[r]);
+    float stepDepth = kStockFogFitDepth / kFitDepthSteps;
+    IntegrateRays(fog, rays, rayCount, in, stepDepth, samples);
+    const float nearTransmittance = WindowEndTransmittance(rays, samples, rayCount);
+    if (nearTransmittance > kThinNearFogTransmittance)
+    {
+        const TransmittanceProfile profile = ProfileToTheFarClip(fog, ViewAxisRay(rays, rayCount), in);
+        if (profile.transmittance[kProfileSteps] > kFogFreeTransmittance)
+            return {};
+        stepDepth = ExtendedWindowDepth(profile, nearTransmittance) / kFitDepthSteps;
+        IntegrateRays(fog, rays, rayCount, in, stepDepth, samples);
+    }
     double slope = 0.0;
     double intercept = 0.0;
-    if (FarTransmittance(rays, samples, rayCount) > kFogFreeTransmittance ||
-        !FitTransmittanceLine(rays, samples, rayCount, slope, intercept) || slope > kMinFogSlope)
+    if (!FitTransmittanceLine(rays, samples, rayCount, stepDepth, slope, intercept) || slope > kMinFogSlope)
         return {};
     StockFogFit fit;
     fit.fogs = true;
