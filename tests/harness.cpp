@@ -158,6 +158,7 @@ constexpr int kGripDragX = 160;
 constexpr int kGripDragY = 24;
 constexpr int kGripShrink = -2000;
 constexpr float kPanelSizeTolerance = 1.5f;
+constexpr float kBesideShrunkPanelGap = 4.0f;
 
 int g_failures = 0;
 
@@ -1709,7 +1710,24 @@ void ShowOverlay(Harness& h, bool visible)
     DrawOverlayFrames(kOverlaySettleFrames);
 }
 
-PanelRect CheckSettingsWindowResizes(Harness& h, const std::wstring& outDir)
+UINT PanelEdge(float edge, UINT limit)
+{
+    return static_cast<UINT>(std::clamp(edge, 0.0f, static_cast<float>(limit)));
+}
+
+double ChangeBesideShrunkPanel(const Image& under, const Image& drawn, const PanelRect& shrunk, const PanelRect& grown)
+{
+    const UINT left = PanelEdge(grown.x, drawn.w);
+    const UINT top = PanelEdge(grown.y, drawn.h);
+    const UINT right = PanelEdge(grown.x + grown.w, drawn.w);
+    const UINT bottom = PanelEdge(grown.y + grown.h, drawn.h);
+    const UINT shrunkRight = PanelEdge(shrunk.x + shrunk.w + kBesideShrunkPanelGap, right);
+    const UINT shrunkBottom = PanelEdge(shrunk.y + shrunk.h + kBesideShrunkPanelGap, bottom);
+    return MeanLumaChange(under, drawn, shrunkRight, top, right, bottom) +
+           MeanLumaChange(under, drawn, left, shrunkBottom, shrunkRight, bottom);
+}
+
+PanelRect CheckSettingsWindowResizes(Harness& h, const D3DVIEWPORT9& world, const std::wstring& outDir)
 {
     const bool wasVisible = vf_test_overlay_visible() != 0;
     ShowOverlay(h, true);
@@ -1718,14 +1736,21 @@ PanelRect CheckSettingsWindowResizes(Harness& h, const std::wstring& outDir)
     const PanelRect grown = DragGrip(h, first, kGripDragX, kGripDragY);
     const ClientInput seen = g_clientInput;
     const PanelRect smallest = DragGrip(h, grown, kGripShrink, kGripShrink);
+    const D3DVIEWPORT9 wholeBackBuffer = {0, 0, h.pp.BackBufferWidth, h.pp.BackBufferHeight, 0.0f, 1.0f};
+    h.dev->SetViewport(&wholeBackBuffer);
+    DrawEngineFrameWithoutPresent(h, world);
+    const Image underSmallest = Capture(h.dev);
+    vf_test_draw_overlay();
     const Image smallestImage = Capture(h.dev);
     SavePng(outDir + L"\\overlay-smallest.png", smallestImage.w, smallestImage.h, smallestImage.bgra);
+    const double besideSmallest = ChangeBesideShrunkPanel(underSmallest, smallestImage, smallest, grown);
     const PanelRect restored =
         DragGrip(h, smallest, static_cast<int>(grown.w - smallest.w), static_cast<int>(grown.h - smallest.h));
     std::printf("     settings window at %.0f, %.0f: %.0f x %.0f, after dragging its grip by %d, %d: %.0f x %.0f, "
-                "shrunk as far as it goes: %.0f x %.0f; the game saw %d presses and %d releases\n",
+                "shrunk as far as it goes: %.0f x %.0f (mean luma change beside it %.4f); the game saw %d presses and "
+                "%d releases\n",
                 first.x, first.y, first.w, first.h, kGripDragX, kGripDragY, grown.w, grown.h, smallest.w, smallest.h,
-                seen.mouseDowns, seen.mouseUps);
+                besideSmallest, seen.mouseDowns, seen.mouseUps);
     Check(first.known && NearPixels(first.x, kPanelMargin) && NearPixels(first.y, kPanelMargin) &&
               NearPixels(first.w, kPanelFirstWidth) && first.h > kPanelMinHeight,
           "the settings window opens 30 lines wide and as tall as the screen allows, 2 lines from the corner");
@@ -1736,6 +1761,9 @@ PanelRect CheckSettingsWindowResizes(Harness& h, const std::wstring& outDir)
     Check(NearPixels(smallest.w, kPanelMinWidth) && NearPixels(smallest.h, kPanelMinHeight) &&
               NearPixels(restored.w, grown.w) && NearPixels(restored.h, grown.h),
           "the settings window shrinks no further than 20 x 16 lines and grows back");
+    Check(besideSmallest == 0.0,
+          "the shrunk settings window draws nothing where the larger one was (overlay-smallest.png, drawn on a fresh "
+          "frame)");
     ShowOverlay(h, wasVisible);
     return restored;
 }
@@ -2291,7 +2319,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckOverlayWidgets(h);
     water_settings_checks::CheckSliderDragLoggedOnce(logBeforeWidgets);
     CheckOverlayDraw(h, world, outDir);
-    PanelRect panel = CheckSettingsWindowResizes(h, outDir);
+    PanelRect panel = CheckSettingsWindowResizes(h, world, outDir);
 
     h.ReleaseEngineObjects();
     const unsigned curveUploadsBeforeReset = forever_look_checks::CurveUploads();

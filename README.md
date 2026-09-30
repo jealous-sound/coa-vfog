@@ -940,8 +940,9 @@ and grading the Classic data resolves, the harbour's sunset halo hue with the sh
 integrals at every quality, the authored noise against the modern curve and a CPU sample of the noise volume, the noisy
 composites' full-resolution march at thin silhouettes, split sample sides included, temporal filtering and upsampling,
 point lights and interiors, the text and liquid depth overrides, fog-data validation, the GPU timer and depth probe, the
-settings window (dragging its resize grip, its minimum size, its size kept across a `Reset` and a new device) and
-INI saving, and `Reset`. The water suites check the water data and its loader, the FFT against a
+settings window (dragging its resize grip, its minimum size with nothing drawn where it was larger, its size kept
+across a `Reset` and a new device) and INI saving, and `Reset`. The water suites check the water data and its loader,
+the FFT against a
 double-precision reference, the liquid classification, the water pass driven through the hook entry points (state
 restoration, stencil tagging, optics against a CPU reference, fault recovery, the viewport's first column reshaded
 like the second on the single-sampled and the 4x device), the water settings, the packed foam
