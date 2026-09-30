@@ -462,6 +462,16 @@ bool BindTestTargets(IDirect3DDevice9* dev, IDirect3DSurface9* source, const D3D
     return true;
 }
 
+bool HasStencil(D3DFORMAT format)
+{
+    return format == D3DFMT_D15S1 || format == D3DFMT_D24S8 || format == D3DFMT_D24X4S4 || format == D3DFMT_D24FS8;
+}
+
+DWORD DepthClearFlags(D3DFORMAT format)
+{
+    return HasStencil(format) ? D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL : D3DCLEAR_ZBUFFER;
+}
+
 bool RunTestRounds(IDirect3DDevice9* dev, const DepthCopy& copy, IDirect3DSurface9* source,
                    IDirect3DTexture9* destination, const D3DSURFACE_DESC& desc, DepthCopyTest& test)
 {
@@ -488,7 +498,7 @@ bool RunTestRounds(IDirect3DDevice9* dev, const DepthCopy& copy, IDirect3DSurfac
             return false;
     }
     BindTestTargets(dev, source, desc);
-    dev->Clear(0, nullptr, D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL, 0, kClearedDepth, 0);
+    dev->Clear(0, nullptr, DepthClearFlags(desc.Format), 0, kClearedDepth, 0);
     return true;
 }
 }

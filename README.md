@@ -72,12 +72,13 @@ pre-water copies. Frames without queued water skip the pass entirely.
 passes read is a copy. `CheckDeviceMultiSampleType` offers the game's sample counts only while `Multisampling=1`
 and a copy method exists: `NvAPI_D3D9_StretchRectEx` on native NVIDIA D3D9 (the system `d3d9.dll` and
 `nvapi.dll`), or the driver's `RESZ` resolve where `CheckDeviceFormat` reports it (AMD, Intel, DXVK reporting an
-AMD GPU). When the device is created or reset multisampled, the DLL clears the game's depth to two known values,
-copies it and reads the copy back, twice with the values swapped, before the game sees the device; if that fails
-the device is created or reset single-sampled as before and the log says why. Each frame the depth is copied
-before the water pass arms, after the water surfaces and before the fog; the copy holds one sample per pixel. The
-scene-colour copies become resolves of the multisampled back buffer, and the water's stencil tags and shading are
-tested per sample, so water edges are antialiased too.
+AMD GPU). The game's D24X8 depth has no stencil, so the multisampled depth is created as D24S8 for the water
+tags and the silhouette split. When the device is created or reset multisampled, the DLL clears the game's depth
+to two known values, copies it and reads the copy back, twice with the values swapped, before the game sees the
+device; if that fails the device is created or reset single-sampled as before and the log says why. Each frame
+the depth is copied before the water pass arms, after the water surfaces and before the fog; the copy holds one
+sample per pixel. The scene-colour copies become resolves of the multisampled back buffer, and the water's stencil
+tags and shading are tested per sample, so water edges are antialiased too.
 
 At silhouettes the fog composite splits each pixel's samples by depth, so a pixel that is half tree and half sky
 resolves to the tree's and the sky's fog weighted by coverage instead of taking one of them. A small pass finds the
@@ -154,7 +155,10 @@ rates from fields 4–9. The water is tuned by eye against this mapping, not mat
   creates the device without auto depth and binds the `INTZ` texture as the depth-stencil, which the client caches
   as its world depth. When the game asks for multisampling and a depth copy passes its self-test (see
   Antialiasing), the device keeps the game's own parameters, a multisampled back buffer and automatic depth, and
-  the `INTZ` texture becomes an unbound copy that is refreshed before every pass that reads it.
+  the `INTZ` texture becomes an unbound copy that is refreshed before every pass that reads it. A game depth
+  format without an 8-bit stencil (the game asks for D24X8) is created as D24S8 once `CheckDeviceFormat`,
+  `CheckDepthStencilMatch` and `CheckDeviceMultiSampleType` accept it, and the game is handed back its own format;
+  otherwise the device stays single-sampled.
 - **Hooks.** Five 5-byte call displacements: the world render call (`0x4FB03D`, stock-fog override and restore),
   after the opaque M2 pass (`0x4F911D`, captures camera inputs), the liquid surface pass (`0x4F9170`, forces
   depth writes), world-name text (`0x7E5818`, suppresses depth writes), and before the frame effects
@@ -231,6 +235,18 @@ Engine notes behind the code:
   `0x76A8FA`) is clamped to 1..16 by its callback `0x769610`, stored at `0xCABCF8`, and prints
   "set pending gxRestart". Whether that restart resets or recreates the device is not established, so both
   `CreateDevice` and `Reset` choose between the copied and the bound `INTZ` depth.
+- Game depth format. The builder sets `EnableAutoDepthStencil` to 1 (`0x68E353`) and `AutoDepthStencilFormat` to
+  the table `0xA2E4A8` = {…, D16, D24X8, D24S8, D32} (indices 4–7) at the depth index `[0xCABCE8]`
+  (`0x68E356`–`0x68E360`); the samples come from `[0xCABCF8]` of the same block (`0x68E3B4`). The `gxDepthBits`
+  callback `0x7692D0` stores index 4 for "16", 5 for "24" and 7 for "32". At start-up `0x769950` and in the
+  Video options setter (`0x54FA46`–`0x54FAFD`) `gxDepthBits` is set through `CVar::Set` `0x7668C0` with the
+  callback forced (second argument 1), from the table `0xAD87C4`, which names index 6 (D24S8) "24" as well; so a
+  24-bit depth always becomes D24X8, which has no stencil. The client's clear `0x6A74B0` passes only
+  `D3DCLEAR_TARGET` and `D3DCLEAR_ZBUFFER` (its flags 1 and 2). On the RTX 2060 a 4x D24X8 depth rejects
+  `D3DCLEAR_STENCIL` (`D3DERR_INVALIDCALL`) and a stencil-EQUAL draw on it always passes, while
+  `NvAPI_D3D9_StretchRectEx` copies it into `INTZ` without error; the water tags and the silhouette split need the
+  stencil, so the multisampled device is created with D24S8 (the `INTZ` the single-sampled path binds is also
+  24-bit depth with an 8-bit stencil).
 - Depth copy. On an RTX 2060 Max-Q (driver 566.36, 32-bit process) `CheckDeviceFormat` does not report `RESZ`,
   the `POINTSIZE` resolve leaves `INTZ` unchanged and `StretchRect` from a D24S8 surface into `INTZ` is rejected,
   multisampled or not. `NvAPI_D3D9_StretchRectEx` copies 2x, 4x and 8x D24S8 exactly into a registered `INTZ`
@@ -372,7 +388,7 @@ ctest --test-dir build -C Release --output-on-failure
 ```
 
 This runs the comment check and `vfog_harness`, which creates a real D3D9 device through the wrapper with the
-client's flags (`0x52`, auto depth D24S8), renders a Z-up test scene with the client's projection convention,
+client's flags (`0x52`, auto depth D24X8), renders a Z-up test scene with the client's projection convention,
 and runs the fog passes through the same entry the hook uses. Its checks, in `tests/`, cover the device wrapper
 and state restoration, depth and sky handling, Classic light blending and slot selection, the march against CPU
 integrals at every quality, temporal filtering and upsampling, point lights and interiors, the text and liquid
@@ -380,11 +396,11 @@ depth overrides, fog-data validation, the GPU timer and depth probe, the setting
 `Reset`. The water suites check the water data and its loader, the FFT against a double-precision reference, the
 liquid classification, the water pass driven through the hook entry points (state restoration, stencil tagging,
 optics against a CPU reference, fault recovery) and the water settings. The multisampling suite creates a 4x
-device through the wrapper: the sample counts offered to the game, the kept back buffer and depth, the fog and
-water on the copied depth against the drawn depth and a single-sampled frame, the fog blended by coverage at a
-silhouette in both blend modes, `Reset` 4x→1x→4x, and the fallbacks (`Multisampling=0`, no copy method, a failing
-self-test). They do not establish in-game appearance or
-performance. It writes `before.png`, `after.png`,
+device through the wrapper with the client's D24X8 depth (and D16) and its target-and-depth clear: the sample
+counts offered to the game, the kept back buffer and the D24S8 depth that replaces the stencil-less one, the fog
+and water on the copied depth against the drawn depth and a single-sampled frame, the fog blended by coverage at
+a silhouette in both blend modes, `Reset` 4x→1x→4x, and the fallbacks (`Multisampling=0`, no copy method, a
+failing self-test). They do not establish in-game appearance or performance. It writes `before.png`, `after.png`,
 `overlay.png` and the debug views to `build/harness-out`.
 
 `vfog_harness --scene harbour <dir> --data data/fogdata.bin` renders the logged in-game frame at the
@@ -423,7 +439,8 @@ time it is classified; idle states (no water in view, camera under water) are lo
 example `settings: WaterFoam 1 -> 1.5, WaterWind 2 -> 4`.
 
 Each device creation logs the adapter (description, vendor and device IDs, driver version), the sample count
-the game requested and the one used, and either the depth copy method with its self-test result or why
+the game requested and the one used, the depth format it requested and the one bound (`INTZ` single-sampled,
+D24S8 in place of the game's D24X8 multisampled), and either the depth copy method with its self-test result or why
 multisampling is off (`Multisampling=0`, the game's option at 1x, no copy method on this driver, a failed
 self-test); `Reset` logs the same. The first time the game's Video options ask for a sample count, the log says
 whether multisampling is offered or hidden and why.
@@ -510,10 +527,11 @@ client's LUT grading is not reproduced, so colours still differ from Classic.
 - Multisampling is harness-checked only, with NVAPI on the RTX 2060; how the client restarts its display after a
   Multisampling change, the in-game cost and the look need an owner test. The `RESZ` path (AMD, Intel, DXVK
   reporting AMD) has not run on hardware; its self-test decides. DXVK on NVIDIA reports NVIDIA without an NVAPI
-  depth copy and stays single-sampled. The depth copy holds one sample per pixel, so the water shades a
-  partly covered edge pixel with that sample's depth. Multisampling does not smooth alpha-tested leaves and grass
-  (alpha-to-coverage is a follow-up), and without a copy method no post-process antialiasing replaces it (SMAA is
-  a follow-up).
+  depth copy and stays single-sampled. The multisampled depth is D24S8 where the game asks for D24X8 (or D16); a
+  driver without multisampled D24S8 keeps the game single-sampled. The depth copy holds one sample per pixel, so
+  the water shades a partly covered edge pixel with that sample's depth. Multisampling does not smooth
+  alpha-tested leaves and grass (alpha-to-coverage is a follow-up), and without a copy method no post-process
+  antialiasing replaces it (SMAA is a follow-up).
 - The silhouette split sees only the one-sample copy of the 3×3 neighbourhood: geometry thinner than a pixel that
   no copied sample hits takes the far fog, a pixel with three depth layers is split in two, and over the scene
   copy both sides blend with the resolved scene colour. On the RTX 2060 Max-Q at 1920×1080 (performance scene,

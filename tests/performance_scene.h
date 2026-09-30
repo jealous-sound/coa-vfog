@@ -450,7 +450,7 @@ int RunPerformance(D3DMULTISAMPLE_TYPE samples)
     h.pp.BackBufferHeight = 1080;
     h.pp.BackBufferFormat = D3DFMT_X8R8G8B8;
     h.pp.EnableAutoDepthStencil = TRUE;
-    h.pp.AutoDepthStencilFormat = D3DFMT_D24S8;
+    h.pp.AutoDepthStencilFormat = kClientDepthFormat;
     h.pp.MultiSampleType = samples;
     h.pp.hDeviceWindow = h.window;
     h.pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;

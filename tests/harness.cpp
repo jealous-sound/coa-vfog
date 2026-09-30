@@ -72,6 +72,7 @@ extern "C" __declspec(dllimport) void __cdecl vf_test_multisampling(Multisamplin
 namespace
 {
 constexpr D3DFORMAT kIntz = static_cast<D3DFORMAT>(MAKEFOURCC('I', 'N', 'T', 'Z'));
+constexpr D3DFORMAT kClientDepthFormat = D3DFMT_D24X8;
 constexpr float kPi = 3.14159265f;
 constexpr float kNear = 0.4f;
 constexpr float kFar = 1000.0f;
@@ -413,6 +414,7 @@ struct Harness
     IDirect3DPixelShader9* enginePs = nullptr;
     IDirect3DVertexDeclaration9* engineDecl = nullptr;
     D3DCOLOR clearColor = 0xFF6FA0DC;
+    DWORD clearFlags = D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL;
 
     void CreateEngineObjects()
     {
@@ -448,7 +450,7 @@ struct Harness
         dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
         for (DWORD t = 0; t < kFogPassTextureStages; ++t)
             dev->SetTexture(t, nullptr);
-        dev->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL, clearColor, 1.0f, 0);
+        dev->Clear(0, nullptr, clearFlags, clearColor, 1.0f, 0);
     }
 
     void DrawScene(Vec3 eye, const float* view, const float* engineProj, const D3DVIEWPORT9& vp)
@@ -1653,7 +1655,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     h.pp.BackBufferHeight = 720;
     h.pp.BackBufferFormat = D3DFMT_X8R8G8B8;
     h.pp.EnableAutoDepthStencil = TRUE;
-    h.pp.AutoDepthStencilFormat = D3DFMT_D24S8;
+    h.pp.AutoDepthStencilFormat = kClientDepthFormat;
     h.pp.hDeviceWindow = h.window;
     h.pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
     DWORD engineFlags = D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_PUREDEVICE | D3DCREATE_FPU_PRESERVE;
@@ -1674,7 +1676,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     h.dev->GetDeviceCaps(&caps);
     std::printf("     adapter %s, PS3 slots %lu, executed instructions %lu\n", adapter.Description,
                 caps.MaxPixelShader30InstructionSlots, caps.MaxPShaderInstructionsExecuted);
-    Check(h.pp.EnableAutoDepthStencil == TRUE && h.pp.AutoDepthStencilFormat == D3DFMT_D24S8,
+    Check(h.pp.EnableAutoDepthStencil == TRUE && h.pp.AutoDepthStencilFormat == kClientDepthFormat,
           "engine-visible depth parameters preserved");
     IDirect3DSurface9* depth = nullptr;
     h.dev->GetDepthStencilSurface(&depth);
@@ -2359,7 +2361,7 @@ int RunHarbour(const std::wstring& outDir, const std::string& dataPath)
     h.pp.BackBufferHeight = kHarbourHeight;
     h.pp.BackBufferFormat = D3DFMT_X8R8G8B8;
     h.pp.EnableAutoDepthStencil = TRUE;
-    h.pp.AutoDepthStencilFormat = D3DFMT_D24S8;
+    h.pp.AutoDepthStencilFormat = kClientDepthFormat;
     h.pp.hDeviceWindow = h.window;
     h.pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
     DWORD engineFlags = D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_PUREDEVICE | D3DCREATE_FPU_PRESERVE;

@@ -7,6 +7,8 @@ using Direct3DCreate = IDirect3D9*(WINAPI*)(UINT);
 constexpr D3DMULTISAMPLE_TYPE kFourSamples = D3DMULTISAMPLE_4_SAMPLES;
 constexpr DWORD kClientDeviceFlags =
     D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_PUREDEVICE | D3DCREATE_FPU_PRESERVE;
+constexpr DWORD kClientClearFlags = D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER;
+constexpr D3DFORMAT kStencilDepthFormat = D3DFMT_D24S8;
 constexpr unsigned kNvidiaVendorId = 0x10DE;
 constexpr D3DFORMAT kResz = static_cast<D3DFORMAT>(MAKEFOURCC('R', 'E', 'S', 'Z'));
 constexpr int kDepthCopyFromDriver = kDepthCopyMethodFromDriver;
@@ -100,7 +102,7 @@ bool DriverOffersResz(IDirect3D9* real)
         real->CheckDeviceFormat(0, D3DDEVTYPE_HAL, mode.Format, D3DUSAGE_RENDERTARGET, D3DRTYPE_SURFACE, kResz));
 }
 
-void PrepareParameters(Harness& m, D3DMULTISAMPLE_TYPE samples)
+void PrepareParameters(Harness& m, D3DMULTISAMPLE_TYPE samples, D3DFORMAT depthFormat)
 {
     m.pp = {};
     m.pp.Windowed = TRUE;
@@ -110,14 +112,14 @@ void PrepareParameters(Harness& m, D3DMULTISAMPLE_TYPE samples)
     m.pp.BackBufferFormat = D3DFMT_X8R8G8B8;
     m.pp.MultiSampleType = samples;
     m.pp.EnableAutoDepthStencil = TRUE;
-    m.pp.AutoDepthStencilFormat = D3DFMT_D24S8;
+    m.pp.AutoDepthStencilFormat = depthFormat;
     m.pp.hDeviceWindow = m.window;
     m.pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
 }
 
-bool OpenDevice(Harness& m, D3DMULTISAMPLE_TYPE samples)
+bool OpenDevice(Harness& m, D3DMULTISAMPLE_TYPE samples, D3DFORMAT depthFormat = kClientDepthFormat)
 {
-    PrepareParameters(m, samples);
+    PrepareParameters(m, samples, depthFormat);
     const HRESULT hr = m.d3d->CreateDevice(0, D3DDEVTYPE_HAL, m.window, kClientDeviceFlags, &m.pp, &m.dev);
     if (FAILED(hr) || !m.dev)
     {
@@ -168,7 +170,7 @@ Targets DescribeTargets(IDirect3DDevice9* dev)
 bool KeepsMultisampledTargets(const Targets& t)
 {
     return t.backBuffer.MultiSampleType == kFourSamples && t.depth.MultiSampleType == kFourSamples &&
-           t.depth.Format == D3DFMT_D24S8;
+           t.depth.Format == kStencilDepthFormat;
 }
 
 bool BindsSingleSampledIntz(const Targets& t)
@@ -648,13 +650,18 @@ void CheckMultisampledDevice(Harness& m, const std::wstring& outDir)
 {
     Config keep = MultisamplingConfig(true);
     vf_test_set_config(&keep);
+    const size_t logStart = water_settings_checks::DllLogSize();
     const bool opened = OpenDevice(m, kFourSamples);
     const Targets created = opened ? DescribeTargets(m.dev) : Targets();
     const MultisamplingStatus status = CurrentStatus();
     PrintTargets("4x requested", created, status);
     Check(opened && m.pp.MultiSampleType == kFourSamples && m.pp.EnableAutoDepthStencil == TRUE &&
               KeepsMultisampledTargets(created) && Kept(status),
-          "with Multisampling=1 CreateDevice keeps the game's 4x back buffer and its 4x automatic depth");
+          "with Multisampling=1 CreateDevice keeps the game's 4x back buffer and a 4x automatic depth");
+    Check(opened && m.pp.AutoDepthStencilFormat == kClientDepthFormat &&
+              runtime_cost::HasLine(runtime_cost::LogWrittenSince(logStart), "depth requested D24X8 used D24S8"),
+          "the game's D24X8 depth has no stencil for the water tags and the silhouette split, so the 4x depth is "
+          "created as D24S8, logged, and the game still sees its own format");
     if (!opened)
         return;
     D3DDEVICE_CREATION_PARAMETERS cp = {};
@@ -687,7 +694,9 @@ void CheckMultisampledDevice(Harness& m, const std::wstring& outDir)
     CheckWaterMatchesSingleSampled(multisampledWater, singleWater);
     CheckSilhouetteMatchesSingleSampled(multisampledSilhouette, RenderSilhouetteFrames(m));
 
+    const size_t resetLogStart = water_settings_checks::DllLogSize();
     const bool again = ResetTo(m, kFourSamples);
+    const std::string resetLog = runtime_cost::LogWrittenSince(resetLogStart);
     const Targets reset4x = DescribeTargets(m.dev);
     const MultisamplingStatus status4x = CurrentStatus();
     PrintTargets("Reset to 4x", reset4x, status4x);
@@ -696,7 +705,29 @@ void CheckMultisampledDevice(Harness& m, const std::wstring& outDir)
     Check(again && m.pp.MultiSampleType == kFourSamples && KeepsMultisampledTargets(reset4x) && Kept(status4x) &&
               FogFrameDrawn(fog4x),
           "Reset from 1x back to 4x keeps the game's multisampling and the fog draws on a fresh depth copy");
+    Check(m.pp.AutoDepthStencilFormat == kClientDepthFormat &&
+              runtime_cost::HasLine(resetLog, "depth requested D24X8 used D24S8"),
+          "Reset to 4x also creates the game's D24X8 depth as D24S8, logs it and hands the game its own format");
     vf_test_set_water_seconds(water_checks::kRealTime);
+    CloseDevice(m);
+}
+
+void CheckStencilLessDepthFormat(Harness& m, D3DFORMAT format, const char* name)
+{
+    Config keep = MultisamplingConfig(true);
+    vf_test_set_config(&keep);
+    const bool opened = OpenDevice(m, kFourSamples, format);
+    const Targets targets = opened ? DescribeTargets(m.dev) : Targets();
+    const MultisamplingStatus status = CurrentStatus();
+    const std::string requested = std::string("4x with ") + name + " requested";
+    PrintTargets(requested.c_str(), targets, status);
+    FogFrame frame;
+    if (opened)
+        frame = RenderFogOverDepthQuads(m);
+    PrintFogFrame(requested.c_str(), frame);
+    Check(opened && KeepsMultisampledTargets(targets) && Kept(status) && m.pp.AutoDepthStencilFormat == format &&
+              FogFrameDrawn(frame),
+          (std::string("with a ") + name + " depth requested, 4x is kept on a D24S8 depth and the fog draws").c_str());
     CloseDevice(m);
 }
 
@@ -737,6 +768,7 @@ void CheckMultisampling(Direct3DCreate realCreate, HWND window, const std::wstri
     IDirect3D9* real = realCreate(D3D_SDK_VERSION);
     Harness m;
     m.window = window;
+    m.clearFlags = kClientClearFlags;
     m.d3d = vf_test_wrap_direct3d9(realCreate, D3D_SDK_VERSION);
     Check(real && m.d3d, "a second wrapped Direct3D9 for the multisampling checks");
     if (!real || !m.d3d)
@@ -749,7 +781,10 @@ void CheckMultisampling(Direct3DCreate realCreate, HWND window, const std::wstri
     CheckVideoOptionsOffer(m, real, driverCopies);
     CheckFallbacks(m, real);
     if (driverCopies)
+    {
         CheckMultisampledDevice(m, outDir);
+        CheckStencilLessDepthFormat(m, D3DFMT_D16, "D16");
+    }
     Config shipped = {};
     vf_test_set_config(&shipped);
     const ULONG refs = m.d3d->Release();
