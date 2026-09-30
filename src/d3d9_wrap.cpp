@@ -1,5 +1,6 @@
 #include "d3d9_wrap.h"
 
+#include "client_ripple_sprites.h"
 #include "log.h"
 #include "msaa_depth.h"
 #include "overlay.h"
@@ -911,6 +912,7 @@ FogDevice::FogDevice(WrappedD3D9* parent, IDirect3DDevice9* real, bool fog, D3DF
 
 FogDevice::~FogDevice()
 {
+    GlobalClientRippleSprites().Restore();
     DetachOverlay(m_real);
     Unregister(this);
     AbortWater();
@@ -1132,6 +1134,7 @@ WaterPassEnd FogDevice::EndWater()
     end.skipReason = end.shaded ? "" : m_water.LastSkipReason();
     end.flatWaves = end.shaded && !m_water.WavesSimulated();
     end.shadedClasses = end.shaded ? m_water.ShadedClasses() : 0u;
+    end.ripplesAvailable = m_water.RipplesAvailable();
     return end;
 }
 
@@ -1286,4 +1289,19 @@ int UploadedWaterMasks(FogDevice* device)
 int LastWaterShadingVariant(FogDevice* device)
 {
     return device ? device->Water().LastShadingVariant() : -1;
+}
+
+int RequiredWaterMasks(FogDevice* device)
+{
+    return device ? device->Water().RequiredMasks() : 0;
+}
+
+void ReadWaterRippleStats(FogDevice* device, WaterRippleStats& out)
+{
+    out = device ? device->Water().RippleStats() : WaterRippleStats();
+}
+
+void ReadWaterRippleShading(FogDevice* device, WaterRippleShading& out)
+{
+    out = device ? device->Water().RippleShading() : WaterRippleShading();
 }

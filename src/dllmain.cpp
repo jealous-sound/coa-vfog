@@ -1,3 +1,4 @@
+#include "client_ripple_sprites.h"
 #include "config.h"
 #include "d3d9_wrap.h"
 #include "engine.h"
@@ -65,6 +66,8 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID)
         DisableThreadLibraryCalls(instance);
         Attach(instance);
     }
+    if (reason == DLL_PROCESS_DETACH)
+        GlobalClientRippleSprites().Restore();
     return TRUE;
 }
 
@@ -273,8 +276,9 @@ extern "C" void __cdecl vf_test_fail_water_mask_uploads(int count)
     FailWaterMaskUploads(count);
 }
 
-extern "C" int __cdecl vf_test_water_masks_uploaded()
+extern "C" int __cdecl vf_test_water_masks_uploaded(int* required)
 {
+    *required = RequiredWaterMasks(LatestFogDevice());
     return UploadedWaterMasks(LatestFogDevice());
 }
 
@@ -306,4 +310,40 @@ extern "C" void __cdecl vf_test_multisampling(MultisamplingStatus* status)
 extern "C" void __cdecl vf_test_probe_depth_copy(IDirect3D9* d3d, DepthCopyProbe* probe)
 {
     *probe = ProbeDepthCopy(d3d, D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL);
+}
+
+extern "C" void __cdecl vf_test_water_ripple_stats(WaterRippleStats* out)
+{
+    ReadWaterRippleStats(LatestFogDevice(), *out);
+}
+
+extern "C" void __cdecl vf_test_water_ripple_shading(WaterRippleShading* out)
+{
+    ReadWaterRippleShading(LatestFogDevice(), *out);
+}
+
+extern "C" unsigned __cdecl vf_test_water_contact_reads()
+{
+    return TestWaterContactReads();
+}
+
+extern "C" void __cdecl vf_test_refuse_water_contacts(int refused)
+{
+    RefuseTestWaterContacts(refused != 0);
+}
+
+extern "C" void __cdecl vf_test_inject_water_ripple_fault(int fault)
+{
+    InjectWaterRippleFault(static_cast<WaterRippleFault>(fault));
+}
+
+extern "C" int __cdecl vf_test_bind_client_ripple_gate(volatile int32_t* gate, uintptr_t codeBase,
+                                                       const unsigned char* code, size_t codeSize)
+{
+    return GlobalClientRippleSprites().Bind(gate, {codeBase, code, codeSize}) ? 1 : 0;
+}
+
+extern "C" void __cdecl vf_test_update_client_ripple_sprites(int allowed, int shaded, double seconds)
+{
+    GlobalClientRippleSprites().Update(allowed != 0, shaded != 0, seconds);
 }

@@ -119,10 +119,12 @@ target_compile_definitions(imgui
             IMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS WIN32_LEAN_AND_MEAN NOMINMAX)
 
 add_library(CoAVolFog SHARED
+    src/client_ripple_sprites.cpp
     src/config.cpp
     src/d3d9_wrap.cpp
     src/dllmain.cpp
     src/engine.cpp
+    src/engine_actors.cpp
     src/engine_lights.cpp
     src/fog_data.cpp
     src/fog_model.cpp
@@ -135,9 +137,11 @@ add_library(CoAVolFog SHARED
     src/renderer.cpp
     src/settings_panel.cpp
     src/status_log.cpp
+    src/water_contacts.cpp
     src/water_data.cpp
     src/water_fft.cpp
     src/water_renderer.cpp
+    src/water_ripples.cpp
     src/water_spectrum.cpp
     src/CoAVolFog.def)
 add_dependencies(CoAVolFog vf_shaders)
@@ -150,9 +154,11 @@ add_library(version SHARED proxy/version_proxy.cpp proxy/version.def)
 target_link_libraries(version PRIVATE CoAVolFog)
 target_compile_definitions(version PRIVATE WIN32_LEAN_AND_MEAN)
 
-add_executable(vfog_harness tests/harness.cpp src/config.cpp src/engine_lights.cpp
+add_executable(vfog_harness tests/harness.cpp src/client_ripple_sprites.cpp src/config.cpp src/engine_actors.cpp
+               src/engine_lights.cpp
                src/fog_data.cpp src/fog_model.cpp src/gpu_timing.cpp src/log.cpp src/noise_volume.cpp
-               src/water_data.cpp src/water_spectrum.cpp src/water_fft.cpp src/status_log.cpp)
+               src/water_contacts.cpp src/water_data.cpp src/water_spectrum.cpp src/water_fft.cpp
+               src/water_ripples.cpp src/status_log.cpp)
 target_include_directories(vfog_harness PRIVATE src ${SHADER_OUT})
 target_compile_definitions(vfog_harness PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(vfog_harness PRIVATE CoAVolFog user32 ole32 windowscodecs)

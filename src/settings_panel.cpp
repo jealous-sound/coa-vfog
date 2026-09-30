@@ -21,7 +21,8 @@ const char* const kLogLevelNames[] = {"Errors", "Info", "Debug"};
 const char* const kWaterQualityNames[] = {"Low: 128 waves, sky reflections only",
                                           "Medium: 256 waves, scene reflections",
                                           "High: 256 waves, finer scene reflections"};
-const char* const kWaterDebugViewNames[] = {"Off", "Normals", "Foam", "Transmittance", "Reflection", "Liquid class"};
+const char* const kWaterDebugViewNames[] = {"Off",        "Normals",      "Foam",   "Transmittance",
+                                           "Reflection", "Liquid class", "Ripples"};
 
 template <int N>
 bool Choice(const char* label, int& value, int first, const char* const (&names)[N], const char* help)
@@ -255,6 +256,11 @@ bool DrawWater(Config& c)
     changed |= Slider("Zone colours", c.waterZoneColors, 0.0f, 1.0f, "%.2f",
                       "How much the zone's own water colours from the client's lights tint the water, 0 = the modern "
                       "colours only");
+    changed |= Slider("Ripples", c.waterRipples, 0.0f, 2.0f, "%.2f",
+                      "Ripples and wakes from players, creatures, pets and mounts moving through water, 0 = none");
+    changed |= Toggle("Client splashes", c.waterClientSplashes,
+                      "Keep the client's own flat splash and wake sprites while the ripples run; off hides them for "
+                      "every unit, also those beyond the ripples' reach");
     changed |= Choice("Water view", c.waterDebugView, 0, kWaterDebugViewNames,
                       "Show one input of the water shading instead of the scene");
     return changed;

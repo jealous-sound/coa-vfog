@@ -5,7 +5,10 @@
 #include "fog_model.h"
 #include "gpu_timing.h"
 #include "msaa_depth.h"
+#include "water_contacts.h"
+#include "water_data.h"
 #include "water_fft.h"
+#include "water_ripples.h"
 #include "water_types.h"
 
 #include <d3d9.h>
@@ -15,6 +18,7 @@
 #include <vector>
 
 void OverrideWaterSeconds(double seconds);
+double WaterClockSeconds();
 void DisableWaveSimulation(bool disabled);
 void ForcePackedWaterDepth(bool forced);
 
@@ -37,6 +41,7 @@ constexpr int kWaterStencilStates = 9;
 constexpr unsigned kWaterSceneCopiesHeld = 0x1;
 constexpr unsigned kWaterWaveMapsHeld = 0x2;
 constexpr unsigned kWaterFoamMasksHeld = 0x4;
+constexpr unsigned kWaterRippleMapsHeld = 0x8;
 
 class WaterRenderer
 {
@@ -59,6 +64,10 @@ public:
     unsigned HeldResources() const;
     int FoamMaskPool() const;
     int UploadedMasks() const;
+    int RequiredMasks() const { return static_cast<int>(m_foamMasks.size()); }
+    WaterRippleStats RippleStats() const;
+    WaterRippleShading RippleShading() const;
+    bool RipplesAvailable() const { return m_ripplesAvailable; }
     int LastShadingVariant() const { return m_shadingVariant; }
     const char* LastSkipReason() const { return m_skip; }
 
@@ -108,6 +117,17 @@ private:
         Float4 depthDecode;
         Float4 maskTints[kWaterShadedMaskSlots * 2];
         ReflectionFog reflectionFog;
+        Float4 rippleWindow;
+        Float4 rippleShape;
+        Float4 rippleFade;
+    };
+
+    struct FoamMaskTexture
+    {
+        int32_t sources[kWaveFoamMaskSlots];
+        bool packed;
+        bool present[kWaveFoamMaskSlots];
+        IDirect3DTexture9* texture;
     };
 
     struct SavedTargets
@@ -124,9 +144,13 @@ private:
     bool EnsureStateBlock(IDirect3DDevice9* dev);
     bool EnsureCopies(IDirect3DDevice9* dev, IDirect3DSurface9* target, UINT w, UINT h);
     bool EnsureFlatTexture(IDirect3DDevice9* dev);
+    void PlanFoamMasks(const WaterData& data);
     void EnsureMasks(IDirect3DDevice9* dev);
     void ReleaseMasks();
+    const FoamMaskTexture* SingleMask(int32_t index) const;
+    const FoamMaskTexture* WaveFoamMasks(const WaterPreset& preset) const;
     IDirect3DTexture9* MaskTexture(int32_t index) const;
+    bool MaskPresent(const WaterPreset& preset, int slot) const;
     bool UsableTargets(IDirect3DSurface9* depthSurface, const D3DVIEWPORT9& vp, D3DSURFACE_DESC& depthDesc);
     void SaveTargets(IDirect3DDevice9* dev);
     void ReleaseTargets();
@@ -143,6 +167,11 @@ private:
     uint32_t DrawnTileMask() const;
     bool PrepareWaves(IDirect3DDevice9* dev);
     bool SimulateWaves(IDirect3DDevice9* dev, double seconds);
+    bool RippleContinuityBroken(double seconds) const;
+    void RestartRipples();
+    void ReleaseRipples();
+    bool SimulateRipples(IDirect3DDevice9* dev, double seconds);
+    void FillRippleConstants(double seconds);
     void LogWaveState();
     void ShadeClasses(IDirect3DDevice9* dev, IDirect3DSurface9* target, IDirect3DSurface9* depthSurface,
                       double seconds);
@@ -166,7 +195,8 @@ private:
     IDirect3DTexture9* m_sceneDepth = nullptr;
     IDirect3DTexture9* m_waterDepth = nullptr;
     IDirect3DTexture9* m_flat = nullptr;
-    std::vector<IDirect3DTexture9*> m_masks;
+    std::vector<FoamMaskTexture> m_foamMasks;
+    bool m_masksPlanned = false;
     bool m_masksUploaded = false;
     int m_maskRetryPasses = 0;
     uint32_t m_maskRevision = 0;
@@ -205,7 +235,21 @@ private:
     unsigned m_summaryClasses = 0;
     int m_summaryWaveResolution = 0;
     int m_summaryWaveTiles = 0;
+    int m_summaryRippleTexels = 0;
+    uint32_t m_summaryContacts = 0;
+    uint32_t m_summaryDroppedSteps = 0;
     double m_lastSeconds = -1.0;
+    WaterRipples m_ripples;
+    WaterContactTracker m_contacts;
+    Float4 m_rippleWindow = {};
+    Float4 m_rippleShape = {};
+    Float4 m_rippleFade = {};
+    int m_rippleMapId = 0;
+    double m_lastRippleSeconds = -1.0;
+    uint32_t m_rippleRestarts = 0;
+    bool m_ripplesShaded = false;
+    bool m_ripplesAvailable = true;
+    const char* m_loggedRippleFailure = "";
     const char* m_loggedWaveState = "";
     bool m_waveStateLogged = false;
     bool m_loggedFirstShade = false;

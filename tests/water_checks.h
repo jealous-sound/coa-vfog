@@ -84,6 +84,7 @@ constexpr unsigned kAllWaterResources = 0x7;
 constexpr int kFoamClockSteps = 20;
 constexpr double kFoamClockStep = 0.1;
 constexpr int kFoamCoverageDebugView = 2;
+constexpr int32_t kSolidFoamMask = 0;
 constexpr float kWhitecapWind = 8.0f;
 constexpr float kBeachWaterlineX = kBasinFarX - (kLandZ - kWaterSurfaceZ) * (kBasinFarX - kBeachStartX) /
                                                     (kLandZ - kBasinFloorZ);
@@ -464,6 +465,7 @@ struct WaterFrame
     bool fogDepthView = false;
     int fault = kNoWaterFault;
     IDirect3DSurface9* depthAtEnd = nullptr;
+    bool otherPass = true;
 };
 
 struct WaterFrameResult
@@ -551,8 +553,9 @@ public:
             DrawStrip(frame.hiddenTaggedStrips[i], true, hooked, false, result);
         for (int i = 0; i < frame.coverCount; ++i)
             DrawStrip(frame.covers[i], tagged, hooked, frame.opaqueMask, result);
-        m_h.DrawPretransformedQuadAtRawDepth(kOtherPassLeft, kOtherPassTop, kOtherPassRight, kOtherPassBottom,
-                                             kOtherPassRawDepth, kOtherPassColour);
+        if (frame.otherPass)
+            m_h.DrawPretransformedQuadAtRawDepth(kOtherPassLeft, kOtherPassTop, kOtherPassRight, kOtherPassBottom,
+                                                 kOtherPassRawDepth, kOtherPassColour);
         ApplyClientDrawState();
         IDirect3DSurface9* clientDepth = nullptr;
         if (frame.depthAtEnd)
@@ -589,6 +592,8 @@ public:
     }
 
     const WaterView& View() const { return m_v; }
+    void UseView(const WaterView& view) { m_v = view; }
+    void UseScene(std::vector<SceneVertex> scene) { m_scene = std::move(scene); }
 
 private:
     void BeginClientFrame()
@@ -1440,8 +1445,9 @@ void CheckWaterGpuTimeSummary(BasinClient& client, const Config& base)
         at != std::string::npos && std::sscanf(text.c_str() + at, format, &medianMs, &frames, &skipped, details) == 4;
     std::printf("     water summary: %.3f ms over %u frames, %u skipped, %s\n", medianMs, frames, skipped, details);
     Check(began && parsed && frames > 0 && medianMs > 0.0f &&
-              std::strcmp(details, "classes lake, waves 256 (3 tiles)") == 0,
-          "the water summary reports the water pass's GPU time, the classes shaded and the wave simulation");
+              std::strcmp(details, "classes lake, waves 256 (3 tiles), ripples idle, up to 0 contacts") == 0,
+          "the water summary reports the water pass's GPU time, the classes shaded, the wave simulation and the idle "
+          "ripples");
     const Config on = WaterConfig(base);
     vf_test_set_config(&on);
 }
@@ -1557,19 +1563,19 @@ void CheckFailedFoamMaskUploadsRetry(BasinClient& client, const Config& base)
     const Config on = WaterConfig(base);
     vf_test_set_config(&on);
     const SyntheticWaterData data = MakeSyntheticWaterData();
-    const int maskCount = static_cast<int>(data.maskInfo.size());
     const bool assigned = AssignWaterData(data);
     vf_test_fail_water_mask_uploads(1);
     WaterFrame frame;
     const WaterFrameResult failed = client.Render(frame);
-    const int afterFailure = vf_test_water_masks_uploaded();
+    int maskCount = 0;
+    const int afterFailure = vf_test_water_masks_uploaded(&maskCount);
     int passes = 0;
     int uploaded = afterFailure;
     while (uploaded < maskCount && passes < kMaxMaskRetryPasses)
     {
         client.Render(frame);
         ++passes;
-        uploaded = vf_test_water_masks_uploaded();
+        uploaded = vf_test_water_masks_uploaded(&maskCount);
     }
     vf_test_fail_water_mask_uploads(0);
     std::printf("     foam masks: %d of %d after a failed upload, %d after %d more water passes\n", afterFailure,
@@ -2237,6 +2243,44 @@ void CheckCrestFoamAccumulates(BasinClient& client, const Config& base, const Im
     AssignWaterData(MakeSyntheticWaterData());
 }
 
+SyntheticWaterData SingleWaveFoamMask(int slot)
+{
+    SyntheticWaterData data = WaveFoamOnlyLake();
+    for (WaterPreset& preset : data.presets)
+    {
+        const bool waveFoam =
+            std::any_of(preset.masks, preset.masks + kWaveFoamMaskSlots, [](int32_t mask) { return mask >= 0; });
+        for (int wave = 0; waveFoam && wave < kWaveFoamMaskSlots; ++wave)
+            preset.masks[wave] = wave == slot ? kSolidFoamMask : kWaterNoIndex;
+    }
+    return data;
+}
+
+void CheckEachWaveFoamLayerReadsItsChannel(BasinClient& client, const Config& base, const Image& mask)
+{
+    bool rendered = true;
+    double coverage[kWaveFoamMaskSlots] = {};
+    for (int slot = 0; slot < kWaveFoamMaskSlots; ++slot)
+    {
+        rendered = AssignWaterData(SingleWaveFoamMask(slot)) && rendered;
+        WaterFrame frame;
+        const CrestFoamResult foam = AccumulateCrestFoam(client, WaterConfig(base), frame, mask);
+        rendered = rendered && foam.rendered;
+        coverage[slot] = foam.coverageAfter;
+    }
+    const double high = coverage[static_cast<int>(WaterMaskSlot::HighFoam)];
+    const double mid = coverage[static_cast<int>(WaterMaskSlot::MidFoam)];
+    const double low = coverage[static_cast<int>(WaterMaskSlot::LowFoam)];
+    std::printf("     crest foam coverage with only the high, mid or low wave-foam mask: %.0f, %.0f, %.0f\n", high,
+                mid, low);
+    Check(rendered && high > 0.0 && mid > high && low > mid,
+          "each wave-foam layer reads its own channel of the packed mask texture: a preset with only the high, mid or "
+          "low mask shades crest foam, weighted by f^4.5, f^1.5 and f^0.5");
+    const Config on = WaterConfig(base);
+    vf_test_set_config(&on);
+    AssignWaterData(MakeSyntheticWaterData());
+}
+
 void CheckRealDataViews(Harness& h, const Config& base, const std::string& waterDataPath, const std::wstring& outDir)
 {
     const bool loaded = vf_test_load_water_data(waterDataPath.c_str()) != 0;
@@ -2377,6 +2421,7 @@ void CheckWaterPass(Harness& h, const std::wstring& outDir, const std::string& w
     CheckReflectionsCarryTheirSourcesFog(h, base);
     CheckSkyReflectionsCarryTheSkysFog(h, base);
     CheckCrestFoamAccumulates(client, base, waterMask.image);
+    CheckEachWaveFoamLayerReadsItsChannel(client, base, waterMask.image);
     CheckResetKeepsWater(h, client, base);
     CheckRealDataViews(h, base, waterDataPath, outDir);
 

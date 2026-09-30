@@ -1,3 +1,4 @@
+#include "client_ripple_sprites.h"
 #include "config.h"
 #include "engine.h"
 #include "fog_data.h"
@@ -6,8 +7,10 @@
 #include "log.h"
 #include "msaa_depth.h"
 #include "noise_volume.h"
+#include "water_contacts.h"
 #include "water_data.h"
 #include "water_fft.h"
+#include "water_ripples.h"
 #include "water_spectrum.h"
 #include "status_log.h"
 
@@ -65,13 +68,21 @@ extern "C" __declspec(dllimport) const void* __cdecl vf_test_water_pass_thunk(ui
 extern "C" __declspec(dllimport) void __cdecl vf_test_water_pass_begin_reuses_argument_slot(int);
 extern "C" __declspec(dllimport) void __cdecl vf_test_record_fog_frame(int, int, const char*);
 extern "C" __declspec(dllimport) void __cdecl vf_test_fail_water_mask_uploads(int);
-extern "C" __declspec(dllimport) int __cdecl vf_test_water_masks_uploaded();
+extern "C" __declspec(dllimport) int __cdecl vf_test_water_masks_uploaded(int*);
 extern "C" __declspec(dllimport) void __cdecl vf_test_force_water_shading_variant(int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_water_shading_variant();
 extern "C" __declspec(dllimport) void __cdecl vf_test_force_depth_copy_method(int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_read_scene_depth(const DepthTexel*, int, float*);
 extern "C" __declspec(dllimport) void __cdecl vf_test_multisampling(MultisamplingStatus*);
 extern "C" __declspec(dllimport) void __cdecl vf_test_probe_depth_copy(IDirect3D9*, DepthCopyProbe*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_water_ripple_stats(WaterRippleStats*);
+extern "C" __declspec(dllimport) void __cdecl vf_test_water_ripple_shading(WaterRippleShading*);
+extern "C" __declspec(dllimport) unsigned __cdecl vf_test_water_contact_reads();
+extern "C" __declspec(dllimport) void __cdecl vf_test_refuse_water_contacts(int);
+extern "C" __declspec(dllimport) void __cdecl vf_test_inject_water_ripple_fault(int);
+extern "C" __declspec(dllimport) int __cdecl vf_test_bind_client_ripple_gate(volatile int32_t*, uintptr_t,
+                                                                             const unsigned char*, size_t);
+extern "C" __declspec(dllimport) void __cdecl vf_test_update_client_ripple_sprites(int, int, double);
 
 namespace
 {
@@ -1635,8 +1646,14 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
 #include "water_data_checks.h"
 #include "water_settings_checks.h"
 #include "water_fft_checks.h"
+#include "water_mask_packing_checks.h"
+#include "water_contact_checks.h"
+#include "water_ripple_checks.h"
 #include "water_checks.h"
 #include "multisampling_checks.h"
+#include "water_ripple_pass_checks.h"
+#include "ripple_scene.h"
+#include "client_sprite_checks.h"
 
 void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3 at,
                                    const float* proj, const D3DVIEWPORT9& world)
@@ -1780,6 +1797,9 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckSunOccluderLeavesFogLit(h);
     classic_phase::CheckSunsetHaloKeepsItsHue(h, FullPath(iniPath));
     water_fft_checks::CheckWaterFft(h.dev);
+    water_mask_packing_checks::CheckWaveFoamMaskPacking(h.dev);
+    water_contact_checks::CheckWaterContacts();
+    water_ripple_checks::CheckWaterRipples(h.dev);
     const float aspect = 1280.0f / 688.0f;
     const D3DVIEWPORT9 world = {0, 0, 1280, 688, 0.0f, 1.0f};
     float proj[16];
@@ -2099,7 +2119,13 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckWorldTextDepthIsolation(h);
     Config restored = cfg;
     vf_test_set_config(&restored);
+    water_checks::CheckWaterRipplePass(h, outDir);
+    vf_test_set_config(&restored);
+    client_sprite_checks::CheckClientSprites(h);
+    vf_test_set_config(&restored);
     water_checks::CheckWaterPass(h, outDir, waterDataPath);
+    vf_test_set_config(&restored);
+    ripple_scene::CheckRingsShowInShadedWater(h, outDir, waterDataPath);
     vf_test_set_config(&restored);
 
     CheckOverlayInput(h);
@@ -2145,7 +2171,9 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
 
     vf_test_set_config(&restored);
     h.ReleaseEngineObjects();
+    client_sprite_checks::HoldGateForDeviceRelease();
     ULONG devRefs = h.dev->Release();
+    client_sprite_checks::CheckDeviceReleaseRestoresTheGate();
     ULONG d3dRefs = h.d3d->Release();
     Check(devRefs == 0 && d3dRefs == 0, "wrapper reference counts reach zero");
     multisampling_checks::CheckMultisampling(realCreate, h.window, outDir, FullPath(iniPath));
@@ -2668,9 +2696,11 @@ int wmain(int argc, wchar_t** argv)
         return RunHarbour(out, data, harbour);
     if (scene == L"performance")
         return RunPerformance(samples);
+    if (scene == L"ripples")
+        return ripple_scene::RunRippleScene(out, waterData);
     if (!scene.empty())
     {
-        std::printf("unknown scene %ls (known: harbour, performance)\n", scene.c_str());
+        std::printf("unknown scene %ls (known: harbour, performance, ripples)\n", scene.c_str());
         return 2;
     }
     return Run(out, data, ini, waterData);

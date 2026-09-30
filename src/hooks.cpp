@@ -1,10 +1,12 @@
 #include "hooks.h"
 
+#include "client_ripple_sprites.h"
 #include "config.h"
 #include "d3d9_wrap.h"
 #include "engine.h"
 #include "log.h"
 #include "water_classify.h"
+#include "water_renderer.h"
 #include "status_log.h"
 
 #include <windows.h>
@@ -56,6 +58,8 @@ bool g_waterPassBeginReusesArgumentSlot = false;
 FogDevice* g_waterPassDevice = nullptr;
 FogDevice* g_waterResourcesDevice = nullptr;
 bool g_waterPassRanThisFrame = false;
+bool g_waterShadedThisFrame = false;
+bool g_waterRipplesAvailable = true;
 unsigned g_waterClassesThisPass = 0;
 WaterFrameStatus g_waterStatus = {false, "waiting for the world to render"};
 StatusLog g_waterLog;
@@ -170,6 +174,8 @@ struct WaterClient
     FogDevice* (*device)();
     bool (*frameInputs)(FrameInputs& in);
     bool (*waterInputs)(WaterInputs& water);
+    void (*contacts)(const FrameInputs& in, WaterContactFrame& out);
+    bool (*contactsSupported)();
     WaterClass (*classify)(const void* liquidSettings);
 };
 
@@ -190,7 +196,16 @@ bool GameWaterInputs(WaterInputs& water)
     return true;
 }
 
-const WaterClient kGameWaterClient = {&GameFogDevice, &GameWaterFrameInputs, &GameWaterInputs,
+void GameWaterContacts(const FrameInputs& in, WaterContactFrame& out)
+{
+    engine::CaptureWaterContacts(in.camTarget, out);
+}
+
+const WaterClient kGameWaterClient = {&GameFogDevice,
+                                      &GameWaterFrameInputs,
+                                      &GameWaterInputs,
+                                      &GameWaterContacts,
+                                      &engine::WaterContactsSupported,
                                       &engine::ClassifyWaterSettings};
 
 FrameInputs g_testWaterFrame = {};
@@ -208,12 +223,27 @@ bool TestWaterInputs(WaterInputs& water)
     return true;
 }
 
+unsigned g_testWaterContactReads = 0;
+bool g_testWaterContactsRefused = false;
+
+void TestWaterContacts(const FrameInputs&, WaterContactFrame& out)
+{
+    out = g_testWaterInputs.contacts;
+    ++g_testWaterContactReads;
+}
+
+bool TestWaterContactsSupported()
+{
+    return !g_testWaterContactsRefused;
+}
+
 WaterClass TestWaterClass(const void* liquidSettings)
 {
     return liquidSettings ? static_cast<WaterClass>(*static_cast<const int*>(liquidSettings)) : WaterClass::None;
 }
 
-const WaterClient kTestWaterClient = {&LatestFogDevice, &TestWaterFrameInputs, &TestWaterInputs, &TestWaterClass};
+const WaterClient kTestWaterClient = {&LatestFogDevice,   &TestWaterFrameInputs,       &TestWaterInputs,
+                                      &TestWaterContacts, &TestWaterContactsSupported, &TestWaterClass};
 const WaterClient* g_waterClient = &kGameWaterClient;
 
 void RecordFogFrame(bool rendered, bool cameraUnderLiquid, const char* skip)
@@ -357,6 +387,9 @@ WaterArming ArmWaterPass(FogDevice* device, const Config& cfg, const char** reas
         *reason = "the client's water colours are unavailable";
         return WaterArming::Failed;
     }
+    water.contacts = {};
+    if (cfg.waterRipples > 0.0f)
+        g_waterClient->contacts(in, water.contacts);
     const char* skip = "";
     if (BeginWaterPass(device, in, water, cfg, &skip))
         return WaterArming::Armed;
@@ -407,8 +440,12 @@ void OnWaterPassEnd()
         return;
     const WaterPassEnd end = EndWaterPass(g_waterPassDevice);
     g_waterPassDevice = nullptr;
+    g_waterShadedThisFrame = g_waterShadedThisFrame || end.shaded;
     if (end.shaded)
+    {
+        g_waterRipplesAvailable = end.ripplesAvailable;
         RecordWaterDrawn(end.shadedClasses, end.flatWaves);
+    }
     else if (!g_waterClassesThisPass)
         RecordWaterIdle("no water in view");
     else
@@ -441,6 +478,19 @@ void ReleaseWaterWhenOff()
         ReleaseWaterResources(device);
 }
 
+bool RingsReplaceClientSprites(const Config& cfg)
+{
+    return !g_waterFailed && cfg.water && cfg.waterRipples > 0.0f && !cfg.waterClientSplashes &&
+           g_waterRipplesAvailable && g_waterClient->contactsSupported();
+}
+
+void UpdateClientRippleSprites()
+{
+    const bool allowed = RingsReplaceClientSprites(GlobalConfig().Get());
+    GlobalClientRippleSprites().Update(allowed, g_waterShadedThisFrame, WaterClockSeconds());
+    g_waterShadedThisFrame = false;
+}
+
 void EndWaterFrame()
 {
     if (!g_waterHooksInstalled)
@@ -453,6 +503,7 @@ void EndWaterFrame()
     else if (!g_waterPassRanThisFrame)
         RecordWaterIdle("no liquid pass in this frame");
     g_waterPassRanThisFrame = false;
+    UpdateClientRippleSprites();
     ReleaseWaterWhenOff();
 }
 
@@ -467,6 +518,7 @@ int WaterGuardFilter(unsigned code, const char* where)
 void FailWater()
 {
     g_waterFailed = true;
+    GlobalClientRippleSprites().Restore();
     __try
     {
         AbortArmedWaterPass();
@@ -1000,6 +1052,8 @@ bool InstallWaterHooks()
     VF_LOG_INFO("water hooks installed: water pass 0x%08X, material render slots 0x%08X and 0x%08X",
                 static_cast<unsigned>(engine::kWaterPassSite), static_cast<unsigned>(engine::kWaterMaterialRenderSlot),
                 static_cast<unsigned>(engine::kWaterNoSpecMaterialRenderSlot));
+    GlobalClientRippleSprites().Bind(reinterpret_cast<volatile int32_t*>(engine::kWaterRipplesCommandValue),
+                                     ClientCodeView());
     return true;
 }
 
@@ -1014,6 +1068,16 @@ void UseTestWaterClient(const FrameInputs& in, const WaterInputs& water)
     g_testWaterInputs = water;
     g_waterClient = &kTestWaterClient;
     g_waterHooksInstalled = true;
+}
+
+unsigned TestWaterContactReads()
+{
+    return g_testWaterContactReads;
+}
+
+void RefuseTestWaterContacts(bool refused)
+{
+    g_testWaterContactsRefused = refused;
 }
 
 bool TagHookedWaterDraw(const void* liquidSettings)

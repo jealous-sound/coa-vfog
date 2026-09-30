@@ -38,6 +38,7 @@ struct WaterPassEnd
     const char* skipReason = "no fog device";
     bool flatWaves = false;
     unsigned shadedClasses = 0;
+    bool ripplesAvailable = false;
 };
 
 WaterPassEnd EndWaterPass(FogDevice* device);
@@ -47,4 +48,10 @@ unsigned HeldWaterResources(FogDevice* device);
 bool WaterPassArmed(FogDevice* device);
 int WaterFoamMaskPool(FogDevice* device);
 int UploadedWaterMasks(FogDevice* device);
+int RequiredWaterMasks(FogDevice* device);
 int LastWaterShadingVariant(FogDevice* device);
+
+struct WaterRippleStats;
+struct WaterRippleShading;
+void ReadWaterRippleStats(FogDevice* device, WaterRippleStats& out);
+void ReadWaterRippleShading(FogDevice* device, WaterRippleShading& out);
