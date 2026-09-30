@@ -229,7 +229,7 @@ void CheckFrameSummaryLogsClassicExtras(Harness& h)
     std::printf("     storm summary noise line: %s\n",
                 noiseLine == std::string::npos ? "missing" : noisy.substr(noiseLine, noisy.find('\n', noiseLine) -
                                                                                         noiseLine).c_str());
-    Check(HasLine(noisy, "  Classic glow ") && HasLine(noisy, "(not rendered)") &&
+    Check(HasLine(noisy, "  Classic glow ") && HasLine(noisy, "(ForeverGlow 0, ColorGrading 0.00)") &&
               HasLine(noisy, " noise: share 1.00, drawn alpha 1.00;"),
           "the frame summary logs the Classic glow, the grading curve and each noisy layer's drawn noise");
     Check(HasLine(quiet, " noise: share 1.00, drawn alpha 0.00 (off: ClassicNoise=0);"),
