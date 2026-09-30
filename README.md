@@ -890,6 +890,13 @@ and every other line; settings not changed in the window keep what the file hold
 and a hand edit of the file also replaces unsaved changes. The window shows whether the fog drew in the last
 frame, or why it did not, and whether the game's multisampling is kept, or why it is off.
 
+The window opens 30 lines wide and up to 42 lines tall (less on a short screen), 2 lines from the top left corner,
+and can be moved and resized from its edges and its lower right grip, down to 20 x 16 lines and up to the screen
+less that margin. The settings scroll; the water and antialiasing status and the Save row stay at the bottom, the
+status lines cut to the width with the whole text in their tooltips; the sliders take the width left beside their
+labels. Nothing is written to an ImGui ini file: the window keeps its place and size for the session, also when the
+game resets or recreates its display, and opens at the default again after a restart.
+
 While the window is open, clicks and the wheel go to it only while the cursor is over it or a drag started on
 it, and keys only while one of its text fields is active (Ctrl+click on a slider). The hotkey never reaches the
 client; mouse moves and key-ups always do, so no game key sticks. The window is drawn in the wrapper's
@@ -929,7 +936,8 @@ and grading the Classic data resolves, the harbour's sunset halo hue with the sh
 integrals at every quality, the authored noise against the modern curve and a CPU sample of the noise volume, the noisy
 composites' full-resolution march at thin silhouettes, split sample sides included, temporal filtering and upsampling,
 point lights and interiors, the text and liquid depth overrides, fog-data validation, the GPU timer and depth probe, the
-settings window and INI saving, and `Reset`. The water suites check the water data and its loader, the FFT against a
+settings window (dragging its resize grip, its minimum size, its size kept across a `Reset` and a new device) and
+INI saving, and `Reset`. The water suites check the water data and its loader, the FFT against a
 double-precision reference, the liquid classification, the water pass driven through the hook entry points (state
 restoration, stencil tagging, optics against a CPU reference, fault recovery, the viewport's first column reshaded
 like the second on the single-sampled and the 4x device), the water settings, the packed foam

@@ -11,6 +11,7 @@ EXPORTS
     vf_test_suppress_depth_write
     vf_test_overlay_visible
     vf_test_draw_overlay
+    vf_test_settings_window
     vf_test_assign_water_data
     vf_test_load_water_data
     vf_test_water_begin

@@ -137,6 +137,16 @@ extern "C" void __cdecl vf_test_draw_overlay()
     DrawOverlay(RealDevice(LatestFogDevice()));
 }
 
+extern "C" int __cdecl vf_test_settings_window(float* rect)
+{
+    const PanelPlacement placement = OverlayPanelPlacement();
+    rect[0] = placement.position[0];
+    rect[1] = placement.position[1];
+    rect[2] = placement.size[0];
+    rect[3] = placement.size[1];
+    return placement.known ? 1 : 0;
+}
+
 extern "C" int __cdecl vf_test_assign_water_data(const WaterPreset* presets, int presetCount, const WaterFftTile* tiles,
                                                  int tileCount, const WaterMaskView* masks, int maskCount)
 {

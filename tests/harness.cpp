@@ -45,6 +45,7 @@ extern "C" __declspec(dllimport) void __cdecl vf_test_force_depth_write(int);
 extern "C" __declspec(dllimport) void __cdecl vf_test_suppress_depth_write(int);
 extern "C" __declspec(dllimport) int __cdecl vf_test_overlay_visible();
 extern "C" __declspec(dllimport) void __cdecl vf_test_draw_overlay();
+extern "C" __declspec(dllimport) int __cdecl vf_test_settings_window(float*);
 extern "C" __declspec(dllimport) int __cdecl vf_test_assign_water_data(const WaterPreset*, int,
                                                                        const WaterFftTile*, int,
                                                                        const WaterMaskView*, int);
@@ -147,6 +148,16 @@ constexpr int kDensitySliderY = 197;
 constexpr int kDensitySliderGrabX = 60;
 constexpr int kDensitySliderDragX = 250;
 constexpr float kDensityAfterDragAtLeast = 2.5f;
+constexpr float kPanelLinePixels = 16.0f;
+constexpr float kPanelFirstWidth = 30.0f * kPanelLinePixels;
+constexpr float kPanelMinWidth = 20.0f * kPanelLinePixels;
+constexpr float kPanelMinHeight = 16.0f * kPanelLinePixels;
+constexpr float kPanelMargin = 2.0f * kPanelLinePixels;
+constexpr int kGripInset = 4;
+constexpr int kGripDragX = 160;
+constexpr int kGripDragY = 24;
+constexpr int kGripShrink = -2000;
+constexpr float kPanelSizeTolerance = 1.5f;
 
 int g_failures = 0;
 
@@ -1659,6 +1670,89 @@ void CheckOverlayDraw(Harness& h, const D3DVIEWPORT9& world, const std::wstring&
     DrawOverlayFrames(1);
 }
 
+struct PanelRect
+{
+    float x = 0.0f;
+    float y = 0.0f;
+    float w = 0.0f;
+    float h = 0.0f;
+    bool known = false;
+
+    int GripX() const { return static_cast<int>(x + w) - kGripInset; }
+    int GripY() const { return static_cast<int>(y + h) - kGripInset; }
+};
+
+PanelRect SettingsWindow()
+{
+    float rect[4] = {};
+    const bool known = vf_test_settings_window(rect) != 0;
+    return {rect[0], rect[1], rect[2], rect[3], known};
+}
+
+bool NearPixels(float a, float b)
+{
+    return std::fabs(a - b) <= kPanelSizeTolerance;
+}
+
+PanelRect DragGrip(Harness& h, const PanelRect& from, int dx, int dy)
+{
+    DragAcross(h.window, ClientPointOfBackBufferPixel(h, from.GripX(), from.GripY()),
+               ClientPointOfBackBufferPixel(h, from.GripX() + dx, from.GripY() + dy));
+    DrawOverlayFrames(kOverlaySettleFrames);
+    return SettingsWindow();
+}
+
+void ShowOverlay(Harness& h, bool visible)
+{
+    if ((vf_test_overlay_visible() != 0) != visible)
+        PressHotkey(h.window, kDefaultOverlayHotkey);
+    DrawOverlayFrames(kOverlaySettleFrames);
+}
+
+PanelRect CheckSettingsWindowResizes(Harness& h, const std::wstring& outDir)
+{
+    const bool wasVisible = vf_test_overlay_visible() != 0;
+    ShowOverlay(h, true);
+    const PanelRect first = SettingsWindow();
+    g_clientInput = {};
+    const PanelRect grown = DragGrip(h, first, kGripDragX, kGripDragY);
+    const ClientInput seen = g_clientInput;
+    const PanelRect smallest = DragGrip(h, grown, kGripShrink, kGripShrink);
+    const Image smallestImage = Capture(h.dev);
+    SavePng(outDir + L"\\overlay-smallest.png", smallestImage.w, smallestImage.h, smallestImage.bgra);
+    const PanelRect restored =
+        DragGrip(h, smallest, static_cast<int>(grown.w - smallest.w), static_cast<int>(grown.h - smallest.h));
+    std::printf("     settings window at %.0f, %.0f: %.0f x %.0f, after dragging its grip by %d, %d: %.0f x %.0f, "
+                "shrunk as far as it goes: %.0f x %.0f; the game saw %d presses and %d releases\n",
+                first.x, first.y, first.w, first.h, kGripDragX, kGripDragY, grown.w, grown.h, smallest.w, smallest.h,
+                seen.mouseDowns, seen.mouseUps);
+    Check(first.known && NearPixels(first.x, kPanelMargin) && NearPixels(first.y, kPanelMargin) &&
+              NearPixels(first.w, kPanelFirstWidth) && first.h > kPanelMinHeight,
+          "the settings window opens 30 lines wide and as tall as the screen allows, 2 lines from the corner");
+    Check(NearPixels(grown.w, first.w + kGripDragX) && NearPixels(grown.h, first.h + kGripDragY) &&
+              NearPixels(grown.x, first.x) && NearPixels(grown.y, first.y),
+          "dragging the settings window's resize grip through the window procedure resizes it");
+    Check(seen.mouseDowns == 0 && seen.mouseUps == 0, "the resize grip keeps its press and release from the game");
+    Check(NearPixels(smallest.w, kPanelMinWidth) && NearPixels(smallest.h, kPanelMinHeight) &&
+              NearPixels(restored.w, grown.w) && NearPixels(restored.h, grown.h),
+          "the settings window shrinks no further than 20 x 16 lines and grows back");
+    ShowOverlay(h, wasVisible);
+    return restored;
+}
+
+void CheckSettingsWindowKeepsItsSize(Harness& h, const PanelRect& expected, const char* what)
+{
+    const bool wasVisible = vf_test_overlay_visible() != 0;
+    ShowOverlay(h, true);
+    const PanelRect now = SettingsWindow();
+    ShowOverlay(h, wasVisible);
+    std::printf("     settings window %.0f x %.0f at %.0f, %.0f (expected %.0f x %.0f)\n", now.w, now.h, now.x, now.y,
+                expected.w, expected.h);
+    Check(now.known && NearPixels(now.w, expected.w) && NearPixels(now.h, expected.h) &&
+              NearPixels(now.x, expected.x) && NearPixels(now.y, expected.y),
+          what);
+}
+
 #include "authored_fog_checks.h"
 #include "fog_integration_checks.h"
 #include "local_lights_checks.h"
@@ -2197,6 +2291,7 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     CheckOverlayWidgets(h);
     water_settings_checks::CheckSliderDragLoggedOnce(logBeforeWidgets);
     CheckOverlayDraw(h, world, outDir);
+    PanelRect panel = CheckSettingsWindowResizes(h, outDir);
 
     h.ReleaseEngineObjects();
     const unsigned curveUploadsBeforeReset = forever_look_checks::CurveUploads();
@@ -2225,6 +2320,10 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     DrawOverlayFrames(kOverlaySettleFrames);
     Check(OverlayProbeChange(beforeOverlay, Capture(h.dev)) > 0.05, "the overlay draws again after Reset");
     PressHotkey(h.window, kDefaultOverlayHotkey);
+    panel.h = std::min(panel.h, static_cast<float>(h.pp.BackBufferHeight) - kPanelMargin);
+    CheckSettingsWindowKeepsItsSize(h, panel,
+                                    "after a Reset to a smaller back buffer the settings window keeps its place and "
+                                    "width and fits its height to the screen");
     forever_look_checks::CheckColourGradingAfterReset(h, resized, curveUploadsBeforeReset);
     vf_test_set_config(&restored);
 
@@ -2242,6 +2341,16 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     client_sprite_checks::HoldGateForDeviceRelease();
     ULONG devRefs = h.dev->Release();
     client_sprite_checks::CheckDeviceReleaseRestoresTheGate();
+    h.dev = nullptr;
+    hr = h.d3d->CreateDevice(0, D3DDEVTYPE_HAL, h.window, engineFlags, &h.pp, &h.dev);
+    Check(SUCCEEDED(hr) && h.dev, "a device is created again on the harness window");
+    if (h.dev)
+    {
+        CheckSettingsWindowKeepsItsSize(h, panel,
+                                        "a device created again for the same session opens the settings window at "
+                                        "the place and size it had");
+        devRefs += h.dev->Release();
+    }
     ULONG d3dRefs = h.d3d->Release();
     Check(devRefs == 0 && d3dRefs == 0, "wrapper reference counts reach zero");
     multisampling_checks::CheckMultisampling(realCreate, h.window, outDir, FullPath(iniPath));

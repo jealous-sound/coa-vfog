@@ -2,14 +2,24 @@
 
 #include "imgui.h"
 
-#include <cfloat>
+#include <algorithm>
 #include <cmath>
+#include <cstdarg>
+#include <cstdio>
 
 namespace
 {
 constexpr float kMultiplierSliderMax = 4.0f;
 constexpr float kPanelWidthInLines = 30.0f;
+constexpr float kPanelHeightInLines = 42.0f;
+constexpr float kMinPanelWidthInLines = 20.0f;
+constexpr float kMinPanelHeightInLines = 16.0f;
 constexpr float kPanelMarginInLines = 2.0f;
+constexpr float kLabelWidthInLines = 11.0f;
+constexpr float kLabelShareOfWidth = 0.45f;
+constexpr float kFirstFooterLines = 4.0f;
+constexpr float kNoTextWrap = -1.0f;
+constexpr size_t kStatusTextSize = 512;
 const ImVec4 kDrawnColour = {0.45f, 0.85f, 0.45f, 1.0f};
 const ImVec4 kSkippedColour = {0.95f, 0.75f, 0.35f, 1.0f};
 const ImVec4 kErrorColour = {1.0f, 0.4f, 0.4f, 1.0f};
@@ -99,24 +109,38 @@ void DrawStatus(const FogFrameStatus& status)
         ImGui::TextColored(kSkippedColour, "Fog: Not drawing (%s)", status.reason);
 }
 
+void StatusLine(const ImVec4& colour, const char* format, ...)
+{
+    char text[kStatusTextSize];
+    va_list args;
+    va_start(args, format);
+    std::vsnprintf(text, sizeof(text), format, args);
+    va_end(args);
+    ImGui::PushTextWrapPos(kNoTextWrap);
+    ImGui::TextColored(colour, "%s", text);
+    ImGui::PopTextWrapPos();
+    ImGui::SetItemTooltip("%s", text);
+}
+
 void DrawWaterStatus(const WaterFrameStatus& status)
 {
     const bool named = status.reason && *status.reason;
     if (status.drawn && named)
-        ImGui::TextColored(kDrawnColour, "Water: Drawing (%s)", status.reason);
+        StatusLine(kDrawnColour, "Water: Drawing (%s)", status.reason);
     else if (status.drawn)
-        ImGui::TextColored(kDrawnColour, "Water: Drawing");
+        StatusLine(kDrawnColour, "Water: Drawing");
     else
-        ImGui::TextColored(kSkippedColour, "Water: Not drawing (%s)", named ? status.reason : "no reason given");
+        StatusLine(kSkippedColour, "Water: Not drawing (%s)", named ? status.reason : "no reason given");
 }
 
 void DrawMultisamplingStatus(const MultisamplingStatus& status)
 {
     if (status.method && *status.method)
-        ImGui::TextColored(kDrawnColour, "Antialiasing: multisampling %dx kept (depth copied by %s)", status.samples,
-                           status.method);
+        StatusLine(kDrawnColour, "Antialiasing: multisampling %dx kept (depth copied by %s)", status.samples,
+                   status.method);
     else
-        ImGui::TextDisabled("Antialiasing: multisampling off (%s)", status.off);
+        StatusLine(ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), "Antialiasing: multisampling off (%s)",
+                   status.off);
 }
 
 bool DrawQuality(Config& c)
@@ -307,22 +331,38 @@ bool DrawDebug(Config& c)
 }
 }
 
-void SettingsPanel::Draw(ConfigStore& store, const FogFrameStatus& fogStatus, const WaterFrameStatus& waterStatus,
-                         const MultisamplingStatus& multisampling, bool& open)
+void SettingsPanel::PlaceWindow()
 {
     const float line = ImGui::GetFontSize();
-    const float width = kPanelWidthInLines * line;
-    ImGui::SetNextWindowPos(ImVec2(kPanelMarginInLines * line, kPanelMarginInLines * line), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(width, 0.0f), ImVec2(width, FLT_MAX));
-    if (!ImGui::Begin("CoAVolFog", &open,
-                      ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
-                          ImGuiWindowFlags_NoNavInputs))
-    {
-        ImGui::End();
-        return;
-    }
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const float margin = kPanelMarginInLines * line;
+    const ImVec2 smallest(kMinPanelWidthInLines * line, kMinPanelHeightInLines * line);
+    const ImVec2 largest(std::max(display.x - margin, smallest.x), std::max(display.y - margin, smallest.y));
+    const ImVec2 firstSize(kPanelWidthInLines * line,
+                           std::max(smallest.y, std::min(kPanelHeightInLines * line, display.y - 2.0f * margin)));
+    const PanelPlacement& p = m_placement;
+    ImGui::SetNextWindowPos(p.known ? ImVec2(p.position[0], p.position[1]) : ImVec2(margin, margin),
+                            ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(p.known ? ImVec2(p.size[0], p.size[1]) : firstSize, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(smallest, largest);
+}
+
+void SettingsPanel::RememberPlacement()
+{
+    const ImVec2 position = ImGui::GetWindowPos();
+    const ImVec2 size = ImGui::GetWindowSize();
+    m_placement = {true, {position.x, position.y}, {size.x, size.y}};
+}
+
+bool SettingsPanel::DrawSettings(Config& edited, const FogFrameStatus& fogStatus)
+{
+    const float footer =
+        m_footerHeight > 0.0f ? m_footerHeight : kFirstFooterLines * ImGui::GetFrameHeightWithSpacing();
+    ImGui::BeginChild("Settings", ImVec2(0.0f, -footer), ImGuiChildFlags_None, ImGuiWindowFlags_NoNavInputs);
     DrawStatus(fogStatus);
-    Config edited = store.Get();
+    const float labels =
+        std::min(kLabelWidthInLines * ImGui::GetFontSize(), kLabelShareOfWidth * ImGui::GetContentRegionAvail().x);
+    ImGui::PushItemWidth(-labels);
     bool changed = DrawQuality(edited);
     changed |= DrawDensity(edited);
     changed |= DrawLight(edited);
@@ -331,14 +371,42 @@ void SettingsPanel::Draw(ConfigStore& store, const FogFrameStatus& fogStatus, co
     changed |= DrawAntialiasing(edited);
     changed |= DrawWater(edited);
     changed |= DrawDebug(edited);
-    if (changed)
-        store.Apply(edited);
-    if (!ImGui::IsAnyItemActive())
-        store.LogSettledEdits();
+    ImGui::PopItemWidth();
+    ImGui::EndChild();
+    return changed;
+}
+
+void SettingsPanel::DrawFooter(ConfigStore& store, const WaterFrameStatus& waterStatus,
+                               const MultisamplingStatus& multisampling)
+{
+    const float top = ImGui::GetCursorPosY();
     ImGui::Separator();
     DrawWaterStatus(waterStatus);
     DrawMultisamplingStatus(multisampling);
     DrawSaveRow(store);
+    m_footerHeight = ImGui::GetCursorPosY() - top;
+}
+
+void SettingsPanel::Draw(ConfigStore& store, const FogFrameStatus& fogStatus, const WaterFrameStatus& waterStatus,
+                         const MultisamplingStatus& multisampling, bool& open)
+{
+    PlaceWindow();
+    const bool expanded =
+        ImGui::Begin("CoAVolFog", &open, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNavInputs);
+    if (!expanded)
+    {
+        ImGui::End();
+        return;
+    }
+    RememberPlacement();
+    ImGui::PushTextWrapPos(0.0f);
+    Config edited = store.Get();
+    if (DrawSettings(edited, fogStatus))
+        store.Apply(edited);
+    if (!ImGui::IsAnyItemActive())
+        store.LogSettledEdits();
+    DrawFooter(store, waterStatus, multisampling);
+    ImGui::PopTextWrapPos();
     ImGui::End();
 }
 
