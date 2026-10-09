@@ -557,6 +557,26 @@ next to `Ascension.exe`.
 Remove `version.dll` and `CoAVolFog.dll` to uninstall; nothing else in the client is changed. The DLL
 writes `CoAVolFog.log` next to itself.
 
+## Steam Deck and Linux (Proton)
+
+Install the files as above, then set the game's Steam launch options to:
+
+```sh
+WINEDLLOVERRIDES=version=n,b %command%
+```
+
+This lets the native `version.dll` proxy load CoAVolFog before Proton's builtin version library.
+A Steam Deck test on 8 October 2026 (Proton with DXVK, AMD VanGogh, 1280x800) loaded the DLL and installed
+all hooks. DXVK copied the multisampled depth through `RESZ` into `INTZ`, passing the depth-copy self-test,
+so the default `Multisampling=1` worked on this device.
+
+With `Quality=2` and the game's Multisampling set to 2x, the tested scene held 60 fps at 69% GPU utilisation,
+914 MHz and 2.8 W. At 8x, median GPU costs were 6.47 ms per frame for fog and 2.81 ms for water; GPU
+utilisation was 97% at 1,600 MHz and 8.3 W. These are effect GPU costs, excluding CPU work and the client's
+own rendering, and observations of one scene rather than a frame-rate guarantee. Start with 2x on the Deck;
+if a scene still dips, lower water quality, then fog quality. No defaults are changed by these notes.
+Other Linux hardware and Proton/DXVK versions have not been verified by this test.
+
 ## Log
 
 At `LogLevel=1` the log holds a frame summary on the first frame, whenever the viewport or far clip changes, and
@@ -657,8 +677,9 @@ Forever in the game, so by default colours still differ from Classic.
 - The fog has been tested in the client with native D3D9 on an RTX 2060 laptop. A first modern-water build ran
   there on Elwynn lakes and the Darkshore coast; the review fixes since (direct-light shading, narrower shore
   foam, fogged reflections, the dry-frame skip) are harness-checked only. Changes to lighting and occlusion require
-  an owner test; the offline harness does not establish in-game appearance or performance. Other GPU vendors,
-  integrated GPUs, DXVK and Wine are untested.
+  an owner test; the offline harness does not establish in-game appearance or performance. Other GPU vendors
+  and integrated GPUs are untested except for the Proton/DXVK Steam Deck result above; other Wine
+  configurations remain untested.
 - The composite and the lit march need more than the 512 instruction slots guaranteed by
   [baseline pixel shader 3.0](
   https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/dx9-graphics-reference-asm-ps-3-0), and lower
@@ -675,7 +696,8 @@ Forever in the game, so by default colours still differ from Classic.
   through doorways may differ.
 - The `gxApi d3d9ex` path is not wrapped (fog and the settings window stay off there). The settings window also
   needs a fog device, so it is missing when INTZ depth is unsupported.
-- Multisampling is harness-checked only (NVAPI on the RTX 2060; `RESZ` untested); alpha-tested foliage stays jagged.
+- Multisampling is harness-checked on the RTX 2060 (NVAPI) and tested in game on the Steam Deck
+  (`RESZ` through DXVK, see above); alpha-tested foliage stays jagged.
 - The silhouette split sees one copied depth sample per pixel, so sub-pixel geometry it misses takes the far fog.
 - The distance fog (`FarFog`, maps without Classic data) has no modern counterpart: it stands in for the stock
   fog up to the 3.3.5 far clip, which is far shorter than the modern client's.
