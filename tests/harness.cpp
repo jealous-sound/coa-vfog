@@ -2897,6 +2897,22 @@ int wmain(int argc, wchar_t** argv)
                 out = argv[i + 2];
         }
     }
+    if (scene == L"interior")
+    {
+        CheckInteriorFogInputs();
+        ConfigStore settings;
+        char path[MAX_PATH] = {};
+        WideCharToMultiByte(CP_ACP, 0, ini.c_str(), -1, path, MAX_PATH, nullptr, nullptr);
+        settings.Load(path);
+        Config edited = settings.Get();
+        edited.interiorFarFog = 0.8f;
+        settings.Apply(edited);
+        Check(settings.Save(), "InteriorFarFog saves through the setting registry");
+        ConfigStore reloaded;
+        reloaded.Load(path);
+        Check(reloaded.Get().interiorFarFog == 0.8f, "InteriorFarFog reloads from the ini");
+        return g_failures ? 1 : 0;
+    }
     if (scene == L"harbour")
         return RunHarbour(out, data, harbour);
     if (scene == L"performance")

@@ -306,6 +306,9 @@ void ApplyInteriorFog(float weight, const Config& cfg, FogParams& fog)
     const float densityScale = 1.0f + (retainedDensity - 1.0f) * weight;
     for (int i = 0; i < kSceneLayers; ++i)
         fog.layers[i].density *= densityScale;
+    const float retainedFarFog = std::isfinite(cfg.interiorFarFog) ? std::clamp(cfg.interiorFarFog, 0.0f, 1.0f)
+                                                                 : 1.0f;
+    fog.layers[kDistanceFogLayer].density *= 1.0f + (retainedFarFog - 1.0f) * weight;
     for (FogLayer& layer : fog.layers)
         Scale(layer.diffuse, 1.0f - weight, layer.diffuse);
     fog.lightVisibility *= 1.0f - weight;

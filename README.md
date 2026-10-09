@@ -520,7 +520,8 @@ Outputs in `build/Release`: `version.dll`, `CoAVolFog.dll` and `vfog_harness.exe
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-This runs the comment check and `vfog_harness`, which creates a real D3D9 device through the wrapper with the
+This runs the comment check, the CPU-only `interior_fog` transition and INI persistence checks, and
+`vfog_harness`, which creates a real D3D9 device through the wrapper with the
 client's flags (`0x52`, auto depth D24X8), renders a Z-up test scene with the client's projection convention,
 and runs the fog passes through the same entry the hook uses. Its checks, in `tests/`, cover the device wrapper
 and state restoration, depth and sky handling, Classic light blending and slot selection, the march against CPU
@@ -612,6 +613,7 @@ describe every key. In the game, `Ctrl+F7` opens the same settings in a window (
 | `LocalLights`, `LocalLightIntensity` | 1, 1 | Scatter up to eight nearby world point lights; intensity 0..8 |
 | `LocalLightPhase` | 0.3 | Henyey–Greenstein g of every point light in the fog, −0.9..0.9 (a calibration) |
 | `InteriorAware`, `InteriorDensity` | 1, 0.15 | Fade outdoor layers indoors, keeping this fraction of their density |
+| `InteriorFarFog` | 1.0 | Native distance-fog density retained indoors (0..1); lower values clear dungeon haze |
 | `GodRays` | 0 | Radial sky rays, 0 = off |
 | `GlowCompensation` | 1 | Pre-compensate the fog for the client's glow |
 | `ForeverGlow` | 0 | 1 gives the client's glow Forever's per-light amount where Classic lights cover the camera |

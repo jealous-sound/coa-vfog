@@ -175,6 +175,10 @@ add_custom_command(TARGET CoAVolFog POST_BUILD
             $<TARGET_FILE_DIR:CoAVolFog>)
 
 enable_testing()
+configure_file(CoAVolFog.ini interior-test.ini COPYONLY)
+add_test(NAME interior_fog
+    COMMAND vfog_harness --scene interior --ini ${CMAKE_CURRENT_BINARY_DIR}/interior-test.ini
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:vfog_harness>)
 add_test(NAME vfog_harness
     COMMAND vfog_harness --out ${CMAKE_CURRENT_BINARY_DIR}/harness-out
             --data ${CMAKE_CURRENT_SOURCE_DIR}/data/fogdata.bin

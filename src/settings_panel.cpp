@@ -267,7 +267,9 @@ bool DrawWorld(Config& c)
     changed |= Toggle("Interior-aware fog", c.interiorAware,
                       "Fade outdoor fog and direct sunlight as the camera enters a building or cave");
     changed |= Slider("Interior density", c.interiorDensity, 0.0f, 1.0f, "%.2f",
-                      "Outdoor fog density retained indoors; the area's native distance fog still applies");
+                      "Outdoor fog density retained indoors");
+    changed |= Slider("Interior far fog", c.interiorFarFog, 0.0f, 1.0f, "%.2f",
+                      "Native distance-fog density retained indoors; outdoor distance fog is unchanged");
     changed |= DrawViewDistance(c);
     return changed;
 }
