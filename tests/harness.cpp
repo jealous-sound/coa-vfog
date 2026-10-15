@@ -1856,7 +1856,7 @@ void CheckDisabledTemporalIsStable(Harness& h, const Config& cfg, Vec3 eye, Vec3
 }
 
 int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstring& iniPath,
-        const std::string& waterDataPath)
+        const std::string& waterDataPath, bool cpuOnly = false)
 {
     Check(vf_test_water_data_loaded() == 0,
           "outside the supported client (no water hooks) the DLL does not load waterdata.bin");
@@ -1887,6 +1887,19 @@ int Run(const std::wstring& outDir, const std::string& dataPath, const std::wstr
     water_data_checks::CheckWaterData(outDir, waterDataPath);
     water_settings_checks::CheckWaterSettings(outDir, FullPath(iniPath));
     transparent_fog_checks::CheckTransparentFogSetting(outDir, FullPath(iniPath));
+
+    if (cpuOnly)
+    {
+        CheckLocalLightInputs();
+        CheckPointLightTableCapture();
+        CheckHdrLocalLightColours();
+        CheckInteriorFogInputs();
+        water_contact_checks::CheckWaterContacts();
+        CoUninitialize();
+        std::printf("CPU checks %s (%d failures); D3D9 graphics checks were not run\n",
+                    g_failures ? "FAILED" : "OK", g_failures);
+        return g_failures ? 1 : 0;
+    }
 
     WNDCLASSW wc = {};
     wc.lpfnWndProc = ClientWindowProc;
@@ -2903,9 +2916,11 @@ int wmain(int argc, wchar_t** argv)
         return RunPerformance(samples);
     if (scene == L"ripples")
         return ripple_scene::RunRippleScene(out, waterData);
+    if (scene == L"cpu")
+        return Run(out, data, ini, waterData, true);
     if (!scene.empty())
     {
-        std::printf("unknown scene %ls (known: harbour, performance, ripples)\n", scene.c_str());
+        std::printf("unknown scene %ls (known: cpu, harbour, performance, ripples)\n", scene.c_str());
         return 2;
     }
     return Run(out, data, ini, waterData);

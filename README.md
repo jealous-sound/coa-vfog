@@ -514,6 +514,24 @@ cmake --build build --config Release
 Outputs in `build/Release`: `version.dll`, `CoAVolFog.dll` and `vfog_harness.exe`, with `CoAVolFog.ini`,
 `fogdata.bin` and `waterdata.bin` copied beside them.
 
+### Download a CI build
+
+The [Windows release build](https://github.com/jealous-sound/coa-vfog/actions/workflows/release.yml) runs on every
+push to `main` (including merged pull requests), on pull requests targeting `main`, and manually from
+**Actions → Windows release build → Run workflow**. The manual button becomes available after the workflow is
+merged into `main`; select a branch to rebuild that revision.
+
+Open a successful run and download its `CoAVolFog-Win32-<commit>` artifact under **Artifacts**. GitHub supplies a
+ZIP containing `version.dll`, `CoAVolFog.dll`, `CoAVolFog.ini`, `fogdata.bin`, `waterdata.bin`, the README, licenses
+and a `BUILD.txt` identifying the commit and validation. Artifacts are kept for 30 days; rerun the workflow to
+rebuild an expired download. Pull-request artifacts are builds of GitHub's proposed merge revision.
+
+CI uses Windows Server 2022, MSVC 2022 and `fxc` to build Win32 Release, then runs the comment check and the CPU
+harness. The CPU harness exercises the existing data, fog model, local-light/interior, settings persistence,
+glow and water-contact checks before any D3D9 device is created. CI runs CTest with `-LE gpu`; the full
+`vfog_harness` remains enabled by default for a Windows machine with a suitable graphics device. A successful CI
+build does not establish graphics correctness or in-game appearance and performance.
+
 ## Test
 
 ```powershell

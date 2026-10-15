@@ -1,0 +1,79 @@
+name: Windows release build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build and check Win32 Release
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Check source comments
+        run: python tools/check_comments.py
+
+      - name: Configure Win32
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A Win32
+
+      - name: Build DLLs, shaders and harness
+        run: cmake --build build --config Release --parallel
+
+      - name: Run checks that do not require a graphics device
+        run: ctest --test-dir build -C Release --output-on-failure --no-tests=error -LE gpu
+
+      - name: Assemble install files
+        run: |
+          $package = 'build/package'
+          New-Item -ItemType Directory -Path $package | Out-Null
+          $files = 'version.dll', 'CoAVolFog.dll', 'CoAVolFog.ini', 'fogdata.bin', 'waterdata.bin'
+          foreach ($file in $files) {
+            Copy-Item -LiteralPath "build/Release/$file" -Destination $package -ErrorAction Stop
+          }
+          Copy-Item -LiteralPath README.md, LICENSE -Destination $package -ErrorAction Stop
+          Copy-Item -LiteralPath build/_deps/imgui-src/LICENSE.txt -Destination "$package/Dear-ImGui-LICENSE.txt"
+          @(
+            "Commit: $env:GITHUB_SHA"
+            "Build: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            'Configuration: Win32 Release'
+            'Validation: build, source comments and CPU harness passed.'
+            'D3D9 graphics checks and in-game validation were not run.'
+          ) | Set-Content -Path "$package/BUILD.txt" -Encoding utf8
+
+      - name: Upload install archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: CoAVolFog-Win32-${{ github.sha }}
+          path: build/package/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload test diagnostics
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: test-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/Testing/Temporary/
+            build/cpu-harness-out/harness.log
+            build/Release/CoAVolFog.log
+          if-no-files-found: ignore
+          retention-days: 7

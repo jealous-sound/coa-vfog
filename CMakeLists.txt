@@ -181,6 +181,14 @@ add_test(NAME vfog_harness
             --ini ${CMAKE_CURRENT_SOURCE_DIR}/CoAVolFog.ini
             --water-data ${CMAKE_CURRENT_SOURCE_DIR}/data/waterdata.bin
     WORKING_DIRECTORY $<TARGET_FILE_DIR:vfog_harness>)
+set_tests_properties(vfog_harness PROPERTIES LABELS gpu)
+add_test(NAME cpu_harness
+    COMMAND vfog_harness --scene cpu --out ${CMAKE_CURRENT_BINARY_DIR}/cpu-harness-out
+            --data ${CMAKE_CURRENT_SOURCE_DIR}/data/fogdata.bin
+            --ini ${CMAKE_CURRENT_SOURCE_DIR}/CoAVolFog.ini
+            --water-data ${CMAKE_CURRENT_SOURCE_DIR}/data/waterdata.bin
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:vfog_harness>)
+set_tests_properties(cpu_harness PROPERTIES LABELS cpu)
 
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
