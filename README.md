@@ -514,12 +514,20 @@ cmake --build build --config Release
 Outputs in `build/Release`: `version.dll`, `CoAVolFog.dll` and `vfog_harness.exe`, with `CoAVolFog.ini`,
 `fogdata.bin` and `waterdata.bin` copied beside them.
 
-### Download a CI build
+### Download the latest build
 
 The [Windows release build](https://github.com/jealous-sound/coa-vfog/actions/workflows/release.yml) runs on every
 push to `main` (including merged pull requests), on pull requests targeting `main`, and manually from
 **Actions → Windows release build → Run workflow**. The manual button becomes available after the workflow is
 merged into `main`; select a branch to rebuild that revision.
+
+Successful builds of the current `main` revision also publish a [GitHub Release](
+https://github.com/jealous-sound/coa-vfog/releases/latest) automatically. Download `CoAVolFog-Win32.zip` from
+**Releases**; the adjacent `.sha256` file contains its SHA-256 checksum. Each release is tagged
+`build-<run number>-<attempt>-<short commit>` and keeps its download beyond the Actions artifact retention period.
+The newest published build is marked **Latest**. Manual runs on `main` publish too; pull requests and other
+branches only upload Actions artifacts. A run whose commit has been superseded on `main` skips publishing.
+These are automated builds, not an assertion of in-game validation.
 
 Open a successful run and download its `CoAVolFog-Win32-<commit>` artifact under **Artifacts**. GitHub supplies a
 ZIP containing `version.dll`, `CoAVolFog.dll`, `CoAVolFog.ini`, `fogdata.bin`, `waterdata.bin`, the README, licenses
